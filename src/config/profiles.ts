@@ -1,9 +1,11 @@
+import { bytesOf, capProblem, documentSha256, totalProblem, UNSETTLED } from '../core/documents.ts'
 import { ConfigError, isSafeSegment, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { defaultPolicy } from '../core/policy.ts'
 import type { PolicyRules, Rule } from '../core/policy.ts'
 import { FAIL_ON_LEVELS, profileIssues } from '../core/profile.ts'
-import type { FailOn, Profile } from '../core/types.ts'
+import { cleanProse } from '../core/sanitize.ts'
+import type { DocumentKind, FailOn, Profile, ReviewDocument } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { PROFILE_ID } from './env.ts'
 import type { RoleBinding } from './env.ts'
@@ -44,6 +46,11 @@ const BUILT_IN: ReadonlyMap<string, Profile> = new Map([
 
 const NEEDS_BASE = 'is required: the profile extends no built-in profile'
 const LEVELS = ['high', 'medium', 'low'] as const
+/** The fields of an entry that list documents, in the order the profile's documents are built, each with the kind it holds. */
+const DOCUMENT_FIELDS = [
+  { field: 'guidelines', kind: 'guidelines' },
+  { field: 'doNotReport', kind: 'do-not-report' },
+] as const satisfies ReadonlyArray<{ readonly field: 'guidelines' | 'doNotReport', readonly kind: DocumentKind }>
 
 /** A lens as the config gives it, or as a built-in profile holds it, which names no provider. */
 interface LensEntry {
@@ -192,15 +199,71 @@ function notRunIssues(failOn: FailOnOverride | undefined, selected: readonly str
   }))
 }
 
-/** What a profile is bound against: the roles, and the names of the providers that are defined, in order and as a set. */
+/** What a profile is bound against: the roles, and the names of the providers that are defined, in order and as a set, and the built-in profiles it can start from. */
 interface Bindings {
   readonly roles: RoleBinding
   readonly providers: readonly string[]
   readonly known: ReadonlySet<string>
+  readonly builtIn: ReadonlyMap<string, Profile>
+}
+
+/**
+ * The documents the entry lists, `guidelines` then `doNotReport`, each cleaned as the core cleans one, with what the
+ * cleaner removed and the hash of the text as read, and the issue of each entry that cannot be kept, at its own path:
+ * a text the cleaner cannot settle, one over its kind's cap once cleaned, and the first whose bytes take the kind's total
+ * (`start` counts the profile's own text, which comes first) over what the profile may hold in all. An entry with an issue
+ * is left out, so the profile the check reads holds none the core would refuse again.
+ */
+function documentsOf(id: string, entry: ProfileEntry, start: Readonly<Record<DocumentKind, number>>, at: (...segments: PropertyKey[]) => string): { readonly documents: ReviewDocument[], readonly issues: ConfigIssue[] } {
+  const documents: ReviewDocument[] = []
+  const issues: ConfigIssue[] = []
+  for (const { field, kind } of DOCUMENT_FIELDS) {
+    let total = start[kind]
+    // Once a document takes the total over its cap, it is reported and no later one is counted: only the first is the one to shorten or drop.
+    let fits = true
+    for (const [index, item] of (own(entry, field) ?? []).entries()) {
+      // The schema holds every entry to `{ text }` of a string.
+      const text = own(item, 'text') as string
+      const cleaned = cleanProse(text)
+      const bytes = bytesOf(cleaned.text)
+      const problem = cleaned.settled
+        ? capProblem(kind, bytes)
+        : UNSETTLED
+      if (problem !== undefined) {
+        issues.push({
+          path: at(field, index),
+          message: problem,
+        })
+        continue
+      }
+      if (!fits) continue
+      total += bytes
+      const over = totalProblem(kind, total)
+      if (over !== undefined) {
+        issues.push({
+          path: at(field, index),
+          message: over,
+        })
+        fits = false
+        continue
+      }
+      documents.push(Object.freeze({
+        profile: id,
+        kind,
+        origin: Object.freeze({
+          kind: 'config' as const,
+          sha256: documentSha256(text),
+        }),
+        text: cleaned.text,
+        removed: Object.freeze(cleaned.removed),
+      }))
+    }
+  }
+  return { documents, issues }
 }
 
 /** What one profile of the config resolves to, or every issue that keeps it from running, and the warnings its fields earn. */
-function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known }: Bindings): { readonly resolved?: ResolvedProfile, readonly issues: ConfigIssue[], readonly warnings: string[] } {
+function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known, builtIn }: Bindings): { readonly resolved?: ResolvedProfile, readonly issues: ConfigIssue[], readonly warnings: string[] } {
   const at = (...segments: PropertyKey[]): string => issuePath(['profiles', id, ...segments])
   const gating = own(entry, 'gating')
   const failOn = own(entry, 'failOn')
@@ -217,7 +280,7 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
         },
       ]
     : []
-  const base = BUILT_IN.get(own(entry, 'extends') ?? id)
+  const base = builtIn.get(own(entry, 'extends') ?? id)
   const entryPrompts = own(entry, 'prompts')
   const research = own(entryPrompts, 'research') ?? base?.prompts.research
   const vote = own(entryPrompts, 'vote') ?? base?.prompts.vote
@@ -241,16 +304,39 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
     }
   }
 
+  // The base's own do-not-report text comes first, unless the entry drops it; the core checks it, and the documents are counted after it.
+  const doNotReport = own(entry, 'builtInDoNotReport') === false
+    ? undefined
+    : base?.doNotReport
+  const ownText = doNotReport === undefined
+    ? undefined
+    : cleanProse(doNotReport)
+  const { documents, issues: documentIssues } = documentsOf(id, entry, {
+    guidelines: 0,
+    'do-not-report': ownText?.settled === true
+      ? bytesOf(ownText.text)
+      : 0,
+  }, at)
+
   const profile: Profile = Object.freeze({
     id,
     prompts: Object.freeze({ research, vote }),
     lenses: Object.freeze(lenses.map(lens => Object.freeze({ id: lens.id, question: lens.question }))),
     policy: policyOf(base, own(entry, 'policy')),
     failOn: failOn ?? fromGating(gating) ?? base?.failOn ?? 'high',
+    ...doNotReport === undefined
+      ? {}
+      : { doNotReport },
+    ...documents.length === 0
+      ? {}
+      : {
+          documents: Object.freeze(documents),
+        },
   })
   // `profileIssues` starts its paths at the id given as the fallback root, which is the profile's own id here.
   const issues = [
     ...both,
+    ...documentIssues,
     ...profileIssues(profile, id).map(issue => ({ path: `${at()}${issue.path.slice(id.length)}`, message: issue.message })),
   ]
 
@@ -299,7 +385,13 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
  * returned in `warnings` in the order the entries are written. `failOn`, the levels `parseFailOn` read from the
  * command line, then sets each selected profile's level over all of that: the level named for the profile, else
  * the level for every profile, as a new frozen profile and binding. A profile it names that is not selected is
- * an issue at its `path`: a typo must not leave a gate weaker or missing. `research` is bound to
+ * an issue at its `path`: a typo must not leave a gate weaker or missing. A profile holds the documents its
+ * entry lists as `documents`, `guidelines` then `doNotReport`, each cleaned, with what the cleaner removed and the
+ * SHA-256 of the text as read; one the cleaner cannot settle, or over its cap once cleaned, or the first that takes
+ * a kind over the cap of all of them, is an issue at its entry (`profiles.<id>.<field>.<n>`). Its `doNotReport` is
+ * the base's own text, unless the entry sets `builtInDoNotReport: false`, and counts first toward that cap. A profile
+ * with no document holds neither key. `inputs.builtIn` is the map of the profiles a config can run or extend, the
+ * security profile alone by default. `research` is bound to
  * `roles.research`, and each lens to its own provider, else the profile's voter, else `roles.voter`; every provider a profile names
  * must be in `providers`. A selection that runs nothing is an issue, and a profile with an issue does not run.
  */
@@ -309,6 +401,7 @@ export function resolveProfiles(inputs: {
   readonly roles: RoleBinding
   readonly providers: readonly string[]
   readonly failOn?: FailOnOverride
+  readonly builtIn?: ReadonlyMap<string, Profile>
 }): { readonly profiles: readonly ResolvedProfile[], readonly issues: readonly ConfigIssue[], readonly warnings: readonly string[] } {
   const configured = new Map(Object.entries(inputs.profiles ?? {}))
   const selected = inputs.selection?.ids ?? (inputs.profiles === undefined
@@ -316,15 +409,17 @@ export function resolveProfiles(inputs: {
     : [
         ...configured.keys(),
       ])
+  const builtIn = inputs.builtIn ?? BUILT_IN
   const bindings: Bindings = {
     roles: inputs.roles,
     providers: inputs.providers,
     known: new Set(inputs.providers),
+    builtIn,
   }
   const defined = [
     ...configured.keys(),
     ...[
-      ...BUILT_IN.keys(),
+      ...builtIn.keys(),
     ].filter(id => !configured.has(id)),
   ]
 
@@ -341,7 +436,7 @@ export function resolveProfiles(inputs: {
   ] as const))
   for (const id of selected) {
     if (resolutions.has(id)) continue
-    if (BUILT_IN.has(id)) resolutions.set(id, resolveEntry(id, {}, bindings))
+    if (builtIn.has(id)) resolutions.set(id, resolveEntry(id, {}, bindings))
     else issues.push(unknownName(inputs.selection?.path ?? 'profiles', 'profile', id, defined))
   }
   issues.push(...notRunIssues(inputs.failOn, selected))

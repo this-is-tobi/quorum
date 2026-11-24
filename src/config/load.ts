@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { isMap, isPair, isScalar, isSeq, LineCounter, parseDocument } from 'yaml'
 import type { Document, YAMLError } from 'yaml'
 import type { z } from 'zod'
+import { DOCUMENT_READ_LIMIT } from '../core/documents.ts'
 import { ConfigError } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { envValue } from './env.ts'
@@ -19,10 +20,8 @@ import type { ConfigInput, QuorumConfig } from './schema.ts'
 
 /** The most a config file may hold: a named FIFO or a huge file never hangs the load or fills memory. */
 const CONFIG_LIMIT = 1024 * 1024
-/** The most a prompt file may hold. */
-const PROMPT_LIMIT = 64 * 1024
-/** The most the distinct prompt files of a config may hold together, whatever the number of profiles that name them. */
-const PROMPT_TOTAL_LIMIT = 1024 * 1024
+/** The most the distinct prompt and document files of a config may hold together, whatever the number of profiles and entries that name them. */
+const NAMED_FILES_TOTAL_LIMIT = 1024 * 1024
 /** How many keys deep a value of a config may sit: deeper data could overflow the stack of a walk over it. */
 const MAX_DEPTH = 64
 /** How many values a config may hold: more would be a walk and a schema check of unbounded work, and issues of unbounded number. */
@@ -43,6 +42,8 @@ const FORMATS: ReadonlyMap<string, Format> = new Map([
 /** A name a message may give what a config threw: a class name, never text the config could have written a secret into. */
 const ERROR_NAME = /^[A-Z][A-Za-z]{0,63}$/
 const STAGES = ['research', 'vote'] as const
+/** The fields of a profile that list documents, each entry a `{ file }` in a file or a code config and a `{ text }` once read. */
+const DOCUMENT_FIELDS = ['guidelines', 'doNotReport'] as const
 /** An error code worth printing: `EACCES`, never text. */
 const ERROR_CODE = /^E[A-Z]+$/
 /** A new file, which `O_EXCL` never makes through a link. */
@@ -50,7 +51,7 @@ const NEW_FILE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
 
 /** A config file once read and checked. */
 export interface LoadedConfig {
-  /** The checked config, with the text of every prompt file in place of its `{ file }`. */
+  /** The checked config, with the text of every prompt file in place of its `{ file }`, and of every document file as a `{ text }`. */
   readonly config: ConfigInput
   /** The absolute path of the file. */
   readonly source: string
@@ -481,44 +482,82 @@ function checkData(parsed: Read<unknown>, path: string): QuorumConfig {
   }
 }
 
-/**
- * Put the text of every prompt file in place of its `{ file }`, read relative to `directory` (an absolute
- * path stays absolute) as UTF-8 text of at most 64 KiB. Each distinct path is read once, so a file named
- * by many profiles costs once and every place holds the same text, and the distinct files may hold 1 MiB
- * in all, counted in bytes as read, an oversized file as 64 KiB: the file that takes the total over it is
- * an issue, and reading stops there. `config` is the schema's output, a copy, so the caller's own
- * objects are never changed.
- *
- * @throws ConfigError with the problem of every prompt file that cannot be read, at its path, or with
- * those found so far and the file that takes the prompt files over 1 MiB in total
- */
-async function readPromptFiles(config: QuorumConfig, directory: string, path: string): Promise<ConfigInput> {
-  const issues: ConfigIssue[] = []
-  const reads = new Map<string, Read<string>>()
-  let total = 0
-  for (const [id, { prompts }] of Object.entries(config.profiles ?? {})) {
-    if (prompts === undefined) continue
-    for (const stage of STAGES) {
-      const prompt = prompts[stage]
-      if (typeof prompt !== 'object') continue
-      const at = configPath([
+/** A file a profile names, where its issue goes, and how its text takes the place of the name. */
+interface NamedFile {
+  readonly segments: readonly PropertyKey[]
+  readonly file: string
+  readonly put: (text: string) => void
+}
+
+/** The files a profile names, in the order they are read: its prompts, then its guidelines, then its do-not-report documents, each as the entry holds them. */
+function namedFiles(id: string, profile: NonNullable<QuorumConfig['profiles']>[string]): NamedFile[] {
+  const named: NamedFile[] = []
+  // A profile with no prompts names no prompt file, so nothing is ever put into this empty object.
+  const prompts = profile.prompts ?? {}
+  for (const stage of STAGES) {
+    const prompt = prompts[stage]
+    if (typeof prompt !== 'object') continue
+    named.push({
+      segments: [
         'profiles',
         id,
         'prompts',
         stage,
         'file',
-      ], path)
-      const absolute = resolve(directory, prompt.file)
+      ],
+      file: prompt.file,
+      put: (text) => {
+        prompts[stage] = text
+      },
+    })
+  }
+  for (const field of DOCUMENT_FIELDS) {
+    // The entries are `{ file }` as the schema checked them; each is replaced by the `{ text }` of the input form.
+    const entries = profile[field] as Array<{ file: string } | { text: string }> | undefined
+    entries?.forEach((entry, index) => {
+      if (!('file' in entry)) return
+      named.push({
+        segments: ['profiles', id, field, index, 'file'],
+        file: entry.file,
+        put: (text) => {
+          entries[index] = { text }
+        },
+      })
+    })
+  }
+  return named
+}
+
+/**
+ * Put the text of every prompt file in place of its `{ file }`, and the text of every guidelines and
+ * do-not-report file as the `{ text }` of its entry, each read relative to `directory` (an absolute path stays
+ * absolute) as UTF-8 text of at most 64 KiB. Each distinct path is read once, so a file named by many
+ * profiles or entries costs once and every place holds the same text, and the distinct files may hold 1 MiB
+ * in all, counted in bytes as read, an oversized file as 64 KiB: the file that takes the total over it is
+ * an issue, and reading stops there. A document is neither cleaned nor capped here: that is the profile's
+ * resolution. `config` is the schema's output, a copy, so the caller's own objects are never changed.
+ *
+ * @throws ConfigError with the problem of every file that cannot be read, at its path, or with
+ * those found so far and the file that takes the files over 1 MiB in total
+ */
+async function readNamedFiles(config: QuorumConfig, directory: string, path: string): Promise<ConfigInput> {
+  const issues: ConfigIssue[] = []
+  const reads = new Map<string, Read<string>>()
+  let total = 0
+  for (const [id, profile] of Object.entries(config.profiles ?? {})) {
+    for (const { segments, file, put } of namedFiles(id, profile)) {
+      const at = configPath(segments, path)
+      const absolute = resolve(directory, file)
       let text = reads.get(absolute)
       if (text === undefined) {
-        const bytes = await readBounded(absolute, PROMPT_LIMIT, '64 KiB')
+        const bytes = await readBounded(absolute, DOCUMENT_READ_LIMIT, '64 KiB')
         total += 'problem' in bytes
           ? bytes.counted ?? 0
           : bytes.value.length
-        if (total > PROMPT_TOTAL_LIMIT) {
+        if (total > NAMED_FILES_TOTAL_LIMIT) {
           throw new ConfigError([
             ...issues,
-            { path: at, message: 'takes the prompt files over 1 MiB in total' },
+            { path: at, message: 'takes the prompt and document files over 1 MiB in total' },
           ])
         }
         text = 'problem' in bytes
@@ -527,11 +566,11 @@ async function readPromptFiles(config: QuorumConfig, directory: string, path: st
         reads.set(absolute, text)
       }
       if ('problem' in text) issues.push({ path: at, message: text.problem })
-      else prompts[stage] = text.value
+      else put(text.value)
     }
   }
   if (issues.length > 0) throw new ConfigError(issues)
-  // The loop above replaced every `{ file }` in the profiles, the only place a prompt can be.
+  // The loop above replaced every `{ file }` in the profiles, the only place one can be.
   return config as ConfigInput
 }
 
@@ -541,12 +580,12 @@ async function readPromptFiles(config: QuorumConfig, directory: string, path: st
  * `.json` for JSON, both data only, and `.mts`, `.mjs`, `.ts` or `.js` for a module whose default export
  * is the config, which runs as code. The file must be a regular file of at most 1 MiB, in UTF-8. A data
  * file's value must be a mapping of plain data, a module's default a plain object; neither may hold a
- * `__proto__` key; then the schema of its variant checks it, and every prompt file it names is read, once
- * however many profiles name it: each of at most 64 KiB, and the distinct files 1 MiB in all. Issues name
+ * `__proto__` key; then the schema of its variant checks it, and every prompt file and every guidelines and
+ * do-not-report file it names is read, once however many profiles and entries name it: each of at most 64 KiB, and the distinct files 1 MiB in all. Issues name
  * the path as the caller gave it, and never quote a file, repeat the runtime's message or repeat what a
  * config threw.
  *
- * @throws ConfigError with the first problem of the file, or every problem of its data, or every issue of the schema, or of its prompt files
+ * @throws ConfigError with the first problem of the file, or every problem of its data, or every issue of the schema, or of its prompt and document files
  */
 export async function readConfigFile(path: string, options: { readonly cwd?: string } = {}): Promise<LoadedConfig> {
   const source = resolve(options.cwd ?? process.cwd(), path)
@@ -559,7 +598,7 @@ export async function readConfigFile(path: string, options: { readonly cwd?: str
     : checkData(format === 'yaml'
         ? parseYaml(text.value)
         : parseJson(text.value), path)
-  return { config: await readPromptFiles(config, dirname(source), path), source }
+  return { config: await readNamedFiles(config, dirname(source), path), source }
 }
 
 /**

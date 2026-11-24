@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { MAX_DOCUMENTS } from '../core/documents.ts'
 import { ConfigError, isSafeSegment, issuePath } from '../core/errors.ts'
 import type { ConfigIssue } from '../core/errors.ts'
 import { MAX_PATTERNS, patternProblem, TOO_MANY_PATTERNS } from '../core/exclude.ts'
@@ -31,6 +32,7 @@ const PROTOCOLS: Readonly<Record<ProviderProtocol, true>> = {
 const STRUCTURED_OUTPUTS: Readonly<Record<StructuredOutput, true>> = { prompt: true, json: true, schema: true }
 
 const VERSION = 'must be 1, the only config version this quorum reads: upgrade quorum to read a later one'
+const TOO_MANY_DOCUMENTS = `must hold at most ${MAX_DOCUMENTS} documents`
 
 const name = z.string().regex(NAME)
 
@@ -95,6 +97,16 @@ const prompt = z.union([
   }),
 ], { error: 'must be a string or { file }' })
 
+/** A document of a file or a code config: the file that holds its text, read when the config loads. */
+const documentFile = z.strictObject({
+  file: z.string().describe('The file that holds the text, relative to the directory of the config file'),
+})
+
+/** A document of the input a program hands over, which reads no file: the text itself, as the loader gives it. */
+const documentText = z.strictObject({
+  text: z.string().describe('The text itself, as a program that loaded it hands it over'),
+})
+
 const rule = z.union([
   z.enum(['unanimous', 'majority', 'any', 'off']),
   z.literal(false),
@@ -106,8 +118,13 @@ const rule = z.union([
   }),
 ], { error: 'must be unanimous, majority, any, off, false, { minVotes } or { minRatio }' })
 
-/** A profile entry, around the schema of one prompt: a string or `{ file }` in a file, a string only in code. */
-function profileSchema<R extends z.ZodType>(promptForm: R) {
+/** The documents of one kind, at most `MAX_DOCUMENTS` entries of the variant's form. */
+function documentList<D extends z.ZodType>(documentForm: D) {
+  return z.array(documentForm).max(MAX_DOCUMENTS, { error: TOO_MANY_DOCUMENTS })
+}
+
+/** A profile entry, around the schema of one prompt and of one document: a string or `{ file }` and `{ file }` in a file, a string and `{ text }` in what a program hands over. */
+function profileSchema<R extends z.ZodType, D extends z.ZodType>(promptForm: R, documentForm: D) {
   return z.strictObject({
     extends: z.enum([securityProfile.id]).optional().describe('The built-in profile this one starts from'),
     failOn: z.enum(FAIL_ON_LEVELS).optional().describe('The confidence at or above which a kept finding fails the review with exit 1: high, medium or low; none for an advisory profile, whose findings and gaps change no exit code. high when unset'),
@@ -117,6 +134,9 @@ function profileSchema<R extends z.ZodType>(promptForm: R) {
       research: promptForm.optional().describe('The research instructions: a template, or { file }'),
       vote: promptForm.optional().describe('The vote instructions, which take {{lens.id}}, {{lens.question}} and {{panel.size}}: a template, or { file }'),
     }).optional().describe('The instruction templates of the profile'),
+    guidelines: documentList(documentForm).optional().describe('The guidelines the review judges by, each a { file } read when the config loads: at most 16 KiB each and in all once cleaned, sent in every request of the profile'),
+    doNotReport: documentList(documentForm).optional().describe('What the research is told not to report, each a { file } read when the config loads: at most 8 KiB each and in all once cleaned, sent in the research requests alone'),
+    builtInDoNotReport: z.boolean().optional().describe('false drops the do-not-report text of the built-in profile this one starts from; true, the default, keeps it ahead of the documents'),
     lenses: z.array(z.strictObject({
       id: name.describe('Names the lens'),
       question: z.string().describe('What the voter judging from this lens is asked'),
@@ -130,8 +150,8 @@ function profileSchema<R extends z.ZodType>(promptForm: R) {
   })
 }
 
-/** A config of either variant, around the schema of one provider entry and of one prompt, in the order editors show the fields. */
-function configSchema<P extends z.ZodType, R extends z.ZodType>(provider: P, promptForm: R) {
+/** A config of either variant, around the schema of one provider entry, of one prompt and of one document, in the order editors show the fields. */
+function configSchema<P extends z.ZodType, R extends z.ZodType, D extends z.ZodType>(provider: P, promptForm: R, documentForm: D) {
   return z.strictObject({
     $schema: z.string().optional().describe('The JSON Schema of this file, for editors; quorum does not read it'),
     version: z.literal(1, { error: VERSION }).optional().describe('The version of the config format: 1'),
@@ -145,7 +165,7 @@ function configSchema<P extends z.ZodType, R extends z.ZodType>(provider: P, pro
     strict: z.boolean().optional().describe('Refuse, before any call, what is otherwise a warning that a key may be exposed: today, a key sent over plain http to a host other than this machine. QUORUM_STRICT=true turns it on too; neither turns the other off'),
     exclude: z.array(pattern.describe('A path pattern: * and ? within a name, ** for whole directories, no / to match a file name in any directory, a leading / for the root')).max(MAX_PATTERNS, { error: TOO_MANY_PATTERNS }).optional().describe('The files left out of every request, by path pattern, each listed as excluded in meta.leftOut; nothing is excluded by default'),
     send: z.array(file.describe('A file\'s path as the diff writes it, decoded')).optional().describe('The files sent to the models though held as secrets, each the path as the diff writes it and meta.leftOut lists it; none by default'),
-    profiles: z.record(name, profileSchema(promptForm)).optional().describe('The review profiles, by id: a built-in profile, one that extends it, or one of your own. The ones --profile names run, else the ones QUORUM_PROFILES names, else every one listed here, else the security profile alone'),
+    profiles: z.record(name, profileSchema(promptForm, documentForm)).optional().describe('The review profiles, by id: a built-in profile, one that extends it, or one of your own. The ones --profile names run, else the ones QUORUM_PROFILES names, else every one listed here, else the security profile alone'),
   })
 }
 
@@ -353,7 +373,7 @@ export function nameSnapshot(id: string, entry: unknown): unknown {
  * one. Every object is strict, so a typo is an issue. It checks shapes only: a field a later layer can
  * fill is optional, and the references between fields are checked once the layers are merged.
  */
-export const configFileSchema = configSchema(z.strictObject(providerShape), prompt)
+export const configFileSchema = configSchema(z.strictObject(providerShape), prompt, documentFile)
 
 /** The settings of a provider in a code config: those of a file, which may also hold the key itself and the executable. */
 const codeSettings = z.strictObject({
@@ -382,10 +402,10 @@ const codeProvider = z.union([
 ], { error: 'must be the settings of a provider, or an object whose complete is a function' })
 
 /** A TS or JS config: the file variant, where a provider may also hold its key, or be an object implementing `Provider`. */
-export const configCodeSchema = configSchema(codeProvider, prompt)
+export const configCodeSchema = configSchema(codeProvider, prompt, documentFile)
 
-/** The code variant a program hands over, which reads no file: a prompt is its text, never a `{ file }`. */
-export const configInputSchema = configSchema(codeProvider, z.string())
+/** The code variant a program hands over, which reads no file: a prompt is its text, never a `{ file }`, and a document is `{ text }`. */
+export const configInputSchema = configSchema(codeProvider, z.string(), documentText)
 
 /**
  * The JSON Schema of a YAML or JSON config, for editors: draft-07, which the YAML language server and
@@ -398,7 +418,7 @@ export function configJsonSchema(): JsonSchema {
 
 /** What a TS or JS config exports as its default. */
 export type QuorumConfig = z.input<typeof configCodeSchema>
-/** A config whose prompts are strings: what a program hands to `fromConfig`, and what `readConfigFile` returns once it has read every prompt file. */
+/** A config whose prompts are strings and whose documents are `{ text }`: what a program hands to `fromConfig`, and what `readConfigFile` returns once it has read every prompt and document file. */
 export type ConfigInput = z.input<typeof configInputSchema>
 /** What a YAML or JSON config holds. */
 export type QuorumConfigFile = z.input<typeof configFileSchema>

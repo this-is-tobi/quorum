@@ -381,6 +381,46 @@
             },
             "additionalProperties": false
           },
+          "guidelines": {
+            "description": "The guidelines the review judges by, each a { file } read when the config loads: at most 16 KiB each and in all once cleaned, sent in every request of the profile",
+            "maxItems": 16,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "description": "The file that holds the text, relative to the directory of the config file"
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "doNotReport": {
+            "description": "What the research is told not to report, each a { file } read when the config loads: at most 8 KiB each and in all once cleaned, sent in the research requests alone",
+            "maxItems": 16,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "description": "The file that holds the text, relative to the directory of the config file"
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "builtInDoNotReport": {
+            "description": "false drops the do-not-report text of the built-in profile this one starts from; true, the default, keeps it ahead of the documents",
+            "type": "boolean"
+          },
           "lenses": {
             "description": "The angles of the panel: at least one",
             "minItems": 1,

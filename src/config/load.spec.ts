@@ -710,7 +710,7 @@ describe('readConfigFile on prompt files', () => {
     // A further file that does not exist: reading stops at the 17th, so it is never opened.
     file('quorum.json', profilesNaming([...names, 'missing.md']))
     expect(await issuesOf('quorum.json')).toEqual([
-      { path: 'quorum.json: profiles.p16.prompts.research.file', message: 'takes the prompt files over 1 MiB in total' },
+      { path: 'quorum.json: profiles.p16.prompts.research.file', message: 'takes the prompt and document files over 1 MiB in total' },
     ])
   })
 
@@ -719,7 +719,114 @@ describe('readConfigFile on prompt files', () => {
     file('quorum.json', profilesNaming(names))
     expect(await issuesOf('quorum.json')).toEqual([
       ...Array.from({ length: 16 }, (_, index) => ({ path: `quorum.json: profiles.p${index}.prompts.research.file`, message: 'is over 64 KiB' })),
-      { path: 'quorum.json: profiles.p16.prompts.research.file', message: 'takes the prompt files over 1 MiB in total' },
+      { path: 'quorum.json: profiles.p16.prompts.research.file', message: 'takes the prompt and document files over 1 MiB in total' },
+    ])
+  })
+})
+
+describe('readConfigFile on document files', () => {
+  /** A YAML config of one profile of its own, with the entries of `guidelines` and `doNotReport` written as flow lists. */
+  const documents = (guidelines: string, doNotReport = '[]'): string => `profiles:\n  naming:\n    guidelines: ${guidelines}\n    doNotReport: ${doNotReport}\n`
+
+  it('reads each guideline and do-not-report file relative to the config\'s directory, once per path, and puts its text in its place', async () => {
+    file('conf/guides/style.md', `${BOM}Name things well.\n`)
+    file('conf/skip.md', 'Skip generated files.\n')
+    file('elsewhere/absolute.md', 'Absolute.\n')
+    file('conf/quorum.yaml', documents(`[{file: ./guides/style.md}, {file: ./skip.md}, {file: ${join(dir, 'elsewhere/absolute.md')}}]`, '[{file: skip.md}, {file: ./guides/style.md}]'))
+    expect(await configOf('conf/quorum.yaml')).toEqual({
+      profiles: {
+        naming: {
+          guidelines: [
+            { text: 'Name things well.\n' },
+            { text: 'Skip generated files.\n' },
+            { text: 'Absolute.\n' },
+          ],
+          doNotReport: [
+            { text: 'Skip generated files.\n' },
+            { text: 'Name things well.\n' },
+          ],
+        },
+      },
+    })
+    // Named 32 times, a 64 KiB file counts once toward the 1 MiB of all the files: read each time, they would be 2 MiB.
+    file('conf/big.md', 'x'.repeat(64 * 1024))
+    const big = `[${Array.from<string>({ length: 16 }).fill('{file: big.md}').join(', ')}]`
+    file('conf/many.yaml', documents(big, big))
+    const { profiles } = await configOf('conf/many.yaml') as { profiles: { naming: { guidelines: unknown[], doNotReport: unknown[] } } }
+    expect(profiles.naming.guidelines).toHaveLength(16)
+    expect(profiles.naming.doNotReport).toHaveLength(16)
+  })
+
+  it('reads a document file of a code config, and leaves the module\'s own object as it was', async () => {
+    file('guide.md', 'from a file')
+    file('quorum.mts', 'export const guidelines = [{ file: "./guide.md" }]\nexport default { profiles: { naming: { guidelines } } }\n')
+    expect(await configOf('quorum.mts')).toEqual({
+      profiles: {
+        naming: {
+          guidelines: [
+            { text: 'from a file' },
+          ],
+        },
+      },
+    })
+    const module = await import(pathToFileURL(join(dir, 'quorum.mts')).href) as { guidelines: unknown }
+    expect(module.guidelines).toEqual([
+      { file: './guide.md' },
+    ])
+  })
+
+  it.each<[string, (name: string) => void, string]>([
+    [
+      'is missing',
+      () => undefined,
+      'does not exist',
+    ],
+    [
+      'is a directory',
+      name => mkdirSync(join(dir, name)),
+      'is not a file',
+    ],
+    [
+      'is over 64 KiB',
+      name => file(name, 'x'.repeat(64 * 1024 + 1)),
+      'is over 64 KiB',
+    ],
+    [
+      'is not UTF-8',
+      name => file(name, Uint8Array.from([0xE9])),
+      'is not UTF-8 text',
+    ],
+  ])('refuses a document file that %s, at its file path', async (_name, make, problem) => {
+    make('bad.md')
+    file('good.md', 'fine')
+    file('quorum.yaml', documents('[{file: good.md}, {file: bad.md}]', '[{file: bad.md}, {file: good.md}]'))
+    expect(await issuesOf('quorum.yaml')).toEqual([
+      { path: 'quorum.yaml: profiles.naming.guidelines.1.file', message: problem },
+      { path: 'quorum.yaml: profiles.naming.doNotReport.0.file', message: problem },
+    ])
+  })
+
+  it('reads no document file while the schema finds an issue', async () => {
+    file('quorum.yaml', `${documents('[{file: missing.md}]')}concurrency: 0\n`)
+    expect(await issuesOf('quorum.yaml')).toEqual([
+      { path: 'quorum.yaml: concurrency', message: 'must be at least 1' },
+    ])
+  })
+
+  it('counts documents with the prompt files toward the 1 MiB in all, at the file that takes them over', async () => {
+    const names = Array.from({ length: 17 }, (_, index) => file(`file${index}.md`, 'x'.repeat(64 * 1024)))
+    const entries = (from: number, to: number): string => `[${names.slice(from, to).map(name => `{file: ${name}}`).join(', ')}]`
+    // Two prompt files and fourteen guidelines make 1 MiB; the do-not-report file is the 17th, and the file after it is never opened.
+    file('quorum.yaml', [
+      'profiles:',
+      '  naming:',
+      `    prompts: {research: {file: ${names[0]}}, vote: {file: ${names[1]}}}`,
+      `    guidelines: ${entries(2, 16)}`,
+      `    doNotReport: [{file: ${names[16]}}, {file: missing.md}]`,
+      '',
+    ].join('\n'))
+    expect(await issuesOf('quorum.yaml')).toEqual([
+      { path: 'quorum.yaml: profiles.naming.doNotReport.0.file', message: 'takes the prompt and document files over 1 MiB in total' },
     ])
   })
 })

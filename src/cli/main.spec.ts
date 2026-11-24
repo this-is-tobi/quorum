@@ -858,6 +858,76 @@ describe('runCli', () => {
   })
 })
 
+describe('a profile\'s documents', () => {
+  const GUIDELINE = 'Name things for what they do.'
+  const NAMING_YAML = [
+    'profiles:',
+    '  naming:',
+    '    prompts: {research: "Find naming issues.", vote: "Judge from {{lens.id}}: {{lens.question}}"}',
+    '    lenses:',
+    '      - {id: grounded, question: "Is it backed by a stated convention?"}',
+    '    guidelines: [{file: guides/naming.md}]',
+    '',
+  ].join('\n')
+
+  it('sends a { file } guideline in every request of its profile, a profile of its own', async () => {
+    mkdirSync(join(dir, 'guides'), { recursive: true })
+    write('guides/naming.md', GUIDELINE)
+    const config = write('naming.yaml', NAMING_YAML)
+    const fetchMock = stubChat(JSON.stringify({
+      findings: [FINDING],
+    }), vote(true))
+    const { io, stderr } = harness({
+      env: { ...MODEL, QUORUM_CONFIG: config },
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    // One research request and one vote, each closed by the guideline's block, after the diff's.
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    for (const call of [0, 1]) {
+      const messages = sent(fetchMock, call).body.messages as Array<{ role: string, content: string }>
+      const user = messages.filter(message => message.role === 'user')
+      expect(user).toHaveLength(1)
+      expect(user[0].content).toMatch(/<\/untrusted-diff-[0-9a-f]{8}>\n\n<untrusted-guidelines-[0-9a-f]{8}>\nName things for what they do\.\n<\/untrusted-guidelines-[0-9a-f]{8}>$/)
+    }
+    expect(stderr()).not.toContain(GUIDELINE)
+  })
+
+  it('exits 2 before any call for a document file that cannot be read, at its path, and for one over its cap once cleaned', async () => {
+    const missing = write('missing-guide.yaml', NAMING_YAML.replace('guides/naming.md', 'guides/missing.md'))
+    const over = write('over-guide.yaml', NAMING_YAML.replace('guides/naming.md', 'guides/over.md'))
+    write('guides/over.md', 'x'.repeat(17_020))
+    const fetchMock = stubChat()
+    const unreadable = harness({
+      env: { ...MODEL, QUORUM_CONFIG: missing },
+      stdin: DIFF,
+    })
+    expect(await runCli(unreadable.io)).toBe(EXIT.usage)
+    expect(unreadable.stderr()).toBe(`Error: ${missing}: profiles.naming.guidelines.0.file: does not exist\n`)
+    const large = harness({
+      env: { ...MODEL, QUORUM_CONFIG: over },
+      stdin: DIFF,
+    })
+    expect(await runCli(large.io)).toBe(EXIT.usage)
+    expect(large.stderr()).toBe('Error: profiles.naming.guidelines.0: holds 17020 bytes once cleaned, over the 16 KiB a guidelines document may hold\n')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('prints a { file } guideline as the SHA-256 of its text with --print-config, never the text', async () => {
+    mkdirSync(join(dir, 'guides'), { recursive: true })
+    write('guides/naming.md', GUIDELINE)
+    const config = write('naming-print.yaml', NAMING_YAML)
+    const { io, stdout } = harness({
+      argv: ['--print-config'],
+      env: { ...MODEL, QUORUM_CONFIG: config },
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stdout()).toContain(`\n    prompts:\n      research: ${sha256('Find naming issues.')}\n      vote: ${sha256('Judge from {{lens.id}}: {{lens.question}}')}\n    guidelines:\n      - ${sha256(GUIDELINE)}\n`)
+    expect(stdout()).not.toContain(GUIDELINE)
+    expect(stdout()).not.toContain('doNotReport')
+  })
+})
+
 describe('--state', () => {
   /** A directory of its own for the state a test keeps, which no other test reads. */
   let state = ''

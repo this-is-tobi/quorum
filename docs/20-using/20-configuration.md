@@ -48,6 +48,10 @@ profiles:
         One vote in a {{panel.size}}-voter panel on a naming finding. Lens: {{lens.id}}.
         {{lens.question}}
         Judge only from the blocks you receive. Default keep=false unless convinced.
+    guidelines:
+    - file: ./guidelines/naming.md
+    doNotReport:
+    - file: ./guidelines/skip.md
     lenses:
     - id: meaning
       question: Does the name say something the code does not do?
@@ -58,7 +62,7 @@ profiles:
 
 - **`providers`** names each endpoint, by a name of lower-case letters, digits, `_` and `-`, which starts with a letter. A provider starts from a [preset](./30-providers.md#presets), or from a `protocol` and a `baseUrl`, and sets the [options](./30-providers.md#options) of its adapter: its `contextTokens` ([The context size](#the-context-size)), `auth`, `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField`, `systemPrompt`, `stream` ([Streaming](./30-providers.md#streaming)), `timeoutMs`, `stallTimeoutMs` and `retries` ([Deadlines and retries](./30-providers.md#deadlines-and-retries)). One with `protocol: claude-code` runs your Claude Code CLI instead, has no base URL, and sets `args` besides: [Claude Code](#claude-code).
 - **`roles`** says which provider researches and which votes. A profile's own `roles`, and a lens's `provider`, override them.
-- **`profiles`** defines the review profiles: [Profiles](./40-profiles.md), [Lenses and policy](./50-lenses-and-policy.md) and [Prompts](./60-prompts.md) say what each field means. A prompt is a string, or `{ file }`: the file's text. A prompt file resolves against the directory of the config file, whatever the working directory is, and holds at most 64 KiB, and the prompt files of a config 1 MiB in all. A profile's `failOn` is the confidence at or above which its kept findings fail the review with exit `1`, `high` when unset, and `none` for a profile that reports and fails nothing; the deprecated `gating` reads as `high` for `true` and `none` for `false`, with a warning: [Gating](./40-profiles.md#gating).
+- **`profiles`** defines the review profiles: [Profiles](./40-profiles.md), [Lenses and policy](./50-lenses-and-policy.md) and [Prompts](./60-prompts.md) say what each field means. A prompt is a string, or `{ file }`: the file's text. A prompt file resolves against the directory of the config file, whatever the working directory is, and holds at most 64 KiB, and the prompt and document files of a config 1 MiB in all. A profile's `guidelines` and `doNotReport` are lists of at most 16 `{ file }` entries each, read the same way: the criteria every request of the profile judges by, and what its research does not report; `builtInDoNotReport: false` drops the do-not-report text of the built-in profile it starts from. They are cleaned and capped, 16 KiB of guidelines and 8 KiB of do-not-report text, and `--print-config` prints each as its hash: [Rules and guidelines](./45-rules-and-guidelines.md). A profile's `failOn` is the confidence at or above which its kept findings fail the review with exit `1`, `high` when unset, and `none` for a profile that reports and fails nothing; the deprecated `gating` reads as `high` for `true` and `none` for `false`, with a warning: [Gating](./40-profiles.md#gating).
 - **`exclude`** lists the files every review leaves out, as path patterns: [Excludes](#excludes).
 - **`send`** lists the files to send the models though they are held back as secrets, each a path as the diff writes it: [Sending a held file](#sending-a-held-file).
 - **`strict`**, `true` or `false`, refuses before any call what is otherwise a warning that a key may be exposed: today, a key sent over plain `http` to a host other than this machine. It does not yet cover a credential in `headers` or `query`, which goes over plain `http` unrefused. `QUORUM_STRICT=true` turns it on too, and neither turns the other off: [Keys](#keys).
@@ -640,9 +644,9 @@ A named config is trusted input, as code is. Naming it is the decision to trust 
 
 - **It chooses where each key goes.** A `baseUrl` beside an `apiKeyEnv` sends the key that variable holds to that host, whoever wrote the file.
 - **A TS or JS config runs.** It runs when quorum loads it, with the job's environment, so everything the job holds, its keys included, is in its reach. A YAML or JSON config runs nothing.
-- **Its prompt files are as trusted as it is.** A prompt path resolves against the config's directory without being confined to it, and a prompt is the instruction every model of the profile receives, so whoever writes it steers the review. A config copied from the base branch into the pull request's checkout, which names `./prompts/research.md`, reads the pull request's own copy of that prompt.
+- **Its prompt files and document files are as trusted as it is.** A prompt or document path resolves against the config's directory without being confined to it, and a prompt is the instruction every model of the profile receives, a guideline the criteria they judge by and a do-not-report text what the finder leaves out, so whoever writes one steers the review. A config copied from the base branch into the pull request's checkout, which names `./prompts/research.md` or `./guidelines/naming.md`, reads the pull request's own copy of that file.
 
-So in CI a named config comes from the base branch, or from another path the pull request cannot write, and never from the pull request's checkout, and its prompt files come from the same place. Check out the base branch's config directory, not one file of it:
+So in CI a named config comes from the base branch, or from another path the pull request cannot write, and never from the pull request's checkout, and its prompt and document files come from the same place. Check out the base branch's config directory, not one file of it:
 
 ```bash
 git worktree add --detach ../base origin/main
@@ -707,7 +711,10 @@ Each of these exits `2` with `Error:` and the message, instead of the banner and
 | `quorum.yaml: must hold a mapping of settings` | The file holds a list or a scalar |
 | `quorum.yaml: providers.a.modl: is not a known field` | A field quorum does not know, `apiKey` in a YAML or JSON file included. Every issue of the file is reported at once, one per line |
 | `quorum.yaml: version: must be 1, the only config version this quorum reads: upgrade quorum to read a later one` | A `version` other than `1` |
-| `quorum.yaml: profiles.naming.prompts.research.file: does not exist` | A prompt file that cannot be read: it does not exist, is not a file, is over 64 KiB, is not UTF-8, or takes the prompt files over 1 MiB in all |
+| `quorum.yaml: profiles.naming.prompts.research.file: does not exist` | A prompt file that cannot be read: it does not exist, is not a file, is over 64 KiB, is not UTF-8, or takes the prompt and document files over 1 MiB in all |
+| `quorum.yaml: profiles.naming.guidelines.0.file: is over 64 KiB` | A guidelines or do-not-report file that cannot be read, for the same reasons, or that takes the prompt and document files over 1 MiB in all: the path is the entry's own |
+| `profiles.naming.guidelines.0: holds 17020 bytes once cleaned, over the 16 KiB a guidelines document may hold` | A document over its cap once cleaned, the first that takes a kind over the cap of all of them, or one the cleaner cannot settle: [Rules and guidelines](./45-rules-and-guidelines.md#the-caps-and-the-cleaner) |
+| `quorum.yaml: profiles.naming.guidelines: must hold at most 16 documents` | More than 16 entries under `guidelines` or `doNotReport` |
 | `quorum.yaml: profiles.naming.failOn: must be one of high, medium, low or none` | A `failOn` that is none of the four levels |
 | `profiles.naming.gating: is deprecated and cannot be set with failOn: remove it` | A profile that sets both `failOn` and the deprecated `gating`: set `failOn` alone |
 | `quorum.yaml: exclude.2: ends with /, so it matches no file: end it with /** to leave out what the directory holds` | A pattern that can mislead; [Excludes](#excludes) lists what each message refuses |
