@@ -6,6 +6,8 @@ import { loadConfig } from '../config/load.ts'
 import { parseFailOn } from '../config/profiles.ts'
 import type { FailOnOverride } from '../config/profiles.ts'
 import type { ResolvedConfig } from '../config/resolve.ts'
+import { reviewSettings } from '../config/settings.ts'
+import type { SettingsFacts } from '../config/settings.ts'
 import { readContext } from '../context/read.ts'
 import { systemClock } from '../core/clock.ts'
 import { ConfigError } from '../core/errors.ts'
@@ -14,7 +16,7 @@ import { MAX_TIMEOUT_MS } from '../core/ports.ts'
 import { DEFAULT_MAX_FINDINGS } from '../core/prompts.ts'
 import { VERSION } from '../core/version.ts'
 import { outcome } from '../core/outcome.ts'
-import type { Estimate, Quorum, ReviewContext } from '../core/types.ts'
+import type { Estimate, Quorum, ReviewContext, RuntimeRecord } from '../core/types.ts'
 import { renderReport } from '../report/registry.ts'
 import { publicView } from '../report/view.ts'
 import { readDiffInput } from '../sources/diff.ts'
@@ -381,10 +383,15 @@ export async function runCli(io: CliIO): Promise<number> {
       return EXIT.interrupted
     }
     // From here the first signal is the review's interrupt, which resolves it with what it read, never its abort.
-    // The review's input is the diff and what it came from, never `read.repository`, which is a path.
+    // The review's input is the diff, what it came from and what it ran under, never `read.repository`, which is a path.
     const result = await quorum.review({
       diff: read.diff,
       source: read.source,
+      settings: reviewSettings(config, {
+        budgets: quorum.budgets,
+        runtime: runtimeOf(),
+        bounds: bounded?.settings,
+      }),
       leftOut: read.leftOut,
       send,
       context,
@@ -439,6 +446,21 @@ interface PathBounds {
   readonly limits: { readonly maxReviewTokens: number, readonly reviewTimeoutMs: number, readonly findingsCap?: number }
   /** The same, as the view's facts name them, the cap with where it came from. */
   readonly facts: BoundFacts
+  /** The same three bounds, each with where it came from, as the result records them (`meta.settings`). */
+  readonly settings: NonNullable<SettingsFacts['bounds']>
+}
+
+/** What runs the review: Bun's name and version when it runs under Bun, else Node's, then the platform and the architecture of the process. */
+function runtimeOf(): RuntimeRecord {
+  const bun = process.versions.bun as string | undefined
+  return {
+    name: bun === undefined
+      ? 'node'
+      : 'bun',
+    version: bun ?? process.versions.node,
+    platform: process.platform,
+    arch: process.arch,
+  }
 }
 
 /**
@@ -450,7 +472,9 @@ interface PathBounds {
  * one, made under those bounds, with the warnings they call for: a large review, or a cap below what the estimate
  * expects. The review is never held for its size: it runs to its cap or its deadline, and what they stop is a gap.
  * `--large` warns and does nothing. The estimate's counts and durations are scaled for a person, and exact (`words`) under `--progress json`,
- * where a program may parse them.
+ * where a program may parse them. The result records the same three bounds with where each came from (`settings`): the token cap
+ * is `derived` unless the config sets it, the deadline `default` (a path review's own 24 hours, not derived from the estimate) unless the config sets
+ * it, and the finding cap `derived` unless the config sets `findingsCap` or `maxFindings`.
  */
 function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: string, readonly send: readonly string[], readonly context: ReviewContext }, config: ResolvedConfig, large: boolean, words?: NumberWords): PathBounds {
   const first = quorum.estimate(input)
@@ -497,6 +521,26 @@ function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: st
     estimate,
     limits,
     facts: { cap, deadlineMs, findingsCap },
+    settings: {
+      maxReviewTokens: {
+        value: cap.tokens,
+        origin: config.maxReviewTokens === undefined
+          ? 'derived'
+          : 'config',
+      },
+      reviewTimeoutMs: {
+        value: deadlineMs,
+        origin: config.reviewTimeoutMs === undefined
+          ? 'default'
+          : 'config',
+      },
+      findingsCap: {
+        value: findingsCap,
+        origin: derived
+          ? 'derived'
+          : 'config',
+      },
+    },
   }
 }
 

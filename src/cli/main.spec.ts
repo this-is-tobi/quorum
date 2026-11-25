@@ -3888,6 +3888,122 @@ describe('the sources', () => {
     expect(texts[2]).toBe(`bounds: the token cap ${cost?.[1]}, this estimate's worst case; the deadline 86400000 ms, the longest allowed; the finding cap 50, the default, which holds four per research part; the config sets none of them`)
   })
 
+  /** The key of the providers of the settings tests: assembled at run time, 14 characters. */
+  const SETTINGS_KEY = ['sk', 'test', '4fR9xK2mQ7'].join('-')
+  /** A config of one provider on the loopback, whose key is read from `SETTINGS_KEY`'s variable, and whose body holds a safe value and the key. */
+  const SETTINGS_YAML = [
+    'providers:',
+    '  local:',
+    '    protocol: openai-compatible',
+    '    baseUrl: http://127.0.0.1:11434/v1',
+    '    model: m',
+    '    contextTokens: 131072',
+    '    apiKeyEnv: LOCAL_KEY',
+    '    headers: {x-team: hdr-team}',
+    `    extraBody: {reasoning_effort: low, api_token: ${SETTINGS_KEY}}`,
+    '',
+  ].join('\n')
+
+  it('records a path review\'s settings with its derived bounds, the runtime and no origin of a provider', async () => {
+    const config = write('settings-path.yaml', SETTINGS_YAML)
+    stubChat(JSON.stringify({ findings: [] }))
+    const { io, stdout, stderr } = harness({
+      argv: [
+        '--config',
+        config,
+        '--path',
+        'src',
+        '-f',
+        'json',
+      ],
+      env: { LOCAL_KEY: SETTINGS_KEY },
+      git: pathGit().seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const bounds = /the finding cap (\d+)/.exec(estimateOf(stderr()).lines[2])
+    const { settings } = (JSON.parse(stdout()) as { meta: { settings: Record<string, any> } }).meta
+    // The cap follows the estimate, the deadline is the longest allowed, and the finding cap is four per part, at least 50: each derived or the default, as the bounds line says.
+    expect(settings.maxReviewTokens.origin).toBe('derived')
+    expect(settings.maxReviewTokens.value).toBeGreaterThan(2_000_000)
+    expect(settings.findingsCap).toEqual({
+      value: Number(bounds?.[1]),
+      origin: 'derived',
+    })
+    expect(settings.reviewTimeoutMs).toEqual({ value: 86_400_000, origin: 'default' })
+    expect(settings.partTokens).toEqual({ value: 32_768, origin: 'default' })
+    expect(settings.maxFindings).toEqual({ value: 50, origin: 'default' })
+    // The runtime is the process's: Bun or Node, its version, platform and architecture.
+    expect(settings.runtime).toEqual({
+      name: process.versions.bun === undefined
+        ? 'node'
+        : 'bun',
+      version: process.versions.bun ?? process.versions.node,
+      platform: process.platform,
+      arch: process.arch,
+    })
+    expect(settings.providers.local).toEqual({
+      protocol: 'openai-compatible',
+      model: 'm',
+      contextTokens: 131_072,
+      headers: { 'x-team': '[redacted]' },
+      extraBody: { reasoning_effort: 'low', api_token: '[redacted]' },
+    })
+    expect(Object.keys(settings.profiles)).toEqual(['security'])
+    // No origin, no base URL, no key and no header value anywhere in the file.
+    for (const secret of [
+      '127.0.0.1',
+      '11434',
+      SETTINGS_KEY,
+      'hdr-team',
+    ]) expect(stdout()).not.toContain(secret)
+  })
+
+  it('records a diff review\'s settings from its config and the defaults, and a variable over a config value as the config\'s', async () => {
+    const config = write('settings-diff.yaml', `${SETTINGS_YAML}maxReviewTokens: 500000\nmaxFindings: 30\nstrict: true\n`)
+    stubChat(JSON.stringify({ findings: [] }))
+    const { io, stdout } = harness({
+      argv: ['--config', config, '-f', 'json'],
+      env: { LOCAL_KEY: SETTINGS_KEY, QUORUM_REVIEW_TIMEOUT_MS: '120000' },
+      stdin: DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const { settings } = (JSON.parse(stdout()) as { meta: { settings: Record<string, any> } }).meta
+    expect(settings.maxReviewTokens).toEqual({ value: 500_000, origin: 'config' })
+    expect(settings.reviewTimeoutMs).toEqual({ value: 120_000, origin: 'config' })
+    expect(settings.maxFindings).toEqual({ value: 30, origin: 'config' })
+    expect(settings.findingsCap).toEqual({ value: 30, origin: 'config' })
+    expect(settings.partTokens).toEqual({ value: 32_768, origin: 'default' })
+    expect(settings.strict).toBe(true)
+    expect(settings.concurrency).toBe('auto')
+    expect(settings.exclude).toEqual([])
+    // The profile's budgets are the quorum's own, which --print-config prints.
+    expect(settings.profiles.security.research).toBe('local')
+    expect(Object.keys(settings.profiles.security.lenses)).toEqual(['reachability', 'impact', 'defenses'])
+    expect(settings.profiles.security.prompts.research).toBe(`sha256:${documentSha256(securityProfile.prompts.research)}`)
+    for (const secret of ['127.0.0.1', SETTINGS_KEY, 'hdr-team']) expect(stdout()).not.toContain(secret)
+  })
+
+  it('records the settings of a review run on the environment alone, with no origin, and the public view withholds them', async () => {
+    stubChat(JSON.stringify({ findings: [] }))
+    const full = harness({
+      argv: ['-f', 'json'],
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(full.io)).toBe(EXIT.ok)
+    expect(JSON.parse(full.stdout()).meta.settings.providers.default).toEqual({ protocol: 'openai-compatible', model: 'm', contextTokens: 131_072 })
+    expect(full.stdout()).not.toContain('localhost')
+    stubChat(JSON.stringify({ findings: [] }))
+    const view = harness({
+      argv: ['-f', 'json', '--view', 'public'],
+      env: MODEL,
+      stdin: DIFF,
+    })
+    expect(await runCli(view.io)).toBe(EXIT.ok)
+    expect(JSON.parse(view.stdout()).meta).not.toHaveProperty('settings')
+  })
+
   it('runs a path review that 0.8.0 would have held, its expected spend and calls in flight past 2000000, to its end, under its worst case as cap and a deadline of 24 hours, after the large review\'s warning', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => chatReply(JSON.stringify({ findings: [] })))
     vi.stubGlobal('fetch', fetchMock)

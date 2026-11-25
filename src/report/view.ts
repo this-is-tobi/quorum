@@ -17,6 +17,9 @@
  *   level and coverage, and the time of each of its stages, as it keeps the review's own `durationMs`;
  * - **the usage:** the tokens say how a review ran, and how near it came to its cap, which tells an author
  *   how much text it takes to push the review into a gap;
+ * - **`meta.settings`:** the cap, the deadline and the finding cap a flood aims at, the runtime, the providers' presets, protocols and
+ *   models, each provider's header and query keys and the safe values of its `extraBody`, and the hashes of each profile's prompts
+ *   and lens questions: how the review was set up, for the operator who compares two runs and no one else;
  * - **each profile's research counts:** the findings its research listed, the panel was asked about and
  *   the cap left unread measure how near research came to the finding cap, which is what a flood of
  *   findings aims at, so the view keeps none, whether or not a profile hit the cap;
@@ -156,7 +159,7 @@ function publicMeta(result: QuorumResult): PublicMeta {
 /**
  * The public view of a result, or of a public view, which is returned as it is: the result less each vote's
  * reasoning and error, the discarded findings (counted in `meta.profiles.<id>.discarded`), the providers, the
- * usage, the models the replies named (`meta.calls`), each profile's research counts and each gap's detail. See the module's comment for why each goes. The result is never changed, and
+ * usage, the models the replies named (`meta.calls`), the settings the review ran under (`meta.settings`), each profile's research counts and each gap's detail. See the module's comment for why each goes. The result is never changed, and
  * the view shares no array or object with it.
  *
  * This is the check every public sink goes through, for a library caller too: the view, made here or given,

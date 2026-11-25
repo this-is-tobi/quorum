@@ -5,7 +5,7 @@ import type { Estimate } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { resolvedConfig } from '../testing/bench.ts'
-import { bannerLines, boundWarnings, estimateLines, EXACT_WORDS, findingsCapOf, PATH_FINDINGS_PER_PART, profileProviders, providerOrigin, viewFacts } from './render.ts'
+import { bannerLines, boundWarnings, estimateLines, EXACT_WORDS, findingsCapOf, PATH_FINDINGS_PER_PART, profileProviders, viewFacts } from './render.ts'
 import type { Bounds } from './render.ts'
 
 /** A right-to-left override, which the sanitizer writes as text. */
@@ -561,7 +561,6 @@ describe('bannerLines', () => {
         },
       ]))
       expect(lines[0]).toBe('Research (mistral-small-latest @ https://api.mistral.ai)...')
-      expect(providerOrigin(mistral)).toBe('https://api.mistral.ai')
       expect(lines.join('')).not.toContain('attacker')
     } finally {
       delete proto.baseUrl

@@ -239,7 +239,7 @@
       "maximum": 9007199254740991
     },
     "maxFindings": {
-      "description": "The most findings of a research reply each profile reads, the only ones that can reach its panel",
+      "description": "The most findings each research request asks a reply to list, which sizes its reply budget; the panel's own cap is findingsCap, which is maxFindings when unset",
       "type": "integer",
       "minimum": 1,
       "maximum": 9007199254740991

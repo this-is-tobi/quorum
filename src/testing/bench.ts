@@ -404,6 +404,7 @@ export function resultWith(parts: {
       startedAt: '2026-01-01T00:00:00.000Z',
       durationMs: 1,
       source: { kind: 'diff' },
+      settings: null,
       profiles: {
         security: {
           providers: {

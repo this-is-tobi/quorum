@@ -36,7 +36,7 @@ roles:
 # The most findings of the research the panel reads in one review. maxFindings, 50 when unset,
 # sizes every research request and is this cap while it is unset: raise findingsCap when a review
 # says findings-capped, as QUORUM_FINDINGS_CAP does for one run.
-findingsCap: 300
+# findingsCap: 300
 profiles:
   payments:
     extends: security
@@ -259,7 +259,7 @@ Each row is `contextTokens` less 1,791 for the instructions, the fences, the rep
 
 A reply takes room from the window, so each request reserves the room its reply needs, and no more. With `maxTokens` unset, quorum derives a reply budget for each kind of request from the provider's window, its `maxTokens` and its thinking level, and the research request asks for as many findings as its budget holds. A request used to reserve and send `maxTokens`, else 16000, whatever it was: a window of 32768 tokens gave half of it to a reply of a few dozen tokens, and a window of 16384 tokens or less refused every request.
 
-With `W` the window, `M` the most findings a research reply is read for (`maxFindings`, 50 by default), and `T` the tokens the provider's thinking may take:
+With `W` the window, `M` the most findings a research request asks a reply for (`maxFindings`, 50 by default), and `T` the tokens the provider's thinking may take:
 
 | Thinking | `T` |
 | --- | --- |
@@ -268,7 +268,7 @@ With `W` the window, `M` the most findings a research reply is read for (`maxFin
 | `off` | 0 |
 
 - **A research reply** is given what its findings and its thinking need, and at most a quarter of the window: `min(M * 256 + 32 + T, W / 4)` tokens, rounded down. Three quarters of the window stay for the request. The 256 tokens are what one finding is assumed to take and the 32 the reply's envelope.
-- **The findings it asks for** are what the budget holds once the thinking has taken its share, which is at most half of it: with `R` the budget and `T'` the lesser of `T` and `R / 2`, `N = max(1, min(M, (R - T' - 32) / 256))`, rounded down. The request says so in its system message, after the instructions and before the reply format: `List at most <N> findings, the most serious first. For each, quote the shortest verbatim span of the diff that shows it.` A reply that lists more is read as any reply is, in turn with the others up to `maxFindings` in all; the line is what is asked, not a cap.
+- **The findings it asks for** are what the budget holds once the thinking has taken its share, which is at most half of it: with `R` the budget and `T'` the lesser of `T` and `R / 2`, `N = max(1, min(M, (R - T' - 32) / 256))`, rounded down. The request says so in its system message, after the instructions and before the reply format: `List at most <N> findings, the most serious first. For each, quote the shortest verbatim span of the diff that shows it.` A reply that lists more is read as any reply is, in turn with the others up to the finding cap (`findingsCap`, else `maxFindings`) in all; the line is what is asked, not a cap.
 - **A vote's reply** is given 1,024 tokens for its verdict and its reasoning, plus `T`, and at most a quarter of the window: `min(1024 + T, W / 4)`.
 - **`maxTokens`, when set, is the ceiling of every reply.** A research request sends it as its budget, and a vote sends the lesser of it and the vote's own, so a large `maxTokens` set for research no longer reserves that much for every vote. `N` is then computed from it as above.
 
@@ -668,7 +668,7 @@ The diff reads the base branch's attributes too, not the checkout's: [Using it i
 
 The runtime matters as much. `bun` reads a `.env` and a `bunfig.toml` from the working directory before quorum's own code runs. A planted `.env` can set `QUORUM_CONFIG`, which names a config of the pull request's (a TS or JS one then runs), or any other `QUORUM_*` variable, such as a base URL for the finder, and a planted `bunfig.toml` can run code. The binary reads neither, and neither does Node. Review a checkout with the binary, or with the `quorum` that `npm install -g` installs, which runs on Node, never with `bun run start`, and never through `npx`, `npm exec` or `pnpm dlx`, which read the checkout's `.npmrc`, where `npm install -g` does not read the project's: [Nothing read from the working directory](../30-security/10-threat-model.md#nothing-read-from-the-working-directory).
 
-[`--print-config`](./10-cli.md#printing-the-resolved-config) shows what a job will run: the file, the providers' origins, the profiles and a hash of each prompt, with no key.
+[`--print-config`](./10-cli.md#printing-the-resolved-config) shows what a job will run: the file, the providers' origins, the profiles and a hash of each prompt, with no key. A name in a provider's `headers`, `query` or `extraBody` that is not a safe string (one that holds a credential, the provider's key or an e-mail address, a run of 20 or more characters mixing letters and digits such as `x-amz-content-sha256`, or more than 64 code points) prints as one `"[redacted]": "[redacted]"` entry, and every other name prints as before.
 
 ## Configuration errors
 

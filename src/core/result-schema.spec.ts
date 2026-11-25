@@ -2,9 +2,9 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 import type { z } from 'zod'
 import { publicView } from '../report/view.ts'
 import { corpusResult } from '../testing/github-corpus.ts'
-import { blankResult, cast, reportMeta, reportResult, SQL, TOKEN } from '../testing/report.ts'
+import { blankResult, cast, reportMeta, reportResult, SETTINGS, SQL, TOKEN } from '../testing/report.ts'
 import { PROVIDER_ERROR_KINDS } from './errors.ts'
-import { publicViewSchema, resultSchema } from './result-schema.ts'
+import { publicViewSchema, resultSchema, settingsSchema } from './result-schema.ts'
 import type { PublicView, QuorumResult } from './types.ts'
 
 /** `T` with no `readonly` at any depth, its optional fields still optional and its tuples tuples: the shape a JSON parse gives. */
@@ -525,7 +525,7 @@ describe('the schemas of a result', () => {
     expect(resultSchema.parse(full)).toEqual(full)
     expect(JSON.stringify(resultSchema.parse(full))).toBe(JSON.stringify(full))
     // The record sits after the usage and before the gaps, its keys in the order the core writes them.
-    expect(Object.keys(full.meta).slice(4, 7)).toEqual(['profiles', 'usage', 'calls'])
+    expect(Object.keys(full.meta).slice(5, 8)).toEqual(['profiles', 'usage', 'calls'])
     expect(Object.keys(full.meta.calls.p)).toEqual(['model', 'served', 'servedOthers'])
     expect(Object.keys(full.meta.calls.p.served[0])).toEqual(['model', 'calls'])
     const withCalls = (changes: unknown): Forged => ({
@@ -1620,5 +1620,436 @@ describe('the schemas of a result', () => {
     expect(shape === 'full'
       ? resultSchema.safeParse(value).success
       : publicViewSchema.safeParse(value).success).toBe(false)
+  })
+})
+
+describe('meta.settings', () => {
+  it('reads meta.settings or null, after the source, and refuses a result without it', () => {
+    const recorded = saved(reportResult({
+      meta: { settings: SETTINGS },
+    }))
+    expect(resultSchema.parse(recorded)).toEqual(recorded)
+    expect(JSON.stringify(resultSchema.parse(recorded))).toBe(JSON.stringify(recorded))
+    // The record sits after the source, its keys in the order `reviewSettings` writes them.
+    expect(Object.keys(recorded.meta).slice(3, 6)).toEqual(['source', 'settings', 'profiles'])
+    expect(Object.keys(recorded.meta.settings ?? {})).toEqual([
+      'runtime',
+      'strict',
+      'concurrency',
+      'exclude',
+      'partTokens',
+      'maxFindings',
+      'findingsCap',
+      'maxReviewTokens',
+      'reviewTimeoutMs',
+      'providers',
+      'profiles',
+    ])
+    // A review that was given none records null, which is a result too.
+    const unrecorded = saved(reportResult())
+    expect(unrecorded.meta.settings).toBeNull()
+    expect(resultSchema.parse(unrecorded)).toEqual(unrecorded)
+    // A result of 0.13.0 has no such field, and a meta without it is no result.
+    const { settings: _settings, ...older } = recorded.meta
+    expect(resultSchema.safeParse({ ...recorded, meta: older }).success).toBe(false)
+    // The public view withholds it: it holds none, and a view that holds one is no view quorum writes.
+    const view = saved(publicView(reportResult({
+      meta: { settings: SETTINGS },
+    })))
+    expect(view.meta).not.toHaveProperty('settings')
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(publicViewSchema.safeParse({
+      ...view,
+      meta: {
+        ...view.meta,
+        settings: SETTINGS,
+      },
+    }).success).toBe(false)
+  })
+})
+
+describe('settingsSchema', () => {
+  /** The fixture with `changes` laid over it, as the untyped data a forged record would be. */
+  const forged = (changes: Forged): Forged => ({
+    ...SETTINGS,
+    ...changes,
+  })
+  /** The fixture's provider with `fields` laid over its own, as the untyped data it would be. */
+  const provider = (fields: Forged): Forged => forged({
+    providers: {
+      p: {
+        ...SETTINGS.providers.p,
+        ...fields,
+      },
+    },
+  })
+  /** An object nested `levels` deep: `{ a: { a: ... leaf } }`. */
+  const nested = (levels: number, leaf: unknown): unknown => levels === 0
+    ? leaf
+    : {
+        a: nested(levels - 1, leaf),
+      }
+  const accepts = (value: unknown): boolean => settingsSchema.safeParse(value).success
+
+  it('reads the fixture, and a record of the shape reviewSettings builds', () => {
+    expect(settingsSchema.parse(SETTINGS)).toEqual(SETTINGS)
+    expect(accepts(forged({ concurrency: 4 }))).toBe(true)
+  })
+
+  it.each([
+    ['config', true],
+    ['default', true],
+    ['derived', true],
+    ['guessed', false],
+    ['', false],
+  ])('reads the origin %j of a bound as accepted: %j', (origin, accepted) => {
+    expect(accepts(forged({
+      partTokens: { value: 1024, origin },
+    }))).toBe(accepted)
+  })
+
+  it.each([
+    [
+      'a bound that is no whole number',
+      { value: 1.5, origin: 'config' },
+    ],
+    [
+      'a bound of 0',
+      { value: 0, origin: 'config' },
+    ],
+    [
+      'a bound that is a string',
+      { value: '1024', origin: 'config' },
+    ],
+    [
+      'a bound with a field of its own',
+      { value: 1024, origin: 'config', note: 'x' },
+    ],
+    [
+      'a bound with no origin',
+      { value: 1024 },
+    ],
+    ['a bound that is a number', 1024],
+  ])('refuses %s', (_name, bound) => {
+    expect(accepts(forged({ maxReviewTokens: bound }))).toBe(false)
+  })
+
+  it('refuses a field a record does not hold, at any level', () => {
+    expect(accepts({ ...SETTINGS, baseUrl: 'https://gw.example' })).toBe(false)
+    expect(accepts(forged({
+      runtime: { ...SETTINGS.runtime, host: 'h' },
+    }))).toBe(false)
+    expect(accepts(forged({
+      profiles: {
+        security: {
+          ...SETTINGS.profiles.security,
+          prompts: { ...SETTINGS.profiles.security.prompts, text: 't' },
+        },
+      },
+    }))).toBe(false)
+    const { exclude: _exclude, ...without } = SETTINGS
+    expect(accepts(without)).toBe(false)
+  })
+
+  it('counts a string by characters, 4096 at most, and a record or a list by entries, 256 at most', () => {
+    expect(accepts(forged({
+      runtime: {
+        ...SETTINGS.runtime,
+        name: 'x'.repeat(4096),
+      },
+    }))).toBe(true)
+    expect(accepts(forged({
+      runtime: {
+        ...SETTINGS.runtime,
+        name: 'x'.repeat(4097),
+      },
+    }))).toBe(false)
+    expect(accepts(forged({
+      exclude: Array.from({ length: 256 }, (_, index) => `p${index}`),
+    }))).toBe(true)
+    expect(accepts(forged({
+      exclude: Array.from({ length: 257 }, (_, index) => `p${index}`),
+    }))).toBe(false)
+    const providers = (count: number): Forged => Object.fromEntries(Array.from({ length: count }, (_, index) => [
+      `p${index}`,
+      { model: 'm' },
+    ]))
+    expect(accepts(forged({
+      providers: providers(256),
+    }))).toBe(true)
+    expect(accepts(forged({
+      providers: providers(257),
+    }))).toBe(false)
+    const headers = (count: number): Forged => Object.fromEntries(Array.from({ length: count }, (_, index) => [`h${index}`, '[redacted]']))
+    expect(accepts(provider({
+      headers: headers(256),
+    }))).toBe(true)
+    expect(accepts(provider({
+      headers: headers(257),
+    }))).toBe(false)
+    expect(accepts(provider({
+      model: 'x'.repeat(4096),
+    }))).toBe(true)
+    expect(accepts(provider({
+      model: 'x'.repeat(4097),
+    }))).toBe(false)
+  })
+
+  it('reads a prompt and a lens question as a hash alone, never a text', () => {
+    const security = SETTINGS.profiles.security
+    const hashed = (changes: Forged): Forged => forged({
+      profiles: {
+        security: {
+          ...security,
+          ...changes,
+        },
+      },
+    })
+    expect(accepts(hashed({
+      prompts: { research: 'Find injection bugs.', vote: security.prompts.vote },
+    }))).toBe(false)
+    expect(accepts(hashed({
+      prompts: { research: security.prompts.research, vote: `sha256:${'A'.repeat(64)}` },
+    }))).toBe(false)
+    expect(accepts(hashed({
+      lenses: {
+        impact: { provider: 'p', question: 'Would it matter?' },
+      },
+    }))).toBe(false)
+    expect(accepts(hashed({
+      lenses: {
+        impact: { provider: 'p', question: `sha256:${'f'.repeat(64)}` },
+      },
+    }))).toBe(true)
+    expect(accepts(hashed({
+      replyTokens: { votes: {} },
+    }))).toBe(true)
+    expect(accepts(hashed({
+      replyTokens: { research: 1.5, votes: {} },
+    }))).toBe(false)
+  })
+
+  it.each([
+    ['baseUrl', 'https://gw.example/v1'],
+    ['origin', 'https://gw.example'],
+    ['apiKey', '[redacted]'],
+    ['command', '/usr/bin/claude'],
+    [
+      'args',
+      ['--effort', 'high'],
+    ],
+    ['apiKeyEnv', 'GATEWAY_KEY'],
+  ])('refuses a provider that holds %s, which a result never records', (field, value) => {
+    expect(accepts(provider({ [field]: value }))).toBe(false)
+  })
+
+  it('reads every field a provider view writes, a provider object\'s included', () => {
+    expect(accepts(provider({
+      protocol: 'openai-compatible',
+      auth: { header: 'x-gateway-key', prefix: 'Key ' },
+      structuredOutput: 'json-schema',
+      temperature: null,
+      maxTokens: 1000,
+      maxTokensField: 'max_tokens',
+      thinking: 'low',
+      systemPrompt: 'inline',
+      stream: true,
+      timeoutMs: 60_000,
+      stallTimeoutMs: 120_000,
+      retries: 2,
+    }))).toBe(true)
+    expect(accepts(provider({ auth: 'bearer' }))).toBe(true)
+    expect(accepts(forged({
+      providers: {
+        object: { implements: 'Provider', model: 'm', timeoutMs: 60_000 },
+      },
+    }))).toBe(true)
+    expect(accepts(provider({ stream: 'yes' }))).toBe(false)
+    expect(accepts(provider({ retries: Number.POSITIVE_INFINITY }))).toBe(false)
+    expect(accepts(provider({
+      auth: { header: 'x', token: 't' },
+    }))).toBe(false)
+  })
+
+  it('reads the keys of headers and query, and refuses a value that is not the redacted word', () => {
+    expect(accepts(provider({
+      headers: { 'x-team': '[redacted]' },
+      query: { 'api-version': '[redacted]' },
+    }))).toBe(true)
+    expect(accepts(provider({
+      headers: { '[redacted]': '[redacted]' },
+    }))).toBe(true)
+    expect(accepts(provider({
+      headers: { 'x-team': 'team-a' },
+    }))).toBe(false)
+    expect(accepts(provider({
+      query: { v: '1' },
+    }))).toBe(false)
+    expect(accepts(provider({
+      headers: ['[redacted]'],
+    }))).toBe(false)
+  })
+
+  describe('extraBody', () => {
+    const body = (extraBody: unknown): boolean => accepts(provider({ extraBody }))
+    const PAIR = String.fromCodePoint(0x1F600)
+
+    it.each([
+      ['a string', 'low'],
+      ['a number', 0.2],
+      ['a boolean', true],
+      ['null', null],
+      ['the redacted word', '[redacted]'],
+      [
+        'a list',
+        ['</answer>', '\n\n'],
+      ],
+      [
+        'an object',
+        { include_usage: true },
+      ],
+    ])('reads %s as a value', (_name, value) => {
+      expect(body({ k: value })).toBe(true)
+    })
+
+    it('reads the redacted word as a key, as the rule writes it for a key it refused', () => {
+      expect(body({ '[redacted]': '[redacted]' })).toBe(true)
+      expect(body({ before: 1, '[redacted]': '[redacted]', reasoning_effort: 'low' })).toBe(true)
+      expect(body({})).toBe(true)
+    })
+
+    it('counts a string by code points, as the rule does, 64 at most, an astral one as one', () => {
+      expect(body({
+        k: PAIR.repeat(64),
+      })).toBe(true)
+      expect(body({
+        k: PAIR.repeat(65),
+      })).toBe(false)
+      expect(body({
+        k: 'x'.repeat(64),
+      })).toBe(true)
+      expect(body({
+        k: 'x'.repeat(65),
+      })).toBe(false)
+      expect(body({ k: `${'x'.repeat(63)}${PAIR}` })).toBe(true)
+      expect(body({
+        k: 'x'.repeat(10_000),
+      })).toBe(false)
+      expect(body({ [PAIR.repeat(64)]: 1 })).toBe(true)
+      expect(body({ [PAIR.repeat(65)]: 1 })).toBe(false)
+      expect(body({
+        k: { [PAIR.repeat(65)]: 1 },
+      })).toBe(false)
+    })
+
+    it('reads the deepest value the rule writes, four levels of objects and arrays, and refuses a fifth', () => {
+      expect(body({
+        k: nested(4, 1),
+      })).toBe(true)
+      expect(body({
+        k: nested(5, 1),
+      })).toBe(false)
+      expect(body({
+        k: [
+          [
+            [
+              [1],
+            ],
+          ],
+        ],
+      })).toBe(true)
+      expect(body({
+        k: [
+          [
+            [
+              [
+                [1],
+              ],
+            ],
+          ],
+        ],
+      })).toBe(false)
+      expect(body({
+        k: {
+          a: [
+            {
+              b: [1],
+            },
+          ],
+        },
+      })).toBe(true)
+      expect(body({
+        k: {
+          a: [
+            {
+              b: [
+                [1],
+              ],
+            },
+          ],
+        },
+      })).toBe(false)
+    })
+
+    it('reads the largest value the rule writes, 64 values of an entry with each object and array one, and refuses 65', () => {
+      expect(body({
+        k: Array.from({ length: 63 }).fill(1),
+      })).toBe(true)
+      expect(body({
+        k: Array.from({ length: 64 }).fill(1),
+      })).toBe(false)
+      expect(body({
+        k: Object.fromEntries(Array.from({ length: 63 }, (_, index) => [`n${index}`, 1])),
+      })).toBe(true)
+      expect(body({
+        k: Object.fromEntries(Array.from({ length: 64 }, (_, index) => [`n${index}`, 1])),
+      })).toBe(false)
+      // A nested container is one value and holds its own: three arrays of 20 and the outer one are 64 values, and three of 21 are 67.
+      expect(body({
+        k: Array.from({ length: 3 }, () => Array.from({ length: 20 }).fill(1)),
+      })).toBe(true)
+      expect(body({
+        k: Array.from({ length: 3 }, () => Array.from({ length: 21 }).fill(1)),
+      })).toBe(false)
+    })
+
+    it('counts the values of each entry alone, never those of the whole body', () => {
+      const full = Array.from({ length: 63 }).fill(1)
+      expect(body({ a: full, b: full, c: full })).toBe(true)
+    })
+
+    it.each([
+      ['undefined', undefined],
+      ['not a number', Number.NaN],
+      ['infinity', Number.POSITIVE_INFINITY],
+      [
+        'a function',
+        () => 1,
+      ],
+      [
+        'a symbol',
+        Symbol('s'),
+      ],
+      ['a bigint', 1n],
+      [
+        'a date',
+        new Date(0),
+      ],
+      [
+        'a map',
+        new Map(),
+      ],
+    ])('refuses %s as a value', (_name, value) => {
+      expect(body({ k: value })).toBe(false)
+      expect(body({
+        k: [value],
+      })).toBe(false)
+    })
+
+    it('refuses an extraBody that is no object', () => {
+      expect(body('low')).toBe(false)
+      expect(body(['low'])).toBe(false)
+      expect(body(null)).toBe(false)
+    })
   })
 })

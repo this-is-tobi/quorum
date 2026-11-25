@@ -402,6 +402,167 @@ const adaptation = z.strictObject({
   ]),
 })
 
+/** The most characters of a string, and the most entries of a record or a list, a settings record holds. */
+const SETTINGS_STRING = 4096
+const SETTINGS_ENTRIES = 256
+
+const text = z.string().max(SETTINGS_STRING)
+/** A record of at most `SETTINGS_ENTRIES` entries, its keys no more than `SETTINGS_STRING` characters. */
+function table<Value extends z.ZodType>(value: Value) {
+  return z.record(text, value).refine(record => Object.keys(record).length <= SETTINGS_ENTRIES)
+}
+/** A list of at most `SETTINGS_ENTRIES` entries. */
+function list<Item extends z.ZodType>(item: Item) {
+  return z.array(item).max(SETTINGS_ENTRIES)
+}
+
+/** A bound of a review with where it came from: a whole number of 1 or more, and one of the three origins `SettingOrigin` lists. */
+const settingValue = z.strictObject({
+  value: z.int().min(1),
+  origin: z.enum(['config', 'default', 'derived']),
+})
+/** A prompt or a lens's question as a record holds it: its SHA-256, never its text. */
+const textHash = z.string().regex(/^sha256:[0-9a-f]{64}$/)
+
+/** A string of an `extraBody` value, or a key of one, as the rule writes it: at most `EXTRA_BODY_STRING` code points, a surrogate pair one. A string over twice that in UTF-16 units is refused before its code points are counted. */
+const extraString = z.string().refine(value => value.length <= 2 * EXTRA_BODY_STRING && Array.from(value).length <= EXTRA_BODY_STRING)
+const extraScalar = z.union([
+  z.null(),
+  z.boolean(),
+  z.number(),
+  extraString,
+])
+
+/** A record of at most `SETTINGS_ENTRIES` entries whose keys are strings of the rule's size: an object of an `extraBody`, or the `extraBody` itself. */
+function bodyTable<Value extends z.ZodType>(value: Value) {
+  return z.record(extraString, value).refine(record => Object.keys(record).length <= SETTINGS_ENTRIES)
+}
+
+/** An `extraBody` value that nests at most `levels` more levels of objects and arrays, each a list or record of at most `SETTINGS_ENTRIES` entries: the rule's own bound on the entries of one value is counted by `extraBodyValues`. */
+function extraLevel(levels: number): z.ZodType<unknown> {
+  if (levels === 0) return extraScalar
+  const inner = extraLevel(levels - 1)
+  return z.union([
+    extraScalar,
+    list(inner),
+    bodyTable(inner),
+  ])
+}
+
+/** How many values an `extraBody` entry holds, each object and array one and each member another, which the rule bounds by `EXTRA_BODY_VALUES`. The entry has passed `extraLevel`, so it is at most `EXTRA_BODY_DEPTH` levels deep and its lists and records hold at most 256 entries each. */
+function extraBodyValues(entry: unknown): number {
+  if (typeof entry !== 'object' || entry === null) return 1
+  const members: readonly unknown[] = Array.isArray(entry)
+    ? entry
+    : Object.values(entry)
+  return members.reduce<number>((total, member) => total + extraBodyValues(member), 1)
+}
+
+/** The `extraBody` of a provider as a record holds it: each entry the rule's shape (a scalar, or objects and arrays nested at most `EXTRA_BODY_DEPTH` deep) and at most `EXTRA_BODY_VALUES` values with the containers counted, as the rule counts them. The redacted word is a key and a value like any other. */
+const extraBody = bodyTable(extraLevel(EXTRA_BODY_DEPTH).refine(entry => extraBodyValues(entry) <= EXTRA_BODY_VALUES))
+
+/**
+ * The fields of a provider's record and the shape of each, which `providerView` writes for the result's sink: the provider as
+ * `--print-config` prints it, less its `origin`, `command`, `args` and `apiKey`. A field outside this list is refused, so a record
+ * a program builds can hold no base URL and no key, and a header's or query's value is the redacted word alone.
+ */
+const PROVIDER_FIELDS: Readonly<Record<string, z.ZodType>> = {
+  implements: z.literal('Provider'),
+  preset: text,
+  protocol: text,
+  model: text,
+  contextTokens: z.number(),
+  auth: z.union([
+    text,
+    z.strictObject({
+      header: text,
+      prefix: text.optional(),
+    }),
+  ]),
+  headers: table(z.literal(REDACTED)),
+  query: table(z.literal(REDACTED)),
+  extraBody,
+  structuredOutput: text,
+  temperature: z.number().nullable(),
+  maxTokens: z.number(),
+  maxTokensField: text,
+  thinking: text,
+  systemPrompt: text,
+  stream: z.boolean(),
+  timeoutMs: z.number(),
+  stallTimeoutMs: z.number(),
+  retries: z.number(),
+}
+
+/**
+ * One provider's record: the fields of `PROVIDER_FIELDS` each in its shape. A field's issue is placed at the field, never at a key
+ * or a value of it, and an unknown field's at the provider, so a refusal's path never repeats a key a person wrote.
+ */
+const providerSettings = table(z.unknown()).superRefine((fields, context) => {
+  for (const [name, value] of Object.entries(fields)) {
+    const shape = Object.hasOwn(PROVIDER_FIELDS, name)
+      ? PROVIDER_FIELDS[name]
+      : undefined
+    if (shape === undefined) {
+      context.addIssue({ code: 'custom', path: [], message: 'is no field a provider\'s record holds' })
+    } else if (!shape.safeParse(value).success) {
+      context.addIssue({
+        code: 'custom',
+        path: [name],
+        message: 'is not the shape a provider\'s record writes it in',
+      })
+    }
+  }
+})
+
+/** What one profile ran with (`ProfileSettings`): its providers by config key, each prompt and lens question as a hash, and the reply budgets. */
+const profileSettings = z.strictObject({
+  research: text,
+  lenses: table(z.strictObject({
+    provider: text,
+    question: textHash,
+  })),
+  prompts: z.strictObject({
+    research: textHash,
+    vote: textHash,
+  }),
+  findings: count,
+  replyTokens: z.strictObject({
+    research: count.optional(),
+    votes: table(count.nullable()),
+  }),
+})
+
+/**
+ * The schema of the settings record of a review (`ReviewSettings`), which a caller gives with its review (`ReviewInput.settings`)
+ * and `meta.settings` holds: strict at every level, every string at most 4096 characters, every record and list at most 256 entries.
+ * A bound is a whole number with one of three origins, a prompt and a lens's question a hash, and a provider only the fields
+ * `providerView` writes for a result: no base URL, origin, command, args or key, a header's and a query's value the redacted
+ * word, and `extraBody` as the rule of `config/settings.ts` writes it, each value a scalar, a string of at most 64 code points, or objects and
+ * arrays nested at most 4 deep, an entry of at most 64 values. A refusal names a path, never a value.
+ */
+export const settingsSchema = z.strictObject({
+  runtime: z.strictObject({
+    name: text,
+    version: text,
+    platform: text,
+    arch: text,
+  }),
+  strict: z.boolean(),
+  concurrency: z.union([
+    z.literal('auto'),
+    z.int().min(1),
+  ]),
+  exclude: list(text),
+  partTokens: settingValue,
+  maxFindings: settingValue,
+  findingsCap: settingValue,
+  maxReviewTokens: settingValue,
+  reviewTimeoutMs: settingValue,
+  providers: table(providerSettings),
+  profiles: z.record(profileId, profileSettings).refine(profiles => Object.keys(profiles).length <= SETTINGS_ENTRIES),
+})
+
 /** The profiles of a result, keyed by id: at least one, since a review runs at least one. */
 function profilesOf<Meta extends z.ZodType>(meta: Meta) {
   return z.record(profileId, meta).refine(profiles => Object.keys(profiles).length > 0)
@@ -471,6 +632,7 @@ export const resultSchema = z.strictObject({
     startedAt: z.string(),
     durationMs: count,
     source: reviewSource,
+    settings: settingsSchema.nullable(),
     profiles: profilesOf(profileMeta),
     usage: usageSchema.optional(),
     calls: z.record(z.string(), providerCalls),

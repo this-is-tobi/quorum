@@ -382,13 +382,13 @@ export type LeftOutFile
  * no research part of its model's window, or the `IncompleteReason` of the research part that held it and
  * did not read it: `request-too-large`, `token-cap`, `review-deadline`, `interrupted`, `research-failed`, `provider-down` or, for a
  * hunk still cut off when recovery had split it as far as it goes, `reply-cut-off`. A line of a file that a finding the finding cap
- * left unread names, among the findings its reply was asked for, is `findings-capped`.
+ * left unread names, among the findings each reply was asked for after its last one read, is `findings-capped`.
  */
 export type CoverageReason = 'binary' | 'submodule' | 'secret' | 'deleted-secret' | 'too-large' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'interrupted' | 'research-failed' | 'provider-down' | 'reply-cut-off' | 'findings-capped'
 
 /**
  * How much of a file a profile's research reviewed: `reviewed` when every part that holds it was
- * read and no finding a reply listed on it, within the findings that reply was asked for, was left
+ * read and no finding a reply listed on it, among the findings each reply was asked for after its last one read, was left
  * unread by the finding cap, `partial` when some was not, `unreviewed` when none was, and `excluded`
  * when an `exclude` pattern keeps it out of every request.
  */
@@ -497,8 +497,8 @@ export interface ProfileMeta {
   /**
    * Every file of the input diff once, in its order, with how much of it this profile's research
    * reviewed: `reviewed` when no research part of the file failed or was left unsent, that is when each request that carried
-   * all of its text was answered with a valid envelope, whatever it found, and no finding a reply listed on the file, within the
-   * findings that reply was asked for, was left unread by the finding cap, or when the profile asked its research nothing
+   * all of its text was answered with a valid envelope, whatever it found, and no finding a reply listed on the file, among the findings each reply was asked for after its last one read,
+   * was left unread by the finding cap, or when the profile asked its research nothing
    * (`asksNothing`), whose every file reads `reviewed` though no model read it; the other statuses, and the ranges a
    * `partial` file left, say what was not. Each profile has its own, since each has its own research model.
    */
@@ -595,6 +595,73 @@ export interface ProviderCalls {
   vote?: RoleCalls
 }
 
+/** Where a bound of a review came from: the config, or the variable that sets it (`config`), the default quorum has for it (`default`), or what the review worked out from its input, as a path review does from its estimate (`derived`). */
+export type SettingOrigin = 'config' | 'default' | 'derived'
+
+/** A bound a review ran under, and where it came from. */
+export interface SettingValue {
+  value: number
+  origin: SettingOrigin
+}
+
+/** What ran the review: the runtime's name (`bun` or `node`) and version, and the platform and the architecture it ran on. */
+export interface RuntimeRecord {
+  name: string
+  version: string
+  platform: string
+  arch: string
+}
+
+/**
+ * One provider's settings as `meta.settings.providers.<id>` records them, which `providerView` writes for the `result` sink: the
+ * provider as `--print-config` prints it, less its `origin`, `command`, `args` and `apiKey`, so a result holds no base URL and no
+ * key. A provider defined as data holds the fields it sets (`preset`, `protocol`, `model`, `contextTokens`, `auth`, `headers`,
+ * `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField`, `thinking`, `systemPrompt`, `stream`,
+ * `timeoutMs`, `stallTimeoutMs` and `retries`) and a provider object `implements`, its `model` when that is a string and the
+ * `timeoutMs`, `stallTimeoutMs` and `retries` it states. The keys of `headers` and `query` are written and their values are
+ * `[redacted]`; `extraBody` is written by the rule of `config/settings.ts`; a prompt (`systemPrompt` when it is one) is its hash.
+ */
+export type ProviderSettings = Record<string, unknown>
+
+/** What one profile ran with: its research provider's config key, each lens's provider and the SHA-256 of its question, the SHA-256 of each prompt, the findings a research request asks for at most, and the reply budgets in tokens (`research` is absent where nothing is stated to size it by, and a vote's is `null` then). */
+export interface ProfileSettings {
+  research: string
+  lenses: Record<string, { provider: string, question: string }>
+  prompts: { research: string, vote: string }
+  findings: number
+  replyTokens: { research?: number, votes: Record<string, number | null> }
+}
+
+/**
+ * What a review ran under, as the caller gives it (`ReviewInput.settings`) and `meta.settings` records it: the runtime, the review's
+ * own bounds each with where it came from, the config's providers and every profile it runs. It holds no base URL, no key and no
+ * header, query or body value that is not shown safe; `reviewSettings` builds it from a config, and two results of two configs
+ * compare field by field.
+ */
+export interface ReviewSettings {
+  runtime: RuntimeRecord
+  /** What the config's `strict` says: a review refuses, before any call, what would only warn that a key may be exposed. */
+  strict: boolean
+  /** The config's `concurrency`, `auto` when it sets none. */
+  concurrency: number | 'auto'
+  /** The path patterns the config leaves out of every review. */
+  exclude: string[]
+  /** The tokens of diff a research part holds at most. */
+  partTokens: SettingValue
+  /** How many findings a research request asks for at most. */
+  maxFindings: SettingValue
+  /** The most findings of the research each profile sends to its panel. */
+  findingsCap: SettingValue
+  /** The most tokens the review may spend. */
+  maxReviewTokens: SettingValue
+  /** The deadline of the review, in milliseconds. */
+  reviewTimeoutMs: SettingValue
+  /** The config's providers, by the key the config gives each. */
+  providers: Record<string, ProviderSettings>
+  /** The profiles the review runs, by id, in the run's order. */
+  profiles: Record<string, ProfileSettings>
+}
+
 /** What a review records about itself, besides its verdicts. */
 export interface QuorumMeta {
   /** The version of quorum that ran the review, read from package.json. */
@@ -605,6 +672,8 @@ export interface QuorumMeta {
   durationMs: number
   /** Where the diff came from: `{ kind: 'diff' }` when the input names no source. It never holds a revision as written, a local file name or a git version. */
   source: ReviewSource
+  /** What the review ran under, as its caller gave it (`ReviewInput.settings`), copied: `null` when no settings record was given, which says no config describes the review. The public view withholds it. */
+  settings: ReviewSettings | null
   /** One entry per profile, keyed by profile id, in the run's profile order. */
   profiles: Record<string, ProfileMeta>
   /** The usage summed over the calls that reported valid counts; absent when none did. */
@@ -658,8 +727,8 @@ export interface PublicProfileMeta extends Omit<ProfileMeta, 'providers' | 'rese
 /** A gap as the public view keeps it: the profile, the reason and the file, never the detail. */
 export type PublicGap = Omit<IncompleteEntry, 'detail'>
 
-/** The meta of the public view: no usage, no calls, no providers, no gap detail, and `view` to say so. */
-export interface PublicMeta extends Omit<QuorumMeta, 'profiles' | 'usage' | 'calls' | 'incomplete'> {
+/** The meta of the public view: no usage, no calls, no settings, no providers, no gap detail, and `view` to say so. */
+export interface PublicMeta extends Omit<QuorumMeta, 'profiles' | 'usage' | 'calls' | 'settings' | 'incomplete'> {
   view: 'public'
   profiles: Record<string, PublicProfileMeta>
   incomplete: PublicGap[]
@@ -724,6 +793,13 @@ export interface ReviewInput {
   readonly diff: string
   /** Where the diff came from, checked and recorded in `meta.source` as given; `{ kind: 'diff' }` when unset. */
   readonly source?: ReviewSource
+  /**
+   * What the review runs under, which the core cannot know: it holds provider objects, not the config's presets, auth styles or
+   * `extraBody`, so the caller builds the record (`reviewSettings` does, from a config) and the review checks it against
+   * the result's own schema, refuses one that does not match before any call, and records a copy in `meta.settings`. `null` is
+   * recorded when none is given.
+   */
+  readonly settings?: ReviewSettings
   /**
    * The files the source left out before it made the diff, listed in `meta.leftOut` and in the `left-out`
    * event ahead of the diff's own. A `binary`, `submodule` or `secret` one is a gap of every profile, as the

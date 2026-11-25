@@ -20,6 +20,7 @@ const MAX_REPLY_BYTES = 16 * 1024 * 1024
 /** The symbol under which Node keeps the dispatcher its `fetch` uses. */
 const NODE_GLOBAL_DISPATCHER = Symbol.for('undici.globalDispatcher.1')
 
+/** What stands for a redacted value. A provider imports no core module beyond ports, errors, types and tokens, so this is a copy of `REDACTED` in `core/result-schema.ts`, which `http.spec.ts` holds equal. */
 const REDACTED = '[redacted]'
 const UNKNOWN_ENDPOINT = 'the endpoint'
 const PLAIN_IDENTIFIER = /^[A-Z]\w{0,39}$/i

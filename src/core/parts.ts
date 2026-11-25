@@ -524,7 +524,7 @@ function cappedRanges(lines: readonly number[]): LeftRange[] {
  * `partial`, its unread lines `findings-capped` ranges (consecutive lines merged, and one range past `MAX_CAPPED_RANGES`); a `partial`
  * file gains those ranges, its whole list in line order; an `unreviewed` or `excluded` file, a file no place names, and a place
  * of a file the coverage does not list, change nothing. So `reviewed` also means that no finding a reply listed on the file,
- * within the findings that reply was asked for, was left unread by the cap. The coverage given is not changed.
+ * among the findings each reply was asked for after its last one read, was left unread by the cap. The coverage given is not changed.
  */
 export function withCapped(coverage: readonly CoverageEntry[], unread: readonly UnreadPlace[]): CoverageEntry[] {
   const lines = new Map<string, number[]>()

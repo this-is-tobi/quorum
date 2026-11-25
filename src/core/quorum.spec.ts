@@ -6,6 +6,7 @@ import { coverageWords } from '../report/lines.ts'
 import { fakeClock, settle } from '../testing/clock.ts'
 import { fakeCredential } from '../testing/credentials.ts'
 import * as git from '../testing/fixtures/git.ts'
+import { SETTINGS } from '../testing/report.ts'
 import { streamingProvider } from '../testing/streams.ts'
 import type { StreamPlan } from '../testing/streams.ts'
 import { ConfigError, ProviderDownError, ProviderError } from './errors.ts'
@@ -17,7 +18,7 @@ import { rulesBlock } from './rules.ts'
 import { resultSchema } from './result-schema.ts'
 import { findingId, FINGERPRINT_PATTERN } from './stages/research.ts'
 import { requestTokens, tokenBound } from './tokens.ts'
-import type { Finding, IncompleteEntry, LeftOutFile, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, ReviewDocument, ReviewSource, RoleCalls, Usage, VoteFailure } from './types.ts'
+import type { Finding, IncompleteEntry, LeftOutFile, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, ReviewDocument, ReviewSettings, ReviewSource, RoleCalls, Usage, VoteFailure } from './types.ts'
 
 /** Replies, in call order, for the one fake provider that plays both roles. */
 const complete = vi.fn<(request: CompletionRequest) => Promise<string>>()
@@ -166,6 +167,37 @@ const naming: Profile = {
     { id: 'clarity', question: 'Does the name mislead?' },
   ],
   policy: { high: 'unanimous', medium: 'off', low: 'off' },
+}
+
+/** The settings record of a review of `profile` through one provider `local`, as `reviewSettings` builds one: the prompts and the lens questions by their hashes. */
+function settingsFor(profile: Profile): ReviewSettings {
+  const hash = (text: string): string => `sha256:${createHash('sha256').update(text).digest('hex')}`
+  return {
+    ...structuredClone(SETTINGS),
+    providers: {
+      local: { model: 'local-model' },
+    },
+    profiles: {
+      [profile.id]: {
+        research: 'local',
+        lenses: Object.fromEntries(profile.lenses.map(lens => [
+          lens.id,
+          {
+            provider: 'local',
+            question: hash(lens.question),
+          },
+        ])),
+        prompts: {
+          research: hash(profile.prompts.research),
+          vote: hash(profile.prompts.vote),
+        },
+        findings: 50,
+        replyTokens: {
+          votes: Object.fromEntries(profile.lenses.map(lens => [lens.id, null])),
+        },
+      },
+    },
+  }
 }
 
 beforeEach(() => {
@@ -1326,6 +1358,7 @@ describe('meta and events', () => {
       startedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
       durationMs: expect.any(Number),
       source: { kind: 'diff' },
+      settings: null,
       profiles: {
         security: {
           providers: {
@@ -1458,6 +1491,7 @@ describe('meta and events', () => {
       'startedAt',
       'durationMs',
       'source',
+      'settings',
       'profiles',
       'calls',
       'incomplete',
@@ -1493,6 +1527,7 @@ describe('meta and events', () => {
       'startedAt',
       'durationMs',
       'source',
+      'settings',
       'profiles',
       'calls',
       'incomplete',
@@ -1567,6 +1602,7 @@ describe('meta and events', () => {
       'startedAt',
       'durationMs',
       'source',
+      'settings',
       'profiles',
       'usage',
       'calls',
@@ -1884,6 +1920,152 @@ describe('meta and events', () => {
         detail: '"a.js":1 is kept at medium, but 1 failed vote(s) could have made it high',
       },
     ])
+  })
+})
+
+describe('the settings of a review', () => {
+  const AWS_KEY = fakeCredential('aws-key')
+  const diffOnly = (): Quorum => {
+    const local = fake('local', () => findings())
+    return createQuorum({
+      profiles: [naming],
+    }, portsFor(naming, local))
+  }
+  const refusal = (changes: Record<string, unknown>): Promise<unknown> => diffOnly().review({
+    diff,
+    settings: {
+      ...settingsFor(naming),
+      ...changes,
+    },
+  })
+
+  it('records the settings a review is given, a copy, and null when none is given, of a profile of its own', async () => {
+    const quorum = diffOnly()
+    const settings = settingsFor(naming)
+    const given = await quorum.review({ diff, settings })
+    expect(given.meta.settings).toEqual(settingsFor(naming))
+    expect(given.meta.settings).not.toBe(settings)
+    expect(given.meta.settings?.providers).not.toBe(settings.providers)
+    expect(given.meta.settings?.profiles.naming.lenses).not.toBe(settings.profiles.naming.lenses)
+    // It sits after the source, and the result still passes the schema a saved result is read by.
+    expect(Object.keys(given.meta).slice(3, 6)).toEqual(['source', 'settings', 'profiles'])
+    const saved = JSON.parse(JSON.stringify(given)) as unknown
+    expect(resultSchema.parse(saved)).toEqual(saved)
+    // The copy is made before the review's first await: a change the caller makes after the call reaches no result.
+    const pending = quorum.review({ diff, settings })
+    settings.exclude.push('changed/**')
+    settings.providers.local.model = 'changed'
+    settings.profiles.naming.prompts.research = 'changed'
+    const copied = (await pending).meta.settings
+    expect(copied).toEqual(settingsFor(naming))
+    // A review given none records null, which the schema reads too.
+    const none = await quorum.review({ diff })
+    expect(none.meta.settings).toBeNull()
+    const savedNone = JSON.parse(JSON.stringify(none)) as unknown
+    expect(resultSchema.parse(savedNone)).toEqual(savedNone)
+    expect(Object.keys(none.meta).slice(3, 6)).toEqual(['source', 'settings', 'profiles'])
+  })
+
+  it('refuses a settings record that is not one, naming the path and no value', async () => {
+    const quorum = diffOnly()
+    const bad = {
+      ...settingsFor(naming),
+      partTokens: { value: 1024, origin: 'guessed' },
+    }
+    await expect(quorum.review({ diff, settings: bad as never })).rejects.toMatchObject({
+      name: 'ConfigError',
+      message: 'settings: must be a review\'s settings record, as reviewSettings builds it: settings.partTokens.origin does not match',
+      issues: [
+        { path: 'settings', message: 'must be a review\'s settings record, as reviewSettings builds it: settings.partTokens.origin does not match' },
+      ],
+    })
+    await expect(quorum.review({ diff, settings: 'guessed' as never })).rejects.toMatchObject({
+      message: 'settings: must be a review\'s settings record, as reviewSettings builds it: settings does not match',
+    })
+    expect(complete).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      'a base URL a program adds to a provider',
+      {
+        local: { model: 'm', baseUrl: 'https://gw.example/v1' },
+      },
+      'settings.providers.local does not match',
+    ],
+    [
+      'a header value',
+      {
+        local: {
+          model: 'm',
+          headers: { 'x-team': 'team-a' },
+        },
+      },
+      'settings.providers.local.headers does not match',
+    ],
+    [
+      'a body too deep, under a key shaped as a credential',
+      {
+        local: {
+          model: 'm',
+          extraBody: {
+            [AWS_KEY]: {
+              a: {
+                a: {
+                  a: {
+                    a: { a: 1 },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      'settings.providers.local.extraBody does not match',
+    ],
+    [
+      'a body string of 65 characters',
+      {
+        local: {
+          model: 'm',
+          extraBody: {
+            k: 'x'.repeat(65),
+          },
+        },
+      },
+      'settings.providers.local.extraBody does not match',
+    ],
+  ])('refuses %s, at the path of the field and never at a key or a value of it', async (_what, providers, path) => {
+    const refused = await refusal({ providers }).catch((error: unknown) => error as Error)
+    expect(refused).toBeInstanceOf(ConfigError)
+    expect((refused as Error).message).toBe(`settings: must be a review's settings record, as reviewSettings builds it: ${path}`)
+    for (const value of ['gw.example', 'team-a', AWS_KEY]) expect((refused as Error).message).not.toContain(value)
+  })
+
+  it('refuses a settings record before any event and any call, with its other issues at once', async () => {
+    const events: QuorumEvent[] = []
+    const local = fake('local', () => findings())
+    const quorum = createQuorum({
+      profiles: [naming],
+    }, {
+      ...portsFor(naming, local),
+      events: event => events.push(event),
+    })
+    await expect(quorum.review({
+      diff,
+      source: { kind: 'tree' } as never,
+      settings: {
+        ...settingsFor(naming),
+        strict: 'yes',
+      } as never,
+    })).rejects.toMatchObject({
+      issues: [
+        { path: 'source.kind', message: 'must be diff, range, local, staged or paths' },
+        { path: 'settings', message: 'must be a review\'s settings record, as reviewSettings builds it: settings.strict does not match' },
+      ],
+    })
+    expect(events).toEqual([])
+    expect(local.requests).toEqual([])
   })
 })
 
@@ -6115,6 +6297,30 @@ describe('adaptations', () => {
     expect(createHash('sha256').update(JSON.stringify([...looked].toSorted())).digest('hex')).toBe('583fba4f7cd862765dc115b2b2ce0a7bcc74788ef14934b5e3978b5364256114')
   })
 
+  it('asks the store the same six keys when the review is given a settings record, which builds no request', async () => {
+    const local = localOf(file => [
+      named(file),
+    ])
+    const looked: string[] = []
+    const store: ReplyStore = {
+      get: async (entry) => {
+        looked.push(entry.key)
+        return undefined
+      },
+      put: async () => {},
+    }
+    const result = await createQuorum({
+      profiles: [naming],
+      partTokens: 1024,
+    }, portsFor(naming, local)).review({
+      diff: bigDiff,
+      settings: settingsFor(naming),
+    }, { store })
+    expect(result.meta.settings).toEqual(settingsFor(naming))
+    expect(looked).toHaveLength(6)
+    expect(createHash('sha256').update(JSON.stringify([...looked].toSorted())).digest('hex')).toBe('583fba4f7cd862765dc115b2b2ce0a7bcc74788ef14934b5e3978b5364256114')
+  })
+
   it('reviews each part\'s first finding before any part\'s second, of a profile of its own in three parts', async () => {
     const local = localOf(file => file === 'a.js'
       ? ['n0', 'n1', 'n2'].map(category => ({
@@ -6296,7 +6502,7 @@ describe('adaptations', () => {
       ? [event.model]
       : [])).toEqual(expect.arrayContaining(['local-model-a', 'local-model-b']))
     // The record sits after the usage and before the gaps, its roles after the served models, and a result read back is written as it was.
-    expect(Object.keys(result.meta).slice(4, 7)).toEqual(['profiles', 'calls', 'incomplete'])
+    expect(Object.keys(result.meta).slice(5, 8)).toEqual(['profiles', 'calls', 'incomplete'])
     expect(Object.keys(result.meta.calls.local)).toEqual(['model', 'served', 'research', 'vote'])
     const saved = JSON.parse(JSON.stringify(result)) as unknown
     expect(resultSchema.parse(saved)).toEqual(saved)

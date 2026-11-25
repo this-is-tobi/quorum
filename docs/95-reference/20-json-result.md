@@ -57,6 +57,7 @@ A failed vote counts as a reject. Its `failure` holds only what the code read, n
 | `startedAt` | string | When the review started, in ISO 8601 and UTC: `2026-11-08T02:04:20.361Z` |
 | `durationMs` | number | How long it took, in whole milliseconds |
 | `source` | object | Where the diff came from: [The source](#the-source) |
+| `settings` | object or `null` | What the review ran under, so two results of two configs compare field by field: the runtime, the review's bounds each with where it came from, each provider's settings and each profile's prompts, lens questions and reply budgets, with no base URL, no origin and no key: [The settings](#the-settings). `null` when the review's caller gave no settings record, which says no config describes it. Required in every result of this release: a result of 0.13.0 has none, and `readResult` refuses it. The public view withholds it |
 | `profiles` | object | One entry per profile, keyed by profile id, in the order of the review's profiles |
 | `usage` | object | Only when at least one call reported valid counts: `inputTokens` and `outputTokens` summed over those calls, then `costUsd`, summed over the calls that reported one, when any did |
 | `calls` | object | What each provider's calls came to, one entry per provider id that made a call, keyed by it, in the order its first call ended: the models its replies named as the model that answered, and its research calls and its votes, counted apart: [The calls](#the-calls). `{}` when the review made no call. Required in every result of this release: a result of 0.13.0 has none, and `readResult` refuses it. The public view withholds it |
@@ -104,9 +105,74 @@ A usage count is valid when it is a finite number of at least 0. A failed call's
 
 [Sources](../20-using/15-sources.md) says how each source makes its diff.
 
+### The settings
+
+`meta.settings` is what the review ran under, which two results of two configs compare field by field (`jq` reads both, and the difference is the setting that changed). The core cannot know a preset, an auth style or an `extraBody`, since it holds provider objects and not the config's specs, so the record is given by the caller, as `source` is: the CLI builds it for every review it runs, from the resolved config and the review's own bounds, with [`reviewSettings`](./30-library-api.md#reviewsettings), and a program passes its own as `ReviewInput.settings`. The review checks it against the schema of a result, refuses one that does not match before any call, and records a copy. It is `null` when no settings record was given, which says no config describes the review: a program's review that passes none, and each review of `quorum bench`, whose run is identified by its fingerprint. It holds, in this order:
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `runtime` | object | What ran the review: `name`, `bun` or `node`, `version`, `platform` and `arch`, as the process reports them |
+| `strict` | boolean | Whether the config's `strict` or `QUORUM_STRICT` is on |
+| `concurrency` | number or `"auto"` | The config's calls at once, `auto` when it sets none |
+| `exclude` | string[] | The config's patterns, `[]` when it lists none |
+| `partTokens` | object | `{ value, origin }`: the tokens of diff a research part holds at most |
+| `maxFindings` | object | `{ value, origin }`: the findings a research request asks for at most |
+| `findingsCap` | object | `{ value, origin }`: the most findings of the research each profile sends to its panel |
+| `maxReviewTokens` | object | `{ value, origin }`: the review's token cap |
+| `reviewTimeoutMs` | object | `{ value, origin }`: the review's deadline, in milliseconds |
+| `providers` | object | Each provider of the config, keyed by the key the config gives it, in the order the config defines them |
+| `profiles` | object | Each profile that runs, keyed by id, in run order |
+
+- **`origin`** says where a bound came from: `config` (the config set it, or the variable that sets it did: `QUORUM_MAX_REVIEW_TOKENS`, `QUORUM_REVIEW_TIMEOUT_MS` or `QUORUM_FINDINGS_CAP`), `default` (the default quorum has for it), or `derived` (the review worked it out from its input). A `--path` review derives its token cap from its estimate's worst case, and its finding cap, when the config sets neither `findingsCap` nor `maxFindings`, from its research parts; its deadline is its own default of 24 hours, `default` unless the config sets one: [The bounds of a path review](../20-using/15-sources.md#the-bounds-of-a-path-review). `findingsCap` is the config's `findingsCap`, else its `maxFindings` (`config` either way), else the default 50.
+- **A provider** holds the fields `--print-config` prints for it, in its order, less `origin`, `command`, `args` and `apiKey`, so the result holds no base URL, no host and no key: `preset`, `protocol`, `model`, `contextTokens`, `auth` (a name, or `{ header, prefix }`; `inherit` for a `claude-code` provider that sets none), `headers`, `query`, `extraBody`, `structuredOutput`, `temperature`, `maxTokens`, `maxTokensField`, `thinking`, `systemPrompt`, `stream`, `timeoutMs`, `stallTimeoutMs` and `retries`, each present when the config sets it. `systemPrompt` is `native`, `inline` or, for a prompt, `sha256:` and the hex SHA-256 of its text. A provider object holds `implements` (`"Provider"`), its `model` when that is a string, and the `timeoutMs`, `stallTimeoutMs` and `retries` it states.
+- **`headers` and `query`** keep their names, each with the value `"[redacted]"`: a header's value is a credential and a query's can be. **`extraBody`** keeps its names and writes a value only when a rule that fails closed finds it safe, a number, a boolean, `null` or a string of at most 64 code points that holds no credential, e-mail address or long opaque run, under a key that names no secret, and `"[redacted]"` for any other: [What a result records of a provider](../30-security/10-threat-model.md#what-a-result-records-of-a-provider). A name that is no safe string is one entry, `"[redacted]": "[redacted]"`, where the first of them stood.
+- **A profile** holds, in this order, `research`, its research provider's key; `lenses`, each lens's `{ provider, question }`, the provider's key and the question as `sha256:` and the hex SHA-256 of its text; `prompts`, `research` and `vote`, each as `sha256:` and the hex digest, as `--print-config` prints them; `findings`, how many findings a research request asks for at most; and `replyTokens`, `research`, the research reply budget in tokens (absent where nothing sizes it), and `votes`, each lens's vote budget, `null` where nothing sizes it. No prompt's text and no question's reaches the record.
+
+The schema is strict. `readResult` and a review that is given a record refuse a field it does not list, a bound that is no whole number of at least 1 or whose origin is none of the three, a prompt or a question that is no hash, a provider that holds a field the view does not write (`origin`, `command`, `args` and `apiKey`, which `--print-config` prints and a result never records, and any other), a header or query value that is not `"[redacted]"`, an `extraBody` value of another shape than the rule writes (a string of more than 64 code points, objects and arrays nested more than 4 levels, an entry of more than 64 values with each object and array counted as one), a string of more than 4096 characters, and a record or a list of more than 256 entries. A field the view does write is free text where it holds one: a URL typed into `model` or `auth.header` is recorded as written. A review that is given a record that does not match is refused before any call with `settings: must be a review's settings record, as reviewSettings builds it: <path> does not match`, the path of the first field and no value, and a program's record is never repeated.
+
+```json
+{
+  "meta": {
+    "settings": {
+      "runtime": { "name": "bun", "version": "1.4.3", "platform": "linux", "arch": "x64" },
+      "strict": false,
+      "concurrency": "auto",
+      "exclude": [],
+      "partTokens": { "value": 32768, "origin": "default" },
+      "maxFindings": { "value": 50, "origin": "default" },
+      "findingsCap": { "value": 436, "origin": "derived" },
+      "maxReviewTokens": { "value": 6500000, "origin": "derived" },
+      "reviewTimeoutMs": { "value": 86400000, "origin": "default" },
+      "providers": {
+        "default": {
+          "protocol": "openai-compatible",
+          "model": "gateway-alias",
+          "contextTokens": 131072,
+          "headers": { "x-team": "[redacted]" },
+          "extraBody": { "reasoning_effort": "low", "api_token": "[redacted]" }
+        }
+      },
+      "profiles": {
+        "security": {
+          "research": "default",
+          "lenses": {
+            "reachability": { "provider": "default", "question": "sha256:<64 hex digits>" },
+            "impact": { "provider": "default", "question": "sha256:<64 hex digits>" },
+            "defenses": { "provider": "default", "question": "sha256:<64 hex digits>" }
+          },
+          "prompts": { "research": "sha256:<64 hex digits>", "vote": "sha256:<64 hex digits>" },
+          "findings": 50,
+          "replyTokens": { "research": 21024, "votes": { "reachability": 9216, "impact": 9216, "defenses": 9216 } }
+        }
+      }
+    }
+  }
+}
+```
+
 ### Coverage
 
-A review lists, for each profile, every file of the input diff once, in the diff's order, and how much of it that profile's research reviewed. A gap says that something was not reviewed and the coverage says what, so a reader can tell the files research read from the lines it did not. A profile whose research asked nothing ([`asksNothing`](#per-profile)) has every file `reviewed`, though no model was asked: `reviewed` says no research part of the file failed or was left unsent, and the finding cap left unread no finding a reply listed on it, within the findings that reply was asked for.
+A review lists, for each profile, every file of the input diff once, in the diff's order, and how much of it that profile's research reviewed. A gap says that something was not reviewed and the coverage says what, so a reader can tell the files research read from the lines it did not. A profile whose research asked nothing ([`asksNothing`](#per-profile)) has every file `reviewed`, though no model was asked: `reviewed` says no research part of the file failed or was left unsent, and the finding cap left unread no finding a reply listed on it, among the findings each reply was asked for after its last one read.
 
 | Field | Type | Holds |
 | --- | --- | --- |
@@ -117,7 +183,7 @@ A review lists, for each profile, every file of the input diff once, in the diff
 
 | `status` | What the profile's research reviewed of the file |
 | --- | --- |
-| `reviewed` | All of it: no research part of the file failed or was left unsent, and the finding cap left unread no finding a reply listed on it, within the findings that reply was asked for; a profile whose research asked nothing ([`asksNothing`](#per-profile)) included |
+| `reviewed` | All of it: no research part of the file failed or was left unsent, and the finding cap left unread no finding a reply listed on it, among the findings each reply was asked for after its last one read; a profile whose research asked nothing ([`asksNothing`](#per-profile)) included |
 | `partial` | Some of it: `left` lists the ranges that were not, the lines of the findings the cap left unread included |
 | `unreviewed` | None of it: `reason` says why |
 | `excluded` | None of it, by choice: an `exclude` pattern leaves all of it out of every request, and it is no gap |
@@ -138,8 +204,8 @@ A review lists, for each profile, every file of the input diff once, in the diff
 | `reply-cut-off` | The reply for the hunk was cut off at its limit, though recovery had split its part as far as it goes (three splits deep, or down to one hunk): it is the `reply-cut-off` gap's, and no flag lifts it |
 | `findings-capped` | A finding a research reply listed at this line of the file was left unread by the finding cap, so no voter judged it: it is counted in the `findings-capped` gap. Only a range has it, never a file's `reason` |
 
-- **Reviewed means no research part of the file failed or was left unsent, and the finding cap left unread no finding a reply listed on it, within the findings that reply was asked for.** Each research request that carried the file's text was answered with a valid findings envelope, whatever it found, and the cap left unread no finding it listed on the file among the findings it was asked for after the last one read ([`findings-capped`](#incomplete-reasons)). A profile whose research asked nothing, one that requires a rule and was sent none, made no request, so no part failed: every file of its coverage is `reviewed` though no model read it, and its [`asksNothing`](#per-profile) is the field that says so. The votes read only what a finding cites.
-- **A finding the cap left unread that places nothing changes no file's coverage.** One past its reply's ask, one with no file or no line of at least 1, one on a file outside the diff and one at a line no hunk shows is counted in the `findings-capped` gap and placed in no file, so the file it meant can stay `reviewed`. The coverage reads only the file and line the reply wrote, against the diff, and never checks the finding. The gap fails a gating review whatever the coverage says.
+- **Reviewed means no research part of the file failed or was left unsent, and the finding cap left unread no finding a reply listed on it, among the findings each reply was asked for after its last one read.** Each research request that carried the file's text was answered with a valid findings envelope, whatever it found, and the cap left unread no finding it listed on the file among the findings each reply was asked for after its last one read ([`findings-capped`](#incomplete-reasons)). A profile whose research asked nothing, one that requires a rule and was sent none, made no request, so no part failed: every file of its coverage is `reviewed` though no model read it, and its [`asksNothing`](#per-profile) is the field that says so. The votes read only what a finding cites.
+- **A finding the cap left unread that places nothing changes no file's coverage.** One that is not among the findings its reply was asked for after its last one read, one with no file or no line of at least 1, one on a file outside the diff and one at a line no hunk shows is counted in the `findings-capped` gap and placed in no file, so the file it meant can stay `reviewed`. The coverage reads only the file and line the reply wrote, against the diff, and never checks the finding. The gap fails a gating review whatever the coverage says.
 - **A `binary` or `submodule` file is unreviewed** with that reason, though its section is sent, whatever became of its part. A `secret` or `deleted-secret` file is unreviewed with that reason too, and none of it is sent.
 - **A recovered part is read by its pieces.** When recovery split a research part ([Recovering a cut-off part](../20-using/20-configuration.md#recovering-a-cut-off-part)), a hunk is reviewed when the piece that held it was read, so a section split between its hunks is `partial` when some of its pieces were not, with the range of each hunk left and the reason of its piece. A file is never `reviewed` while a piece of it was not read.
 - **A file is `excluded`** when `exclude` left all of it out of the diff the research read.
@@ -397,6 +463,7 @@ Each gap makes the review incomplete, as an unreviewed finding does: the CLI exi
 | `meta.profiles.<id>.discarded` | The number of findings of the profile that were discarded, after `gating` |
 | `meta.profiles.<id>.providers` | Absent: no provider and no model is named |
 | `meta.usage` | Absent |
+| `meta.settings` | Absent: the settings hold the token cap, the deadline and the finding cap a flood aims at, and the pipeline's models and its configuration, which let an attacker rehearse on it. The full result, the terminal and a private artifact carry it |
 | `meta.calls` | Absent, each provider's roles with it: a served model is a model's name, which lets an attacker rehearse on the same open pipeline, and a sharper one behind a gateway's alias, and a role's calls, failures, tokens and time say how a review ran |
 | `meta.profiles.<id>.research` | Absent: the counts measure how near research came to the finding cap, which a pull request's author can aim a flood of findings at |
 | `meta.context` | Kept whole, as it is: each document's hash, path, commit and counts, never a text |

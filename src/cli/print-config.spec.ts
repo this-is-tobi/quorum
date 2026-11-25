@@ -7,6 +7,7 @@ import { documentSha256 } from '../core/documents.ts'
 import type { Provider } from '../core/ports.ts'
 import type { Profile, ReviewDocument, ReviewRule } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
+import { fakeCredential } from '../testing/credentials.ts'
 import { printConfig } from './print-config.ts'
 
 const SPEC = {
@@ -100,6 +101,23 @@ describe('printConfig', () => {
     expect(text).toContain('\n      <U+003A>:error::x: "[redacted]"\n')
     expect(text).not.toContain('\n      ::')
     expect(text).not.toContain('value')
+  })
+
+  it.each(['extraBody', 'query', 'headers'] as const)('prints a %s key that is no safe string as one [redacted] entry, and every value as [redacted]', (field) => {
+    const key = fakeCredential('aws-key')
+    const text = printed({
+      ...SPEC,
+      apiKey: 'k3y-secret',
+      [field]: {
+        before: 'a',
+        [key]: 'b',
+        after: 'c',
+        'k3y-secret': 'd',
+      },
+    })
+    expect(text).toContain(`    ${field}:\n      before: "[redacted]"\n      "[redacted]": "[redacted]"\n      after: "[redacted]"\n`)
+    expect(text).not.toContain(key)
+    expect(text).not.toContain('k3y-secret')
   })
 
   it('keeps a value that holds a newline, then a workflow command, inert on every line', () => {
