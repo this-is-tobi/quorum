@@ -3807,7 +3807,7 @@ describe('the sources', () => {
     const estimate = estimateOf(beforeTheCall)
     expect(estimate.lines).toHaveLength(3)
     // The cap follows the estimate's worst case, which recovery's bound puts over the default even for one part, and the deadline is the longest allowed: the config sets neither.
-    expect(estimate.lines[2]).toBe(`bounds: the token cap ${estimate.worst}, this estimate's worst case; the deadline 24h00m00s, the longest allowed; the finding cap 50, the default, which holds one per research part; the config sets none of them`)
+    expect(estimate.lines[2]).toBe(`bounds: the token cap ${estimate.worst}, this estimate's worst case; the deadline 24h00m00s, the longest allowed; the finding cap 50, the default, which holds four per research part; the config sets none of them`)
     // A person reads the counts scaled, never as a run of digits.
     expect(estimate.worst).toMatch(/^\d+(\.\d+)?[kMBT]$/)
     expect(estimate.parts).toBe(1)
@@ -3838,7 +3838,7 @@ describe('the sources', () => {
     const cost = /^estimate: research about \d+ tokens expected, at most (\d+) with every vote and every part recovered, \d+ of them reserved at once$/.exec(texts[1] ?? '')
     expect(cost).not.toBeNull()
     expect(Number(cost?.[1])).toBeGreaterThan(2_000_000)
-    expect(texts[2]).toBe(`bounds: the token cap ${cost?.[1]}, this estimate's worst case; the deadline 86400000 ms, the longest allowed; the finding cap 50, the default, which holds one per research part; the config sets none of them`)
+    expect(texts[2]).toBe(`bounds: the token cap ${cost?.[1]}, this estimate's worst case; the deadline 86400000 ms, the longest allowed; the finding cap 50, the default, which holds four per research part; the config sets none of them`)
   })
 
   it('runs a path review that 0.8.0 would have held, its expected spend and calls in flight past 2000000, to its end, under its worst case as cap and a deadline of 24 hours, after the large review\'s warning', async () => {
@@ -3857,12 +3857,12 @@ describe('the sources', () => {
     expect(warning).not.toBeNull()
     expect(Number(warning?.[1])).toBe(parts)
     expect(parts).toBe(109)
-    // The panel reads one finding per research part: its three lenses vote 109 findings, and the estimate and its warning count them.
-    expect(votes).toBe(327)
-    expect(Number(warning?.[2])).toBe(327)
+    // The panel reads four findings per research part: its three lenses vote 436 findings each, and the estimate and its warning count them.
+    expect(votes).toBe(436 * 3)
+    expect(Number(warning?.[2])).toBe(436 * 3)
     expect(countOf(warning?.[4])).toBeGreaterThan(2_000_000)
-    // The cap is the estimate's worst case, the deadline the longest allowed and the finding cap one per part, all said on the bounds line.
-    expect(lines[2]).toBe(`bounds: the token cap ${warning?.[4]}, this estimate's worst case; the deadline 24h00m00s, the longest allowed; the finding cap 109, one per research part; the config sets none of them`)
+    // The cap is the estimate's worst case, the deadline the longest allowed and the finding cap four per part, all said on the bounds line.
+    expect(lines[2]).toBe(`bounds: the token cap ${warning?.[4]}, this estimate's worst case; the deadline 24h00m00s, the longest allowed; the finding cap 436, four per research part; the config sets none of them`)
     expect(stderr().indexOf(lines[2])).toBeLessThan(stderr().indexOf('warning: a large review'))
     expect(stderr()).not.toContain('Error:')
     // The review is never held: every part's request is sent, and no cap stops it.
@@ -3888,6 +3888,83 @@ describe('the sources', () => {
     expect(lines[2]).toMatch(/; the finding cap 3 \(maxFindings\)$/)
     expect(lines[2]).not.toContain('the config sets none of them')
     expect(fetchMock).toHaveBeenCalledTimes(parts)
+  })
+
+  it('keeps a set maxFindings as a path review\'s finding cap when findingsCap is unset, and derives none from the parts', async () => {
+    const config = write('findings-kept.yaml', `${TEAM_YAML}maxFindings: 30\n`)
+    // Every research reply lists two findings, 218 in all over 109 parts, more than the 30 maxFindings sets, and every vote keeps its finding.
+    const fetchMock = vi.fn().mockImplementation(async (_url: unknown, init: { body: string }) => chatReply(init.body.includes('One vote in a 3-voter panel')
+      ? vote(true)
+      : JSON.stringify({
+          findings: Array.from({ length: 2 }, (_, index) => ({
+            ...FINDING,
+            file: 'src/big.js',
+            line: index + 1,
+            quote: `compute(${index})`,
+          })),
+        })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { io, stdout, stderr } = harness({
+      argv: ['--config', config, '--path', 'src'],
+      git: bigGit(60_000).seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    const { lines, parts, votes } = estimateOf(stderr())
+    // Four findings per part would be 436, but the config's maxFindings is the cap, and the votes are counted at it.
+    expect(parts).toBe(109)
+    expect(votes).toBe(30 * 3)
+    expect(lines[2]).toMatch(/; the finding cap 30 \(maxFindings\)$/)
+    expect(lines[2]).not.toContain('four per research part')
+    // The review is given no cap of its own: the panel's cap, as the gap reads it, is the 30 maxFindings sets.
+    const gap = (JSON.parse(stdout()) as { meta: { incomplete: { reason: string, detail: string }[] } }).meta.incomplete.find(({ reason }) => reason === 'findings-capped')
+    expect(gap?.detail).toMatch(/^\d+ of \d+ reported findings were not reviewed, the last ones of the replies that listed the most \(the cap is 30\)/)
+  })
+
+  it('follows the largest part count of the review\'s profiles for every profile, a profile of its own, naming, among them', async () => {
+    // Naming researches on a provider of a smaller window, so it holds more parts than security for the same tree.
+    const config = write('cap-profiles.yaml', [
+      'providers:',
+      '  team: {protocol: openai-compatible, baseUrl: "https://team.example/v1", model: t, contextTokens: 131072}',
+      '  small: {protocol: openai-compatible, baseUrl: "https://small.example/v1", model: s, contextTokens: 32768}',
+      'roles: {research: team}',
+      'profiles:',
+      '  security: {}',
+      '  naming:',
+      '    roles: {research: small}',
+      '    prompts: {research: "Find naming issues.", vote: "Judge from {{lens.id}}: {{lens.question}}"}',
+      '    lenses:',
+      '      - {id: grounded, question: "Is it backed by a stated convention?"}',
+      '',
+    ].join('\n'))
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => chatReply(JSON.stringify({ findings: [] }))))
+    const { io, stderr } = harness({
+      argv: ['--config', config, '--path', 'src'],
+      git: bigGit(9000).seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const entries = Object.fromEntries(cliTexts(stderr()).flatMap((line) => {
+      const [, id, parts, votes] = /^\[(\w+)\] estimate: (\d+) research part\(s\), .*; then up to (\d+) vote\(s\)/.exec(line) ?? []
+      return id === undefined
+        ? []
+        : [
+            [
+              id,
+              {
+                parts: Number(parts),
+                votes: Number(votes),
+              },
+            ],
+          ]
+    }))
+    const cap = 4 * entries.naming.parts
+    // The profiles hold different part counts, and the cap is four per part of the larger, for both.
+    expect(entries.naming.parts).toBeGreaterThan(entries.security.parts)
+    expect(cap).toBeGreaterThan(50)
+    expect(entries.security.votes).toBe(3 * cap)
+    expect(entries.naming.votes).toBe(cap)
+    expect(estimateOf(stderr()).lines.find(line => line.startsWith('bounds: '))).toMatch(new RegExp(`; the finding cap ${cap}, four per research part; the config sets none of them$`))
   })
 
   it('reads a config\'s findingsCap as a path review\'s finding cap, and its bounds line says so', async () => {
@@ -3966,7 +4043,7 @@ describe('the sources', () => {
 
     const { lines, parts, expected, inFlight } = estimateOf(stderr())
     expect(lines).toHaveLength(4)
-    expect(lines[2]).toMatch(/^bounds: the token cap 120k \(maxReviewTokens\); the deadline 24h00m00s, the longest allowed; the finding cap \d+(, one per research part|, the default, which holds one per research part)$/)
+    expect(lines[2]).toMatch(/^bounds: the token cap 120k \(maxReviewTokens\); the deadline 24h00m00s, the longest allowed; the finding cap \d+(, four per research part|, the default, which holds four per research part)$/)
     expect(lines[3]).toContain('research alone expects about')
     // The estimate says the review may pass the cap, and the warning says how much of it the cap holds.
     expect(parts).toBeGreaterThan(2)

@@ -138,7 +138,7 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * A path review is a codebase and not a change, so its size is the tree's, and its bounds follow it (see `pathBounds`). After
  * the banner and before any call it prints its estimate on stderr (see `Quorum.estimate`), ending with the review's token cap and
  * deadline and finding cap: with `maxReviewTokens` unset the cap is the estimate's worst case, never below 2000000, with `reviewTimeoutMs`
- * unset the deadline is 24 hours, the longest allowed, and with neither `findingsCap` nor `maxFindings` set the panel reads one finding per research part, at least 50, which the
+ * unset the deadline is 24 hours, the longest allowed, and with neither `findingsCap` nor `maxFindings` set the panel reads four findings per research part, at least 50, which the
  * estimate's votes count; a set one is kept. A large review, whose expected research spend and calls in flight pass 2000000 under a cap that follows the
  * estimate, is warned of, and so is a cap the config sets below what the estimate expects, which the review runs to, the rest a `token-cap`
  * gap, exit 4. A path review is never held for its size, and `--large` warns that it does nothing. A diff, a range and the
@@ -441,7 +441,7 @@ interface PathBounds {
  * codebase, so its size is the tree's: the first estimate is made under the quorum's own limits, and the cap is the
  * config's `maxReviewTokens` when it sets one, else the worst case of an estimate that counts the panel's votes at the
  * finding cap, never below `DEFAULT_MAX_REVIEW_TOKENS`, the deadline the config's `reviewTimeoutMs`, else the longest a
- * review may run, and the finding cap the config's `findingsCap`, else its `maxFindings`, else one finding per research part, at least 50 (`findingsCapOf`). The estimate printed is a second
+ * review may run, and the finding cap the config's `findingsCap`, else its `maxFindings`, else four findings per research part, at least 50 (`findingsCapOf`). The estimate printed is a second
  * one, made under those bounds, with the warnings they call for: a large review, or a cap below what the estimate
  * expects. The review is never held for its size: it runs to its cap or its deadline, and what they stop is a gap.
  * `--large` warns and does nothing. The estimate's counts and durations are scaled for a person, and exact (`words`) under `--progress json`,
