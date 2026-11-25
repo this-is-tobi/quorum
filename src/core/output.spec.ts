@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { OutputError } from './errors.ts'
-import { extractJsonObject, holdsReasoning, parseResearchReply, parseVoteReply, researchReplyJsonSchema, researchReplyWithRuleJsonSchema, voteReplyJsonSchema } from './output.ts'
+import { extractJsonObject, holdsReasoning, parseResearchReply, parseVoteReply, readEntries, researchEntries, researchReplyJsonSchema, researchReplyWithRuleJsonSchema, voteReplyJsonSchema } from './output.ts'
 
 const finding = {
   file: 'a.js',
@@ -241,6 +241,31 @@ describe('extractJsonObject', () => {
   it('throws an OutputError naming the stage when there is no object', () => {
     expect(() => extractJsonObject('no json here', 'vote')).toThrow(OutputError)
     expect(() => extractJsonObject('no json here', 'vote')).toThrow(/vote reply unusable/)
+  })
+})
+
+describe('researchEntries and readEntries', () => {
+  it('reads a research envelope\'s entries once, and checks only the first count of them as findings', () => {
+    const entries = researchEntries(JSON.stringify({
+      findings: [finding, 1, finding],
+    }))
+    expect(entries).toHaveLength(3)
+    expect(readEntries(entries, 2)).toEqual({
+      findings: [finding],
+      invalid: [
+        expect.stringMatching(/^findings\[1\]: /),
+      ],
+    })
+    expect(readEntries(entries, 0)).toEqual({ findings: [], invalid: [] })
+    expect(() => researchEntries('{"findings":[],"notes":[]}')).toThrow(OutputError)
+    expect(() => researchEntries('{"findings":[],"notes":[]}')).toThrow(/top-level key/)
+  })
+
+  it('refuses a count that is not a non-negative integer, as it would read from the end of the reply', () => {
+    for (const count of [-1, 1.5, Number.NaN]) {
+      expect(() => readEntries([finding], count)).toThrow(RangeError)
+    }
+    expect(readEntries([finding, finding], Infinity).findings).toHaveLength(2)
   })
 })
 
