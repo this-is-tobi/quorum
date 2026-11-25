@@ -19,6 +19,7 @@ import { backoffMs, isTimeout, retryWait } from '../retry.ts'
 import { rulesSent } from '../rules.ts'
 import { DEFAULT_REPLY_TOKENS, expectedOf, replyLimit, requestTokens, TEMPLATE_TOKENS } from '../tokens.ts'
 import type { Adaptation, FailOn, Position, ProviderRef, QuorumEvent, ReviewRule, StageName, Thresholds, Usage } from '../types.ts'
+import { MAX_MODEL, plainText } from '../verify.ts'
 import { newWatch, progressReports, seenOf } from '../watch.ts'
 import type { AttemptSeen } from '../watch.ts'
 import { attempt, ceilingOf, streamsAttempt } from './attempt.ts'
@@ -870,6 +871,7 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       durationMs: took(),
       ok: true,
       ...counted(attempts, addUsage(usage, replied), spent),
+      ...servedBy(result),
       ...read?.listed === undefined
         ? {}
         : { listed: read.listed },
@@ -890,6 +892,22 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     if (key !== undefined) await keepAnswer(ctx, requester, target, key, read.answered, result.reply, replied)
     return read.answered
   })
+}
+
+/**
+ * The `model` field of the `call` event of a call that was answered: the model the reply named, cleaned as a category is and cut at
+ * `MAX_MODEL` characters, and none for a call the store answered, which no provider answered in this review, for a provider object
+ * whose reply names no string, and for a name that is nothing but white space and hidden characters.
+ */
+function servedBy(sent: Sent): { model?: string } {
+  if (!('reply' in sent)) return {}
+  const { model } = sent.reply
+  const named = typeof model === 'string'
+    ? plainText(model, MAX_MODEL)
+    : ''
+  return named === ''
+    ? {}
+    : { model: named }
 }
 
 /** The `call` field of an event of a call that was numbered, and none for one that sent no `call:start`. */

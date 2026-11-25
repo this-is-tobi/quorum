@@ -424,6 +424,7 @@ describe('the retries of a call', () => {
       attempts: 2,
       usage: { inputTokens: 4, outputTokens: 6 },
       spent: 10,
+      model: 'm',
     })
     await expect(settle(clock, queued)).resolves.toEqual({ text: 'queued' })
     expect(order).toEqual(['first', 'first', 'queued'])
@@ -709,6 +710,7 @@ describe('a reply of only reasoning', () => {
         attempts: 2,
         usage: { inputTokens: 200, outputTokens: 950 },
         spent: 1150,
+        model: 'm',
       },
     ])
     expect(ctx.adapt.record()).toEqual([])
@@ -865,6 +867,7 @@ describe('a bad reply, sent once more', () => {
         attempts: 2,
         usage: { inputTokens: 200, outputTokens: 30 },
         spent: 230,
+        model: 'm',
       },
     ])
     expect(ctx.adapt.record()).toEqual([])
@@ -2523,6 +2526,66 @@ describe('the events of a call', () => {
       listed: 2,
     })
     expect(events[5]).not.toHaveProperty('call')
+  })
+
+  it.each<[string, string | undefined]>([
+    ['local-model-2026', 'local-model-2026'],
+    [`local${String.fromCharCode(0x200B)}-model  x`, 'local-model x'],
+    [
+      'm'.repeat(300),
+      `${'m'.repeat(99)}…`,
+    ],
+    ['   ', undefined],
+  ])('names a served model of %s as %j', async (served, named) => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    await callProvider(ctx, requester, target(async () => ({ text: '{}', model: served })), () => request)
+    expect(events).toHaveLength(1)
+    if (named === undefined) expect(events[0]).not.toHaveProperty('model')
+    else expect(events[0]).toMatchObject({ type: 'call', ok: true, model: named })
+  })
+
+  it('names no served model for a call the store answered, and names it for a reply the stage could not read', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const store = memory()
+    const keeping: RunContext = { ...ctx, store }
+    const named: Provider['complete'] = async () => ({ text: '{}', model: 'local-model-2026' })
+    // A first call answers and is saved, and the same call again is answered by the store: no provider answered it in this review.
+    await callProvider(keeping, researching, target(named), keyed)
+    await callProvider(keeping, researching, target(async () => {
+      throw new Error('the store answers')
+    }), keyed)
+    expect(events[0]).toMatchObject({ type: 'call', ok: true, model: 'local-model-2026' })
+    expect(events[1]).toMatchObject({ type: 'call', ok: true, reused: true })
+    expect(events[1]).not.toHaveProperty('model')
+    // A reply the stage's check refused still came back from the server, so its call names the model.
+    await expect(callProvider(ctx, requester, target(named), () => request, {
+      check: () => {
+        throw new Error('no envelope')
+      },
+    })).rejects.toThrow('no envelope')
+    expect(events[2]).toMatchObject({ type: 'call', ok: true, model: 'local-model-2026' })
+    // A call that failed was answered by no model.
+    await expect(callProvider(ctx, requester, target(async () => {
+      throw failure({ kind: 'refusal' })
+    }), () => request)).rejects.toThrow('failed')
+    expect(events[3]).toMatchObject({ type: 'call', ok: false })
+    expect(events[3]).not.toHaveProperty('model')
+  })
+
+  it('names no served model for a reply of a provider object that holds none, and the call still ends', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const unnamed = target(async () => ({ text: '{}' }) as unknown as CompletionResponse)
+    await expect(callProvider(ctx, requester, unnamed, () => request)).resolves.toEqual({ text: '{}' })
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ type: 'call', ok: true })
+    expect(events[0]).not.toHaveProperty('model')
+    // A model that is no string is named by no one either.
+    const odd = target(async () => ({ text: '{}', model: 7 }) as unknown as CompletionResponse)
+    await expect(callProvider(ctx, requester, odd, () => request)).resolves.toEqual({ text: '{}' })
+    expect(events[1]).not.toHaveProperty('model')
   })
 
   it('tells onEnd the spend and the start of each call that built its request, whatever its end', async () => {

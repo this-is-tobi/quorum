@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
 import type { Flag, IncompleteEntry, LeftOutFile, PublicView, QuorumResult, ResearchRecord, ReviewSource, Verdict } from '../core/types.ts'
-import { blankResult, contextDocument, FINDINGS, INCOMPLETE, INTERRUPTED, LIFTED, PASS, reportResult, SQL, TOKEN } from '../testing/report.ts'
+import { blankResult, contextDocument, FINDINGS, INCOMPLETE, INTERRUPTED, LIFTED, PASS, reportResult, SERVED_AS_TWO, SQL, TOKEN } from '../testing/report.ts'
 import { documentLine } from './lines.ts'
 import { text } from './text.ts'
 import { publicView } from './view.ts'
@@ -181,6 +181,71 @@ describe('text', () => {
       'gap: security vote-failed at "a b.js", a failed vote could have raised a kept',
       '  finding\'s level',
     ])
+  })
+
+  it('writes the models lines after the time line of a full result, wrapped at 80 columns, and none for the public view', () => {
+    const result = reportResult({
+      meta: {
+        calls: {
+          ...SERVED_AS_TWO,
+          q: {
+            model: 'local-model',
+            served: [
+              { model: 'local-model-2026', calls: 4 },
+            ],
+          },
+        },
+      },
+    })
+    const lines = render(result)
+    const took = lines.findIndex(line => line.startsWith('took '))
+    expect(lines.slice(took, took + 5)).toEqual([
+      'took 41s, 48.1k tokens in and 4.19k out',
+      'models: q answered as local-model-2026, its config names local-model',
+      'warning: p answered as 2 models in this review: local-model-2026 in 3 call(s),',
+      '  local-model-2027 in 2',
+      'exit 1, findings: a gating profile kept a finding at or above its fail-on level',
+    ])
+    // The rest of the report is the one a result with no record writes.
+    expect(lines.filter((line, index) => index < took + 1 || index > took + 3)).toEqual(MAIN)
+    // The public view names no model, so it writes none of these lines.
+    const view = render(publicView(result))
+    expect(view.some(line => line.startsWith('models:') || line.startsWith('warning:'))).toBe(false)
+    expect(view.join('\n')).not.toContain('local-model')
+    // A result whose providers answered as their own models writes none.
+    expect(render(reportResult({
+      meta: {
+        calls: {
+          p: {
+            model: 'm',
+            served: [
+              { model: 'm', calls: 5 },
+            ],
+          },
+        },
+      },
+    }))).toEqual(MAIN)
+  })
+
+  it('writes a served model as inert text, whatever a result read from a file holds', () => {
+    const hostile = `a${RLO}b ${ESC}[2J ##[add-mask]x`
+    const lines = render(reportResult({
+      meta: {
+        calls: {
+          p: {
+            model: 'm',
+            served: [
+              { model: hostile, calls: 5 },
+            ],
+          },
+        },
+      },
+    }), FINDINGS, true)
+    const written = lines.filter(line => line.startsWith('models:'))
+    expect(written).toHaveLength(1)
+    expect(written[0]).not.toContain(RLO)
+    expect(written[0]).not.toContain(ESC)
+    expect(written[0]).not.toContain('##[')
   })
 
   it('says where the finder cited a moved finding, right under its head', () => {

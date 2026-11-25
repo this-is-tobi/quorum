@@ -67,9 +67,10 @@ export interface RateLimit {
 
 /**
  * What a provider returns: the reply text, the model that produced it and, when reported, its usage.
- * `model` is server text: nothing shows or stores it today, and whatever does must render it through
- * the sanitizer. `reasoning` is `true` when the reply showed reasoning, `false` when the adapter could tell it
- * showed none, and absent when it cannot tell, as for a provider with no way to read it.
+ * `model` is server text: the answered `call` event names it and `meta.calls` counts it, cleaned as a category is
+ * and cut at `MAX_MODEL` characters, which is the only form quorum shows, and the reply store keeps it as it came.
+ * Whatever else shows it must render it through the sanitizer. `reasoning` is `true` when the reply showed reasoning,
+ * `false` when the adapter could tell it showed none, and absent when it cannot tell, as for a provider with no way to read it.
  */
 export interface CompletionResponse {
   text: string

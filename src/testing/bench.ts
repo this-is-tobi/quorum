@@ -426,6 +426,7 @@ export function resultWith(parts: {
           coverage: [],
         },
       },
+      calls: {},
       incomplete: [...incomplete],
       leftOut: [],
       flags: [],
@@ -534,6 +535,16 @@ export const RESULT: QuorumResult = (() => {
         },
       },
       usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.001 },
+      calls: {
+        fake: {
+          model: 'm',
+          served: [
+            { model: 'm', calls: 3 },
+            { model: 'm-2026', calls: 2 },
+          ],
+          servedOthers: 1,
+        },
+      },
       leftOut: [
         { file: 'package-lock.json', reason: 'excluded' },
         { file: 'logo.png', reason: 'binary' },

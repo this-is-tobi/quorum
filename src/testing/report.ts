@@ -74,6 +74,17 @@ export const UPLOAD: Verdict = {
   confidence: undefined,
 }
 
+/** The calls a review records when its provider `p`, which its config names `m`, answered as two other models: one named for 3 calls and one for 2. */
+export const SERVED_AS_TWO: QuorumMeta['calls'] = {
+  p: {
+    model: 'm',
+    served: [
+      { model: 'local-model-2026', calls: 3 },
+      { model: 'local-model-2027', calls: 2 },
+    ],
+  },
+}
+
 /** The meta of `reportResult`: a profile `security` at fail-on high over three files, one binary file left out, its gap and one flag. */
 export function reportMeta(): QuorumMeta {
   return {
@@ -114,6 +125,7 @@ export function reportMeta(): QuorumMeta {
       },
     },
     usage: { inputTokens: 48_120, outputTokens: 4190 },
+    calls: {},
     incomplete: [
       { profile: 'security', reason: 'binary', detail: 'the diff carries no content for 1 binary file(s), listed in meta.leftOut' },
     ],

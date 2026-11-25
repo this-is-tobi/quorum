@@ -369,6 +369,74 @@ describe('summaryLines', () => {
     ])
   })
 
+  it('writes the models lines after the calls line, and none under the public view', () => {
+    const facts = factsOf({
+      result: reportResult({
+        unreviewed: [],
+        meta: {
+          durationMs: 2_285_000,
+          usage: { inputTokens: 2_412_833, outputTokens: 312_094 },
+          calls: {
+            local: {
+              model: 'local-model',
+              served: [
+                { model: 'local-model-2026', calls: 6 },
+              ],
+            },
+            research: {
+              model: 'gateway-alias',
+              served: [
+                { model: 'gateway-alias-3', calls: 3 },
+                { model: 'gateway-alias-4', calls: 2 },
+              ],
+            },
+          },
+        },
+      }),
+    })
+    const state = replay(longReview())
+    const written = lines(state, facts)
+    const calls = written.findIndex(line => line.startsWith('calls:'))
+    expect(written.slice(calls + 1, calls + 4)).toEqual([
+      'models: local answered as local-model-2026, its config names local-model',
+      'warning: research answered as 2 models in this review: gateway-alias-3 in 3 call(s), gateway-alias-4 in 2',
+      'gaps: 1 part(s) research-failed (timeout): raise timeoutMs',
+    ])
+    expect(written).toHaveLength(lines(state).length + 2)
+    // The public view writes none, as the report of that view names no model.
+    expect(lines(state, facts, 'public').some(line => line.startsWith('models:') || line.includes('answered as'))).toBe(false)
+    expect(lines(state, facts, 'public')).toEqual(lines(state, factsOf(), 'public'))
+    // A review whose providers answered as their own models writes none, and one with no calls line still writes them, before where the report went.
+    expect(lines(state).some(line => line.startsWith('models:'))).toBe(false)
+    expect(lines(reviewed(), facts).filter(line => /^(?:models|warning|result):/.test(line))).toEqual([
+      'models: local answered as local-model-2026, its config names local-model',
+      'warning: research answered as 2 models in this review: gateway-alias-3 in 3 call(s), gateway-alias-4 in 2',
+      'result: json on stdout',
+    ])
+  })
+
+  it('writes a served model as an inert line, whatever a result read from a file holds', () => {
+    const hostile = `a${String.fromCharCode(0x202E)}b::error::x${ESC}[2J`
+    const facts = factsOf({
+      result: reportResult({
+        meta: {
+          calls: {
+            local: {
+              model: 'local-model',
+              served: [
+                { model: hostile, calls: 6 },
+              ],
+            },
+          },
+        },
+      }),
+    })
+    const [line] = lines(replay(longReview()), facts).filter(written => written.startsWith('models:'))
+    expect(line).toContain('answered as a')
+    expect(line).not.toContain(ESC)
+    expect(line).not.toContain(String.fromCharCode(0x202E))
+  })
+
   it('names each profile\'s rules sent in the context line', () => {
     const { security } = reportResult().meta.profiles
     const documents = [

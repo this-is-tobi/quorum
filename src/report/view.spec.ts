@@ -196,6 +196,36 @@ describe('publicView', () => {
     } as unknown as PublicView)).toThrow('the public view is not one quorum writes, at meta.profiles.security')
   })
 
+  it('withholds meta.calls from the public view', () => {
+    const calls = {
+      p: {
+        model: 'm',
+        served: [
+          { model: 'SERVED-CANARY-A', calls: 3 },
+          { model: 'SERVED-CANARY-B', calls: 2 },
+        ],
+        servedOthers: 1,
+      },
+    }
+    const result = reportResult({
+      meta: { calls },
+    })
+    const view = publicView(result)
+    expect(view.meta).not.toHaveProperty('calls')
+    expect(inertJson(view)).not.toContain('SERVED-CANARY')
+    // The view is the one a result with other calls makes, and the result's own are left as they were.
+    expect(view).toStrictEqual(publicView(reportResult()))
+    expect(result.meta.calls).toEqual(calls)
+    // A view that holds them is no view quorum writes.
+    expect(() => publicView({
+      ...view,
+      meta: {
+        ...view.meta,
+        calls,
+      },
+    } as unknown as PublicView)).toThrow('the public view is not one quorum writes, at meta')
+  })
+
   it('keeps meta.profiles.<id>.recovery in the public view, as a copy, and leaves it out of a profile that has none', () => {
     const recovery = {
       parts: 2,

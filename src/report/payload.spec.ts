@@ -5,7 +5,7 @@ import { PROFILE_ID_PATTERN } from '../core/profile.ts'
 import { FINGERPRINT_PATTERN } from '../core/stages/research.ts'
 import type { PublicView, QuorumResult, ReviewSource, Verdict } from '../core/types.ts'
 import { codeFree, expectCodeWritten, HOSTILE, RLO } from '../testing/markdown.ts'
-import { blankResult, cast, FINDINGS, INCOMPLETE, INTERRUPTED, LIFTED, PASS, RANGE, reportResult, SQL, TOKEN } from '../testing/report.ts'
+import { blankResult, cast, FINDINGS, INCOMPLETE, INTERRUPTED, LIFTED, PASS, RANGE, reportResult, SERVED_AS_TWO, SQL, TOKEN } from '../testing/report.ts'
 import { summaryMarkdown } from './markdown.ts'
 import { commentBody, payload } from './payload.ts'
 import { publicView } from './view.ts'
@@ -91,6 +91,15 @@ describe('payload', () => {
       ],
       unplaced: 0,
     })
+  })
+
+  it('holds no served model', () => {
+    const answered = reportResult({
+      meta: { calls: SERVED_AS_TWO },
+    })
+    expect(render(answered)).toBe(render(reportResult()))
+    expect(render(answered)).not.toContain('local-model-2026')
+    expect(render(answered)).not.toContain('local-model-2027')
   })
 
   it('writes each body with the marker and fingerprint first, then the level, profile, category, votes and claim', () => {

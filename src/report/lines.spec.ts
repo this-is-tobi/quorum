@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { ContextDocument, LensVote, Verdict, VoteFailure } from '../core/types.ts'
+import type { ContextDocument, LensVote, QuorumMeta, Verdict, VoteFailure } from '../core/types.ts'
 import { cast, contextDocument, reportResult, SQL } from '../testing/report.ts'
-import { contextSummary, documentLine, documentLineParts, durationText, ruleCountWords, ruleWords, tokenWords, voteFailureWords, votesWords } from './lines.ts'
+import { contextSummary, documentLine, documentLineParts, durationText, modelLines, ruleCountWords, ruleWords, tokenWords, voteFailureWords, votesWords } from './lines.ts'
 import { publicView } from './view.ts'
 
 /** A failed vote of the lens `angle`, which failed with `failure`. */
@@ -221,6 +221,146 @@ describe('ruleCountWords', () => {
     expect(ruleCountWords({ listed: 5, sent: 3 }, false)).toBe('3 of 5 sent')
     expect(ruleCountWords({ listed: 5, sent: 0 }, true)).toBe('0 of 5 sent, so its research asks nothing')
     expect(ruleCountWords({ listed: 0, sent: 0 }, true)).toBe('0 of 0 sent, so its research asks nothing')
+  })
+})
+
+describe('modelLines', () => {
+  const served = (...models: Array<[string, number]>): Array<{ model: string, calls: number }> => models.map(([model, calls]) => ({ model, calls }))
+
+  it.each<[string, string[], QuorumMeta['calls']]>([
+    ['no call', [], {}],
+    [
+      'a provider that answered as the configured model',
+      [],
+      {
+        local: {
+          model: 'local-model',
+          served: served(['local-model', 6]),
+        },
+      },
+    ],
+    [
+      'a provider whose replies named none',
+      [],
+      {
+        local: { model: 'local-model', served: [] },
+      },
+    ],
+    [
+      'a provider that answered as another model',
+      ['models: local answered as local-model-2026, its config names local-model'],
+      {
+        local: {
+          model: 'local-model',
+          served: served(['local-model-2026', 6]),
+        },
+      },
+    ],
+    [
+      'two providers, one that answered as another model and one as its own',
+      ['models: research answered as gateway-alias-3, its config names gateway-alias'],
+      {
+        local: {
+          model: 'local-model',
+          served: served(['local-model', 4]),
+        },
+        research: {
+          model: 'gateway-alias',
+          served: served(['gateway-alias-3', 2]),
+        },
+      },
+    ],
+    [
+      'two providers that each answered as another model',
+      ['models: local answered as local-model-2026, its config names local-model; research answered as gateway-alias-3, its config names gateway-alias'],
+      {
+        local: {
+          model: 'local-model',
+          served: served(['local-model-2026', 6]),
+        },
+        research: {
+          model: 'gateway-alias',
+          served: served(['gateway-alias-3', 2]),
+        },
+      },
+    ],
+    [
+      'a provider that answered as two models',
+      ['warning: local answered as 2 models in this review: local-model-a in 3 call(s), local-model-b in 3'],
+      {
+        local: {
+          model: 'local-model',
+          served: served(['local-model-a', 3], ['local-model-b', 3]),
+        },
+      },
+    ],
+    [
+      'a provider that answered as two models, one its own',
+      ['warning: local answered as 2 models in this review: local-model in 4 call(s), local-model-b in 2'],
+      {
+        local: {
+          model: 'local-model',
+          served: served(['local-model', 4], ['local-model-b', 2]),
+        },
+      },
+    ],
+    [
+      'a provider that answered as three models',
+      ['warning: local answered as 3 models in this review: local-model-a in 3 call(s), local-model-b in 2, local-model-c in 1'],
+      {
+        local: {
+          model: 'local-model',
+          served: served(['local-model-a', 3], ['local-model-b', 2], ['local-model-c', 1]),
+        },
+      },
+    ],
+    [
+      'a provider that answered as two models and calls by others',
+      ['warning: local answered as 2 models in this review: local-model-a in 3 call(s), local-model-b in 3, and 2 call(s) by other models'],
+      {
+        local: {
+          model: 'local-model',
+          served: served(['local-model-a', 3], ['local-model-b', 3]),
+          servedOthers: 2,
+        },
+      },
+    ],
+    [
+      'a provider that answered as another model, and one as two',
+      [
+        'models: local answered as local-model-2026, its config names local-model',
+        'warning: research answered as 2 models in this review: gateway-alias-3 in 2 call(s), gateway-alias-4 in 1',
+      ],
+      {
+        local: {
+          model: 'local-model',
+          served: served(['local-model-2026', 6]),
+        },
+        research: {
+          model: 'gateway-alias',
+          served: served(['gateway-alias-3', 2], ['gateway-alias-4', 1]),
+        },
+      },
+    ],
+    [
+      'two providers that answered as two models',
+      [
+        'warning: local answered as 2 models in this review: local-model-a in 3 call(s), local-model-b in 3',
+        'warning: research answered as 2 models in this review: gateway-alias-3 in 2 call(s), gateway-alias-4 in 1',
+      ],
+      {
+        local: {
+          model: 'local-model',
+          served: served(['local-model-a', 3], ['local-model-b', 3]),
+        },
+        research: {
+          model: 'gateway-alias',
+          served: served(['gateway-alias-3', 2], ['gateway-alias-4', 1]),
+        },
+      },
+    ],
+  ])('writes the models of %s as %j', (_label, expected, calls) => {
+    expect(modelLines(calls)).toEqual(expected)
   })
 })
 

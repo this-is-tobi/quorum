@@ -3,7 +3,7 @@ import type { Confidence, Flag, IncompleteEntry, LeftOutFile, PublicView, Quorum
 import { describe, expect, it, vi } from 'vitest'
 import { utf8Length } from '../core/tokens.ts'
 import { publicView } from '../report/view.ts'
-import { blankResult, cast, FAILED, FINDINGS, INCOMPLETE, INTERRUPTED, PASS, reportMeta, reportResult, SQL, UPLOAD } from '../testing/report.ts'
+import { blankResult, cast, FAILED, FINDINGS, INCOMPLETE, INTERRUPTED, PASS, reportMeta, reportResult, SERVED_AS_TWO, SQL, UPLOAD } from '../testing/report.ts'
 import { agentResult, agentResultSchema, CLAIM_CAP, ITEM_CEILING, LISTED, NOTICE, RESULT_BUDGET } from './result.ts'
 
 const skew = vi.hoisted(() => ({ on: false, hits: 0 }))
@@ -68,6 +68,15 @@ function manyFiles(count: number, secrets: readonly number[] = []): LeftOutFile[
 }
 
 describe('agentResult', () => {
+  it('holds no served model', () => {
+    const answered = reportResult({
+      meta: { calls: SERVED_AS_TWO },
+    })
+    expect(received(answered)).toEqual(received(reportResult()))
+    expect(JSON.stringify(received(answered))).not.toContain('local-model-2026')
+    expect(JSON.stringify(received(answered))).not.toContain('local-model-2027')
+  })
+
   it('puts the code-checked fields first and each finding\'s model text last', () => {
     const result = received(reportResult())
     expect(Object.keys(result)).toEqual([

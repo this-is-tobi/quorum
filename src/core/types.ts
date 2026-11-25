@@ -541,6 +541,28 @@ export interface Adaptation {
   cause: 'cut-off-thinking' | 'no-answer-thinking' | 'empty-reply' | 'format-refused' | 'stream-refused' | 'stream-answered-whole' | 'cut-on-the-way' | 'byte-bound-refused' | 'loaded-window' | 'lowering-refused'
 }
 
+/** A model a provider's replies named in one review, and how many replies named it. */
+export interface ServedModel {
+  /** The model as the `call` event names it: cleaned, and cut at `MAX_MODEL` characters. */
+  model: string
+  /** The answered calls whose reply named it. */
+  calls: number
+}
+
+/**
+ * What one provider's replies named as the model that answered, as `meta.calls.<id>` records it, so a review through a
+ * gateway's alias can say which model answered, and whether the gateway switched models mid-review. Two provider objects
+ * of one id are merged, the first one's `model` kept.
+ */
+export interface ProviderCalls {
+  /** The model the provider's config names, as the events' `ProviderRef` holds it. */
+  model: string
+  /** The models its answered calls' replies named, the first seen first, at most `MAX_SERVED` (8) of them: none when no reply named one. */
+  served: ServedModel[]
+  /** The answered calls whose reply named a further model, once `served` held `MAX_SERVED`: absent when there are none. */
+  servedOthers?: number
+}
+
 /** What a review records about itself, besides its verdicts. */
 export interface QuorumMeta {
   /** The version of quorum that ran the review, read from package.json. */
@@ -555,6 +577,8 @@ export interface QuorumMeta {
   profiles: Record<string, ProfileMeta>
   /** The usage summed over the calls that reported valid counts; absent when none did. */
   usage?: Usage
+  /** What each provider's replies named as the model that answered, by provider id, counted from the `call` events: `{}` when no call was made. The public view withholds it. */
+  calls: Record<string, ProviderCalls>
   /** Gaps that are not findings. An entry here, or an unreviewed finding, makes the review incomplete. */
   incomplete: IncompleteEntry[]
   /** The files the review left out, the input's own first, then the diff's, once per file, reason and rule. Each, but an excluded, a skipped or a `deleted-secret` one, is also a gap of every profile: a file held back as a secret is one no model was sent. */
@@ -602,8 +626,8 @@ export interface PublicProfileMeta extends Omit<ProfileMeta, 'providers' | 'rese
 /** A gap as the public view keeps it: the profile, the reason and the file, never the detail. */
 export type PublicGap = Omit<IncompleteEntry, 'detail'>
 
-/** The meta of the public view: no usage, no providers, no gap detail, and `view` to say so. */
-export interface PublicMeta extends Omit<QuorumMeta, 'profiles' | 'usage' | 'incomplete'> {
+/** The meta of the public view: no usage, no calls, no providers, no gap detail, and `view` to say so. */
+export interface PublicMeta extends Omit<QuorumMeta, 'profiles' | 'usage' | 'calls' | 'incomplete'> {
   view: 'public'
   profiles: Record<string, PublicProfileMeta>
   incomplete: PublicGap[]
@@ -911,9 +935,13 @@ export type QuorumEvent
      * provider could tell. An ok call whose answered attempt streamed adds `firstTokenMs`, from the attempt's send to its
      * first data event, the headers excluded, and `longestSilenceMs`, the longest time between two signs of its progress,
      * the headers counted as one; and `ceilingMs`, in milliseconds, when the deadline of that attempt grew while it streamed:
-     * the ceiling it reached.
+     * the ceiling it reached. `model` is the model the answered reply named (`CompletionResponse.model`, which an adapter
+     * whose server names none fills with the provider's configured model), cleaned as a category is, its hidden characters
+     * removed and its white space collapsed, and cut at `MAX_MODEL` (100) characters with an ellipsis. It is absent when
+     * nothing is left of it, when the provider's reply held none, and on a call that failed or that the store answered,
+     * which no provider answered in this review; a call whose reply the stage could not read carries it.
      */
-    | { type: 'call', call?: number, profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, part?: Position, finding?: string, durationMs: number, ok: boolean, attempts?: number, usage?: Usage, spent: number, reused?: true, listed?: number, reasoning?: boolean, firstTokenMs?: number, longestSilenceMs?: number, ceilingMs?: number }
+    | { type: 'call', call?: number, profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, part?: Position, finding?: string, durationMs: number, ok: boolean, attempts?: number, usage?: Usage, spent: number, reused?: true, listed?: number, reasoning?: boolean, firstTokenMs?: number, longestSilenceMs?: number, ceilingMs?: number, model?: string }
     /**
      * A provider was found down: three of its calls in a row failed for a reason of its own (`kind`, and for an
      * `http` failure its `status`), so no call goes to it for the rest of the review. Sent once per provider, at the
