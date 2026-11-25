@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { OutputError } from './errors.ts'
-import { extractJsonObject, holdsReasoning, parseResearchReply, parseVoteReply, readEntries, researchEntries, researchReplyJsonSchema, researchReplyWithRuleJsonSchema, voteReplyJsonSchema } from './output.ts'
+import { entryPlace, extractJsonObject, holdsReasoning, parseResearchReply, parseVoteReply, readEntries, researchEntries, researchReplyJsonSchema, researchReplyWithRuleJsonSchema, voteReplyJsonSchema } from './output.ts'
 
 const finding = {
   file: 'a.js',
@@ -266,6 +266,64 @@ describe('researchEntries and readEntries', () => {
       expect(() => readEntries([finding], count)).toThrow(RangeError)
     }
     expect(readEntries([finding, finding], Infinity).findings).toHaveLength(2)
+  })
+})
+
+describe('entryPlace', () => {
+  it.each([
+    [
+      'with its own file and line',
+      { file: 'a.js', line: 3 },
+      { file: 'a.js', line: 3 },
+    ],
+    [
+      'with a quoted line',
+      { file: 'a.js', line: 3 },
+      { file: 'a.js', line: ' 3 ' },
+    ],
+    [
+      'with a quoted line of 0',
+      undefined,
+      { file: 'a.js', line: '0' },
+    ],
+    [
+      'with a quoted fraction',
+      undefined,
+      { file: 'a.js', line: '3.5' },
+    ],
+    [
+      'with a quoted word',
+      undefined,
+      { file: 'a.js', line: 'abc' },
+    ],
+    [
+      'with a blank file',
+      undefined,
+      { file: ' ', line: 3 },
+    ],
+    [
+      'with a line below 1',
+      undefined,
+      { file: 'a.js', line: 0 },
+    ],
+    [
+      'with a line that is no whole number',
+      undefined,
+      { file: 'a.js', line: 1.5 },
+    ],
+    [
+      'with a file that is no string',
+      undefined,
+      { file: 3, line: 1 },
+    ],
+    ['that is no object', undefined, 1],
+    [
+      'whose fields it inherits',
+      undefined,
+      Object.create({ file: 'a.js', line: 1 }),
+    ],
+  ])('places the entry %s at %j', (_name, place, entry) => {
+    expect(entryPlace(entry)).toEqual(place)
   })
 })
 

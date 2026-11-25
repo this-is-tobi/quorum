@@ -488,3 +488,61 @@ export function coverageOf(scope: Pick<ReviewScope, 'files' | 'leftOut'>, sectio
     }
   })
 }
+
+/** A line of a file of the diff that a finding the finding cap left unread names, once the diff shows it. */
+export interface UnreadPlace {
+  readonly file: string
+  readonly line: number
+}
+
+/** The most `findings-capped` ranges a file's coverage holds: a file with more has its capped lines as one range, from the first to the last. */
+export const MAX_CAPPED_RANGES = 16
+
+/** The `findings-capped` ranges of `lines`: each run of consecutive lines is one range, in line order, or one range from the first line to the last past `MAX_CAPPED_RANGES`. */
+function cappedRanges(lines: readonly number[]): LeftRange[] {
+  const reason = 'findings-capped'
+  const ranges: LeftRange[] = []
+  for (const line of [
+    ...new Set(lines),
+  ].toSorted((a, b) => a - b)) {
+    const last = ranges.at(-1)
+    if (last !== undefined && last.end + 1 === line) last.end = line
+    else ranges.push({ start: line, end: line, reason })
+  }
+  const first = ranges[0]
+  const last = ranges.at(-1)
+  return ranges.length > MAX_CAPPED_RANGES && first !== undefined && last !== undefined
+    ? [
+        { start: first.start, end: last.end, reason },
+      ]
+    : ranges
+}
+
+/**
+ * The coverage of a profile whose research read some findings and left others to the finding cap, `unread` being the places
+ * the cap left unread, as the research stage locates them. A file the coverage calls `reviewed` that an unread place names is
+ * `partial`, its unread lines `findings-capped` ranges (consecutive lines merged, and one range past `MAX_CAPPED_RANGES`); a `partial`
+ * file gains those ranges, its whole list in line order; an `unreviewed` or `excluded` file, a file no place names, and a place
+ * of a file the coverage does not list, change nothing. So `reviewed` also means that no finding a reply listed on the file,
+ * within the findings that reply was asked for, was left unread by the cap. The coverage given is not changed.
+ */
+export function withCapped(coverage: readonly CoverageEntry[], unread: readonly UnreadPlace[]): CoverageEntry[] {
+  const lines = new Map<string, number[]>()
+  for (const { file, line } of unread) {
+    const own = lines.get(file) ?? []
+    lines.set(file, own)
+    own.push(line)
+  }
+  return coverage.map((entry): CoverageEntry => {
+    const own = lines.get(entry.file)
+    if (own === undefined || (entry.status !== 'reviewed' && entry.status !== 'partial')) return entry
+    return {
+      file: entry.file,
+      status: 'partial',
+      left: [
+        ...entry.left ?? [],
+        ...cappedRanges(own),
+      ].toSorted((a, b) => a.start - b.start || a.end - b.end),
+    }
+  })
+}

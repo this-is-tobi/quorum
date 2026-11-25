@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import packageJson from '../../package.json' with { type: 'json' }
 import { securityProfile } from '../profiles/security.ts'
+import { coverageWords } from '../report/lines.ts'
 import { fakeClock, settle } from '../testing/clock.ts'
 import { fakeCredential } from '../testing/credentials.ts'
 import * as git from '../testing/fixtures/git.ts'
@@ -6047,6 +6048,35 @@ describe('adaptations', () => {
     expect(result.meta.incomplete).toEqual([
       { profile: 'naming', reason: 'findings-capped', detail: '2 of 5 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 3)' },
     ])
+  })
+
+  it('reads a file whose findings the cap left unread as partial, of a profile of its own, and the coverage line counts it', async () => {
+    const local = localOf(file => file === 'a.js'
+      ? ['n0', 'n1', 'n2'].map(category => ({
+          ...named(file) as object,
+          category,
+        }))
+      : [
+          named(file),
+        ])
+    const result = await createQuorum({
+      profiles: [naming],
+      partTokens: 1024,
+    }, portsFor(naming, local)).review({ diff: bigDiff }, { findingsCap: 3 })
+    const { coverage } = result.meta.profiles.naming
+    expect(coverage).toEqual([
+      {
+        file: 'a.js',
+        status: 'partial',
+        left: [
+          { start: 1, end: 1, reason: 'findings-capped' },
+        ],
+      },
+      { file: 'b.js', status: 'reviewed' },
+      { file: 'c.js', status: 'reviewed' },
+    ])
+    expect(coverageWords(coverage)).toBe('2 of 3 files reviewed, 1 in part')
+    expect(resultSchema.parse(JSON.parse(JSON.stringify(result)))).toEqual(JSON.parse(JSON.stringify(result)))
   })
 
   it('sends a vote in flight at the old setting once more at the settled one, so no vote fails for it', async () => {

@@ -121,6 +121,7 @@ describe('checkReply', () => {
       invalid: [],
       invalidRules: [],
       incomplete: [],
+      unread: [],
     })
   })
 
@@ -318,6 +319,129 @@ describe('checkReplies', () => {
     ])
   })
 
+  describe('the unread findings\' places', () => {
+    const at = (line: number, file = 'a.js'): unknown => ({ ...reported, file, line })
+
+    it('places the unread findings after the last one read, up to each reply\'s ask', () => {
+      const outcome = checkReplies([
+        {
+          text: reply([
+            at(1),
+            at(2),
+            at(3),
+            at(3),
+          ]),
+          asked: 2,
+        },
+      ], sections, 'security', 1)
+      expect(outcome.unread).toEqual([
+        { file: 'a.js', line: 2 },
+        { file: 'a.js', line: 3 },
+      ])
+    })
+
+    it('places every unread finding of a reply that lists more than its ask, at a cap equal to its ask', () => {
+      const outcome = checkReplies([
+        {
+          text: reply(Array.from({ length: 60 }, (_, index) => at((index % 3) + 1))),
+          asked: 50,
+        },
+      ], sections, 'security', 50)
+      expect(outcome.unread).toHaveLength(10)
+      expect(outcome.incomplete.map(entry => entry.reason)).toEqual(['findings-capped'])
+    })
+
+    it('bounds a reply that carries no ask by the cap, and lists the replies\' places in their order', () => {
+      expect(checkReplies([
+        {
+          text: reply(Array.from({ length: 5 }, () => at(1))),
+        },
+      ], sections, 'security', 2).unread).toHaveLength(2)
+      expect(checkReplies([
+        {
+          text: reply([
+            at(1),
+            at(2),
+            at(3),
+          ]),
+          asked: 3,
+        },
+        {
+          text: reply([
+            at(3),
+            at(2),
+            at(1),
+          ]),
+          asked: 3,
+        },
+      ], sections, 'security', 2).unread.map(({ line }) => line)).toEqual([2, 3, 2, 1])
+    })
+
+    it('places an unread finding whose line is quoted, as a read finding\'s quoted line is read', () => {
+      const quoted = { ...reported, line: ' 2 ' }
+      const outcome = checkReplies([
+        {
+          text: reply([
+            at(1),
+            quoted,
+          ]),
+          asked: 3,
+        },
+      ], sections, 'security', 1)
+      expect(outcome.unread).toEqual([
+        { file: 'a.js', line: 2 },
+      ])
+      expect(checkReplies([
+        {
+          text: reply([quoted]),
+          asked: 3,
+        },
+      ], sections, 'security', 1).findings.map(found => found.line)).toEqual([2])
+    })
+
+    it('places nothing when the cap leaves nothing unread', () => {
+      expect(checkReplies([
+        {
+          text: reply([
+            at(1),
+            at(2),
+          ]),
+          asked: 2,
+        },
+      ], sections, 'security', 2).unread).toEqual([])
+      expect(checkReply(reply([]), sections, 'security').unread).toEqual([])
+    })
+
+    it.each([
+      [
+        'names a file outside the diff',
+        at(1, 'missing.js'),
+      ],
+      [
+        'names a line the diff does not show',
+        at(9),
+      ],
+      [
+        'names no file and no line',
+        { summary: 'x' },
+      ],
+    ])('places no unread finding that %s', (_name, entry) => {
+      const outcome = checkReplies([
+        {
+          text: reply([
+            at(1),
+            entry,
+          ]),
+          asked: 3,
+        },
+      ], sections, 'security', 1)
+      expect(outcome.unread).toEqual([])
+      expect(outcome.incomplete).toEqual([
+        { profile: 'security', reason: 'findings-capped', detail: '1 of 2 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 1)' },
+      ])
+    })
+  })
+
   it('counts an unreadable entry the cap reads toward the cap', () => {
     const outcome = checkReplies([
       {
@@ -426,6 +550,7 @@ describe('checkReplies', () => {
       invalid: [],
       invalidRules: [],
       incomplete: [],
+      unread: [],
     })
   })
 

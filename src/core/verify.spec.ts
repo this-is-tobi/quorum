@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { locate, splitDiff } from './diff.ts'
 import type { FindingDetails, ReviewRule } from './types.ts'
-import { checkCitations, MAX_ANCHOR_OCCURRENCES, MIN_ANCHOR_QUOTE, UNCATEGORIZED, verifyFindings } from './verify.ts'
+import { checkCitations, MAX_ANCHOR_OCCURRENCES, MIN_ANCHOR_QUOTE, placeOf, UNCATEGORIZED, verifyFindings } from './verify.ts'
 import type { VerifiedFinding } from './verify.ts'
 
 const diff = [
@@ -339,6 +339,29 @@ describe('verifyFindings', () => {
       { ...reported, file: 'a\u200B.js' },
     ], plain).findings
     expect(finding.file).toBe('a.js')
+  })
+})
+
+describe('placeOf', () => {
+  const shown = splitDiff([
+    'diff --git a/a.js b/a.js',
+    '--- /dev/null',
+    '+++ b/a.js',
+    '@@ -0,0 +1,3 @@',
+    '+one',
+    '+two',
+    '+three',
+  ].join('\n'))
+
+  it('places a line at the diff\'s path of its file when the diff shows it, and nowhere else', () => {
+    expect(placeOf(shown, 'a.js', 2)).toBe('a.js')
+    expect(placeOf(shown, 'a.js', 9)).toBeUndefined()
+    expect(placeOf(shown, 'missing.js', 1)).toBeUndefined()
+  })
+
+  it('resolves a shortened path to the diff\'s own, and places no line of a part no header names', () => {
+    expect(placeOf(splitDiff(diff), 'a.js', 1)).toBe('src/a.js')
+    expect(placeOf(splitDiff('@@ -0,0 +1 @@\n+one'), 'a.js', 1)).toBeUndefined()
   })
 })
 

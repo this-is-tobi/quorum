@@ -110,6 +110,19 @@ export function verifyFindings(details: readonly FindingDetails[], sections: Rea
 }
 
 /**
+ * The diff's own path of the file `file`, as a finder wrote it, names at `line`: the path of the section `locate` finds there, so
+ * the file resolves as a finding's does and the line is one a hunk shows. Undefined when the diff does not show the line (the file
+ * is not in it, or no hunk holds the line) or the path is empty, a part of the diff that no header names. It checks nothing else
+ * of a finding, so a caller can place one it never read as a finding.
+ */
+export function placeOf(sections: ReadonlyMap<string, string>, file: string, line: number): string | undefined {
+  const path = locate(sections, file, line)?.path
+  return path === undefined || path === ''
+    ? undefined
+    : path
+}
+
+/**
  * Check the rule each of `findings` cites, once `verifyFindings` has anchored it, so on the finding's final file and line: a citation
  * holds when it names a rule of `rules`, the rules the review sent, whose `paths` match the finding's file (a rule with none applies to
  * every file), and the finding then carries that rule's own id, never the finder's text. Any other citation fails, with the reason

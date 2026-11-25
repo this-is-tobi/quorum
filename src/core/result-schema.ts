@@ -141,6 +141,7 @@ const coverageReason = z.enum([
   'research-failed',
   'provider-down',
   'reply-cut-off',
+  'findings-capped',
 ])
 const leftRange = z.strictObject({
   start: count,

@@ -1,10 +1,11 @@
 import type { DiffSection, Hunk } from './diff.ts'
-import type { Packing, PartOutcome, PartResult, Slice } from './parts.ts'
+import type { Packing, PartOutcome, PartResult, Slice, UnreadPlace } from './parts.ts'
+import type { CoverageEntry } from './types.ts'
 import { describe, expect, it } from 'vitest'
 import { reviewScope } from './coverage.ts'
 import { diffSections, heldSpan, parseHunks } from './diff.ts'
 import { excludeMatcher } from './exclude.ts'
-import { coverageOf, cutSection, listedFiles, nearestHunks, packParts, partText, partTokensProblem, sliceText } from './parts.ts'
+import { coverageOf, cutSection, listedFiles, nearestHunks, packParts, partText, partTokensProblem, sliceText, withCapped } from './parts.ts'
 import { tokenBound } from './tokens.ts'
 
 const t = tokenBound
@@ -1116,6 +1117,100 @@ describe('coverageOf', () => {
         { file: 'b.js', status: 'unreviewed', reason: 'reply-cut-off' },
       ])
     })
+  })
+})
+
+describe('withCapped', () => {
+  const places = (file: string, ...lines: number[]): UnreadPlace[] => lines.map(line => ({ file, line }))
+
+  it('reads a reviewed file whose findings the cap left unread as partial, its unread lines findings-capped ranges', () => {
+    const coverage: CoverageEntry[] = [
+      { file: 'a.js', status: 'reviewed' },
+      {
+        file: 'b.js',
+        status: 'partial',
+        left: [
+          { start: 1, end: 3, reason: 'research-failed' },
+        ],
+      },
+      { file: 'c.js', status: 'unreviewed', reason: 'research-failed' },
+      { file: 'd.js', status: 'excluded' },
+      { file: 'e.js', status: 'reviewed' },
+    ]
+    const given = structuredClone(coverage)
+    expect(withCapped(coverage, [
+      ...places('a.js', 9, 5, 6, 5),
+      ...places('b.js', 20),
+      ...places('c.js', 1),
+      ...places('d.js', 1),
+    ])).toEqual([
+      {
+        file: 'a.js',
+        status: 'partial',
+        left: [
+          { start: 5, end: 6, reason: 'findings-capped' },
+          { start: 9, end: 9, reason: 'findings-capped' },
+        ],
+      },
+      {
+        file: 'b.js',
+        status: 'partial',
+        left: [
+          { start: 1, end: 3, reason: 'research-failed' },
+          { start: 20, end: 20, reason: 'findings-capped' },
+        ],
+      },
+      { file: 'c.js', status: 'unreviewed', reason: 'research-failed' },
+      { file: 'd.js', status: 'excluded' },
+      { file: 'e.js', status: 'reviewed' },
+    ])
+    expect(coverage).toEqual(given)
+  })
+
+  it('makes one range of a file\'s capped lines past 16', () => {
+    const odd = (count: number): number[] => Array.from({ length: count }, (_, index) => 1 + index * 2)
+    const coverage: CoverageEntry[] = [
+      { file: 'a.js', status: 'reviewed' },
+    ]
+    expect(withCapped(coverage, places('a.js', ...odd(17)))).toEqual([
+      {
+        file: 'a.js',
+        status: 'partial',
+        left: [
+          { start: 1, end: 33, reason: 'findings-capped' },
+        ],
+      },
+    ])
+    const sixteen = withCapped(coverage, places('a.js', ...odd(16)))
+    expect(sixteen[0].left).toHaveLength(16)
+    expect(sixteen[0].left?.at(-1)).toEqual({ start: 31, end: 31, reason: 'findings-capped' })
+  })
+
+  it('keeps a partial file\'s ranges in line order, and leaves a file the coverage does not list, and a coverage with nothing unread, as they are', () => {
+    const coverage: CoverageEntry[] = [
+      {
+        file: 'a.js',
+        status: 'partial',
+        left: [
+          { start: 10, end: 12, reason: 'token-cap' },
+        ],
+      },
+    ]
+    expect(withCapped(coverage, [
+      ...places('a.js', 20, 2),
+      ...places('elsewhere.js', 1),
+    ])).toEqual([
+      {
+        file: 'a.js',
+        status: 'partial',
+        left: [
+          { start: 2, end: 2, reason: 'findings-capped' },
+          { start: 10, end: 12, reason: 'token-cap' },
+          { start: 20, end: 20, reason: 'findings-capped' },
+        ],
+      },
+    ])
+    expect(withCapped(coverage, [])).toEqual(coverage)
   })
 })
 
