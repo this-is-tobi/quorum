@@ -228,7 +228,7 @@ const REDACTED_ROWS: ReadonlyArray<readonly [string, unknown, string, unknown]> 
     'a 30-character model id',
     REDACTED,
     'v',
-    'qwen3-coder-480b-a35b-instruct',
+    'local-coder-480b-a35b-instruct',
   ],
   [
     '65 characters',
@@ -321,7 +321,7 @@ const REDACTED_ROWS: ReadonlyArray<readonly [string, unknown, string, unknown]> 
     'an object keyed by a long model id',
     REDACTED,
     'v',
-    { 'qwen3-coder-480b-a35b-instruct': 1 },
+    { 'local-coder-480b-a35b-instruct': 1 },
   ],
   ['user', REDACTED, 'user', 'ci-bot'],
   [
@@ -392,7 +392,7 @@ describe('extraBodyRecord', () => {
     ['the AWS test key', AWS_KEY],
     ['the provider\'s key', API_KEY],
     ['an e-mail address', 'dev@example.org'],
-    ['a 30-character model id', 'qwen3-coder-480b-a35b-instruct'],
+    ['a 30-character model id', 'local-coder-480b-a35b-instruct'],
     [
       'a key of 1000 characters',
       'k'.repeat(1000),
@@ -464,7 +464,7 @@ describe('extraBodyRecord', () => {
     const body = {
       effort: 'medium',
       tag: NINETEEN,
-      model: 'qwen3-coder-480b-a35b-instruct',
+      model: 'local-coder-480b-a35b-instruct',
       token: AWS_KEY,
       options: { a: AWS_KEY, b: 2, api_key: 'abc' },
       user: 'ci-bot',

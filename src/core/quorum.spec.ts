@@ -11,6 +11,7 @@ import { streamingProvider } from '../testing/streams.ts'
 import type { StreamPlan } from '../testing/streams.ts'
 import { ConfigError, ProviderDownError, ProviderError } from './errors.ts'
 import { outcome } from './outcome.ts'
+import { parseResearchReply, readEntries } from './output.ts'
 import type { CompletionRequest, CompletionResponse, Provider, QuorumPorts, ReplyStore, StoredCall } from './ports.ts'
 import { FINDING_FIELDS, FINDING_FIELDS_WITH_RULE, researchRequest, voteRequest } from './prompts.ts'
 import { createQuorum, createQuorumWith } from './quorum.ts'
@@ -19,6 +20,16 @@ import { resultSchema } from './result-schema.ts'
 import { findingId, FINGERPRINT_PATTERN } from './stages/research.ts'
 import { requestTokens, tokenBound } from './tokens.ts'
 import type { Finding, IncompleteEntry, LeftOutFile, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, ReviewDocument, ReviewSettings, ReviewSource, RoleCalls, Usage, VoteFailure } from './types.ts'
+
+/** `readEntries` and `parseResearchReply`, the two ways to check an entry as a finding, as spies that call through, so a test can count the entries a review checks. */
+vi.mock('./output.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./output.ts')>()
+  return {
+    ...actual,
+    readEntries: vi.fn(actual.readEntries),
+    parseResearchReply: vi.fn(actual.parseResearchReply),
+  }
+})
 
 /** Replies, in call order, for the one fake provider that plays both roles. */
 const complete = vi.fn<(request: CompletionRequest) => Promise<string>>()
@@ -279,13 +290,23 @@ describe('createQuorum', () => {
     ])
   })
 
-  it.each([0, 1.5])('refuses a findingsCap of %j, which is no positive integer, as it refuses a maxFindings', (findingsCap) => {
+  it.each([0, 1.5, 2 ** 60])('refuses a findingsCap of %j, which is no positive safe integer, as it refuses a maxFindings', (findingsCap) => {
     const model = fake('m', () => '')
     expect(issuesOf(() => createQuorum({
       profiles: [securityProfile],
       findingsCap,
     }, portsFor(securityProfile, model)))).toEqual([
       `findingsCap: must be a positive integer, got ${findingsCap}`,
+    ])
+  })
+
+  it('refuses a maxFindings past the safe integers, as the review option does', () => {
+    const model = fake('m', () => '')
+    expect(issuesOf(() => createQuorum({
+      profiles: [securityProfile],
+      maxFindings: 2 ** 60,
+    }, portsFor(securityProfile, model)))).toEqual([
+      `maxFindings: must be a positive integer, got ${2 ** 60}`,
     ])
   })
 
@@ -4002,6 +4023,19 @@ describe('a large change in parts', () => {
       expect(result.meta.incomplete).toEqual([
         { profile: 'security', reason: 'findings-capped', detail: '2 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: raise maxFindings; 1 of 4 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 3): raise findingsCap' },
       ])
+    })
+
+    it('checks no entry of a reply as a finding before the cap selects it, as the reply arrives or after', async () => {
+      const finder = partsFinder(500, request => partOf(request) <= 2
+        ? findings(at('a.js'), at('b.js'))
+        : findings())
+      vi.mocked(readEntries).mockClear()
+      vi.mocked(parseResearchReply).mockClear()
+      await ofCap(finder, recording()).review({ diff: partsDiff }, { findingsCap: 1 })
+      // Two replies list two findings each, and the cap takes one in all: no reply is parsed as findings as it arrives.
+      expect(parseResearchReply).not.toHaveBeenCalled()
+      const checked = vi.mocked(readEntries).mock.calls.reduce((sum, [entries, count]) => sum + Math.min(entries.length, count), 0)
+      expect(checked).toBe(1)
     })
 
     it('asks each research request what maxFindings sizes, whatever the review\'s findingsCap, and splits no reply for it', async () => {
