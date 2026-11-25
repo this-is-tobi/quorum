@@ -109,6 +109,12 @@ The result's shape, and every other field: the findings with their evidence, sin
 
 The view is pure and idempotent: it shares no array or object with the result, never changes it, and the public view of a public view is that view. `outcome` reads a view as the result it came from, so the exit code and the conclusion of a job that holds only the view are the review's: [`outcome`](../95-reference/30-library-api.md#outcome).
 
+### Why `extraBody` values are written only when safe
+
+A result records each provider's settings, and a provider's `extraBody` is the field a record cannot take as given. Quorum sends it as the body of every request, to servers it does not know, and some proxies take in that body what is no model's setting: a credential in a field the proxy forwards, or a user's personal data, such as the end user's id that OpenAI's `user` carries or an e-mail address a gateway asks for. A record that copied it would carry both into a file, a CI artifact or a pasted result.
+
+So a value of `extraBody` is written only when a rule that fails closed finds it safe: a number, a boolean, `null` or a short string that holds no credential, no e-mail address, no long run of letters and digits and not the provider's key, under a key that names no secret. Anything else, a value that nests deeper than four levels or holds more than 64 values included, is written `[redacted]`: [What a result records of a provider](./10-threat-model.md#what-a-result-records-of-a-provider) states the rule and what it lets through. The record is for the operator and the public view holds none of it. `--print-config` keeps writing every `extraBody` value `[redacted]`, since its output goes to a CI log that anyone may read: [Printing the resolved config](../20-using/10-cli.md#printing-the-resolved-config).
+
 ### On stderr
 
 Under `--view public` a CI log, which a stranger may read, carries less than the terminal does:

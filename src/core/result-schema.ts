@@ -34,6 +34,15 @@ import { MAX_CATEGORY, MAX_EVIDENCE, MAX_MODEL, MAX_SUMMARY } from './verify.ts'
 /** The most models a provider's record lists in `served`: the calls of any further model are counted in `servedOthers`. */
 export const MAX_SERVED = 8
 
+/** What a record writes for an `extraBody` value that the rule of `config/settings.ts` cannot show safe. */
+export const REDACTED = '[redacted]'
+/** The most code points a string of an `extraBody` value has to be written: a longer one is `REDACTED`. */
+export const EXTRA_BODY_STRING = 64
+/** The most levels of objects and arrays an `extraBody` entry nests to be written (`{ a: { b: { c: { d: 1 } } } }` is four): a fifth makes the entry `REDACTED` whole. */
+export const EXTRA_BODY_DEPTH = 4
+/** The most values, each object and array counted as one, an `extraBody` entry holds to be written: past it the entry is `REDACTED` whole. */
+export const EXTRA_BODY_VALUES = 64
+
 const count = z.int().min(0)
 const amount = z.number().min(0)
 const confidence = z.enum(['high', 'medium', 'low'])
