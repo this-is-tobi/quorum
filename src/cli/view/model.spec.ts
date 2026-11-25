@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { IncompleteReason, QuorumEvent } from '../../core/types.ts'
-import { longReview, providerDown, replay, streamedReview, twoProfiles } from '../../testing/events.ts'
+import { longReview, providerDown, replay, slowResearch, streamedReview, twoProfiles } from '../../testing/events.ts'
 import { BUCKET_MS, BUCKETS, DEFAULT_FACTS, fold, stageEnd, stageStart, stageTime, startState } from './model.ts'
 import type { ViewState } from './model.ts'
 
@@ -1008,9 +1008,32 @@ describe('fold', () => {
       if (answered === 5) break
     }
     expect(seen).toEqual([false, false, false, false, true])
-    expect(state.firstEstimate).toEqual({ at: 310_000, lowMs: 1_455_000, highMs: 1_545_937.5 })
+    expect(state.firstEstimate).toMatchObject({ at: 310_000, lowMs: 1_455_000, highMs: 1_545_937.5 })
     const end = replay(longReview())
     expect(end.firstEstimate).toEqual(state.firstEstimate)
+  })
+
+  it('records which part made the first estimate', () => {
+    // The part that is the fifth to answer is not part 5: four calls run at once, so the key is read from the event itself.
+    let state = startState(DEFAULT_FACTS)
+    let by: string | undefined
+    for (const { at, event } of longReview()) {
+      const before = state.firstEstimate
+      state = fold(state, event, at)
+      if (before !== undefined || state.firstEstimate === undefined) continue
+      expect(event.type).toBe('part')
+      by = event.type === 'part'
+        ? `${event.profile}|${event.part.index}`
+        : undefined
+      expect(state.firstEstimate.by).toBe(by)
+    }
+    expect(by).toMatch(/^security\|\d+$/)
+    expect(state.partsEnded.has(by!)).toBe(true)
+    // It stays what it was as the review goes on.
+    expect(state.firstEstimate?.by).toBe(by)
+    // Two profiles pool their parts: the third answered part, the second of `naming`, makes it.
+    const pooled = replay(slowResearch(300_000), Infinity, { ...DEFAULT_FACTS, concurrency: 1 })
+    expect(pooled.firstEstimate).toMatchObject({ at: 900_000, by: 'naming|2' })
   })
 
   it('returns the state as it was for an event of a type it does not know', () => {

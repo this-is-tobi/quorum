@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Clock } from '../../core/clock.ts'
 import type { QuorumEvent } from '../../core/types.ts'
 import { fakeClock } from '../../testing/clock.ts'
-import { longReview, replay } from '../../testing/events.ts'
+import { longReview, replay, slowResearch } from '../../testing/events.ts'
 import { contextDocument, reportResult } from '../../testing/report.ts'
 import { DEFAULT_FACTS } from './model.ts'
 import { HEARTBEAT_MS, plainWriter } from './plain.ts'
@@ -125,6 +125,37 @@ describe('plainWriter', () => {
     })
     sealed.sink(started(['security']))
     expect(quiet).toEqual([])
+  })
+
+  it('writes the deadline warning in the plain mode\'s log once', () => {
+    let now = 0
+    const clock: Clock = {
+      now: () => now,
+      random: () => 0.5,
+      timer: () => () => {},
+    }
+    const lines: string[] = []
+    const view = plainWriter({
+      write: line => lines.push(line),
+      clock,
+    })
+    view.begin({
+      ...DEFAULT_FACTS,
+      concurrency: 1,
+      deadlineMs: 1_800_000,
+      deadline: 'config',
+      keeps: true,
+    })
+    for (const { at, event } of slowResearch(300_000)) {
+      now = at
+      view.sink(event)
+    }
+    const warnings = lines.filter(line => line.startsWith('warning: '))
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toBe('warning: the deadline of 30m00s (reviewTimeoutMs) comes before research ends, which this review\'s first estimate puts at 150m from its start: the review stops at the deadline, and what is left is a review-deadline gap; raise reviewTimeoutMs, up to 24h00m00s')
+    // It follows the line of the part that made the estimate, the third to answer, and no other line is a note.
+    expect(lines[lines.indexOf(warnings[0]) - 1]).toMatch(/^\[naming\] part 2 of 15: answered in 5m00s, /)
+    expect(lines.filter(line => line.startsWith('notice: '))).toEqual([])
   })
 
   it('writes no heartbeat after run:end, and none when heartbeat is off or the writer is restored', () => {

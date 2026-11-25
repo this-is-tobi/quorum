@@ -605,6 +605,7 @@ describe('viewFacts', () => {
       concurrency: 'auto',
       cap: { tokens: 2_000_000, origin: 'default' },
       deadlineMs: 1_800_000,
+      deadline: 'default',
       maxFindings: 50,
       asks: { maxFindings: 50, findings: {} },
     })
@@ -631,6 +632,7 @@ describe('viewFacts', () => {
       concurrency: 2,
       cap: { tokens: 300_000, origin: 'config' },
       deadlineMs: 60_000,
+      deadline: 'config',
       maxFindings: 9,
       asks: { maxFindings: 9, findings: {} },
       estimate,
@@ -669,6 +671,56 @@ describe('viewFacts', () => {
       maxFindings: 121,
       asks: { maxFindings: 50 },
     })
+  })
+
+  it.each<[string, string, Partial<ResolvedConfig>, Parameters<typeof viewFacts>[1]]>([
+    [
+      'a config that sets reviewTimeoutMs',
+      'config',
+      { reviewTimeoutMs: 60_000 },
+      undefined,
+    ],
+    [
+      'a path review\'s unset one',
+      'longest',
+      {},
+      {
+        bounds: {
+          cap: { tokens: 300_000, origin: 'estimate' },
+          deadlineMs: 86_400_000,
+          findingsCap: 50,
+        },
+      },
+    ],
+    [
+      'a diff review\'s unset one',
+      'default',
+      {},
+      undefined,
+    ],
+    [
+      'a path review of a config that sets it',
+      'config',
+      { reviewTimeoutMs: 60_000 },
+      {
+        bounds: {
+          cap: { tokens: 300_000, origin: 'estimate' },
+          deadlineMs: 60_000,
+          findingsCap: 50,
+        },
+      },
+    ],
+  ])('reads the deadline of %s as %s', (_name, origin, set, extra) => {
+    expect(viewFacts({
+      ...config,
+      ...set,
+    }, extra).deadline).toBe(origin)
+  })
+
+  it('reads whether the review keeps its answered calls from the caller, and states nothing when unsaid', () => {
+    expect(viewFacts(config)).not.toHaveProperty('keeps')
+    expect(viewFacts(config, { keeps: false }).keeps).toBe(false)
+    expect(viewFacts(config, { keeps: true }).keeps).toBe(true)
   })
 
   it('reads the asks of each profile from the quorum\'s budgets', () => {
