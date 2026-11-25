@@ -432,6 +432,80 @@ describe('the schemas of a result', () => {
     }
   })
 
+  it('reads a profile\'s research counts, and refuses a result without them', () => {
+    const result = reportResult()
+    const full = saved(result)
+    const view = saved(publicView(result))
+    expect(resultSchema.parse(full)).toEqual(full)
+    expect(JSON.stringify(resultSchema.parse(full))).toBe(JSON.stringify(full))
+    // The counts sit after `invalidRules`, in the order the core writes them, so a result read back is written as it was.
+    expect(Object.keys(full.meta.profiles.security).slice(6, 8)).toEqual(['invalidRules', 'research'])
+    expect(Object.keys(full.meta.profiles.security.research)).toEqual([
+      'parts',
+      'listed',
+      'panel',
+      'capped',
+      'saturated',
+    ])
+    const profile = (meta: { profiles: Record<string, Forged> }, changes: Forged): Forged => ({
+      ...meta,
+      profiles: {
+        security: {
+          ...meta.profiles.security,
+          ...changes,
+        },
+      },
+    })
+    // A result of 0.13.0 has none, and a profile's meta without them is no result.
+    const { research: _research, ...older } = full.meta.profiles.security
+    expect(resultSchema.safeParse({
+      ...full,
+      meta: {
+        ...full.meta,
+        profiles: { security: older },
+      },
+    }).success).toBe(false)
+    // Each count is a whole number, none is left out, and the record holds no field but its own.
+    const counted = full.meta.profiles.security.research
+    for (const forged of [
+      { parts: -1 },
+      { listed: 1.5 },
+      { panel: '3' },
+      { capped: null },
+      { saturated: Number.NaN },
+      { extra: 1 },
+    ] as Forged[]) {
+      expect(resultSchema.safeParse({
+        ...full,
+        meta: profile(full.meta, {
+          research: {
+            ...counted,
+            ...forged,
+          },
+        }),
+      }).success, JSON.stringify(forged)).toBe(false)
+    }
+    for (const key of Object.keys(counted)) {
+      const { [key]: _left, ...short } = counted as unknown as Record<string, number>
+      expect(resultSchema.safeParse({
+        ...full,
+        meta: profile(full.meta, { research: short }),
+      }).success, key).toBe(false)
+    }
+    expect(resultSchema.safeParse({
+      ...full,
+      meta: profile(full.meta, {
+        research: [0, 0, 0, 0, 0],
+      }),
+    }).success).toBe(false)
+    // The public view holds none: the view withholds them, and a view that holds them is no view quorum writes.
+    expect(view.meta.profiles.security).not.toHaveProperty('research')
+    expect(publicViewSchema.safeParse({
+      ...view,
+      meta: profile(view.meta, { research: counted }),
+    }).success).toBe(false)
+  })
+
   it('reads a profile\'s asksNothing as true alone, after its invalidRules, in the public view too, and does not require it', () => {
     const base = reportResult().meta
     // The profile as the core writes it: the flag after the counts of rules, before the coverage.
@@ -455,10 +529,11 @@ describe('the schemas of a result', () => {
     expect(publicViewSchema.parse(view)).toEqual(view)
     expect(JSON.stringify(publicViewSchema.parse(view))).toBe(JSON.stringify(view))
     // It sits after the counts of rules, where the core writes it, so a result read back is written as it was.
-    expect(Object.keys(full.meta.profiles.security).slice(4, 8)).toEqual([
+    expect(Object.keys(full.meta.profiles.security).slice(4, 9)).toEqual([
       'invalidFindings',
       'rules',
       'invalidRules',
+      'research',
       'asksNothing',
     ])
     expect(Object.keys(view.meta.profiles.security).slice(4, 8)).toEqual([

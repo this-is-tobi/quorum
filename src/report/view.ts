@@ -14,6 +14,9 @@
  *   provider's id can name an internal host. The view keeps the profile's policy, level and coverage;
  * - **the usage:** the tokens say how a review ran, and how near it came to its cap, which tells an author
  *   how much text it takes to push the review into a gap;
+ * - **each profile's research counts:** the findings its research listed, the panel was asked about and
+ *   the cap left unread measure how near research came to the finding cap, which is what a flood of
+ *   findings aims at, so the view keeps none, whether or not a profile hit the cap;
  * - **each gap's detail:** a detail quotes a file name, a finder's text or a server's, so the view keeps the
  *   profile, the reason and the file, and a reporter writes the reason's fixed words (`GAP_WORDS`).
  *
@@ -90,7 +93,7 @@ function discardedByProfile(discarded: readonly Verdict[]): Map<unknown, number>
   return counts
 }
 
-/** A profile's meta as the view keeps it, read as own data only: no providers, and the count of its discarded findings. */
+/** A profile's meta as the view keeps it, read as own data only: no providers, no research counts, and the count of its discarded findings. */
 function publicProfile(entry: unknown, discarded: number): PublicProfileMeta {
   const recovery = ownData(entry, 'recovery')
   return {
@@ -149,7 +152,7 @@ function publicMeta(result: QuorumResult): PublicMeta {
 /**
  * The public view of a result, or of a public view, which is returned as it is: the result less each vote's
  * reasoning and error, the discarded findings (counted in `meta.profiles.<id>.discarded`), the providers, the
- * usage and each gap's detail. See the module's comment for why each goes. The result is never changed, and
+ * usage, each profile's research counts and each gap's detail. See the module's comment for why each goes. The result is never changed, and
  * the view shares no array or object with it.
  *
  * This is the check every public sink goes through, for a library caller too: the view, made here or given,

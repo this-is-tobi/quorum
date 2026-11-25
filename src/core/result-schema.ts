@@ -172,6 +172,14 @@ const ruleCounts = z.strictObject({
   listed: count,
   sent: count,
 })
+/** What a profile's research came to: the counts `ResearchRecord` holds, in the order the core writes them. */
+const researchRecord = z.strictObject({
+  parts: count,
+  listed: count,
+  panel: count,
+  capped: count,
+  saturated: count,
+})
 /** What a profile's meta records of a review. The keys of each shape are in the order the core writes them, so a result read back is written as it was. */
 const profileMeta = z.strictObject({
   providers: z.strictObject({
@@ -184,11 +192,12 @@ const profileMeta = z.strictObject({
   invalidFindings: count,
   rules: ruleCounts,
   invalidRules: count,
+  research: researchRecord,
   asksNothing: z.literal(true).optional(),
   coverage: z.array(coverageEntry),
   recovery: recovery.optional(),
 })
-/** A profile's meta in the public view: no providers, and the count of its discarded findings. */
+/** A profile's meta in the public view: no providers, no research counts, and the count of its discarded findings. */
 const publicProfileMeta = z.strictObject({
   policy: thresholds,
   failOn,

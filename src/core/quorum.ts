@@ -35,9 +35,18 @@ import { panel } from './stages/panel.ts'
 import type { PanelOutcome } from './stages/panel.ts'
 import { planResearch, research } from './stages/research.ts'
 import type { ResearchPlan } from './stages/research.ts'
-import type { ContextRecord, CoverageEntry, Estimate, Profile, ProfileMeta, ProfileProviders, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ReviewContext, ReviewDocument, ReviewInput, ReviewSource, Usage } from './types.ts'
+import type { ContextRecord, CoverageEntry, Estimate, Profile, ProfileMeta, ProfileProviders, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ResearchRecord, ReviewContext, ReviewDocument, ReviewInput, ReviewSource, Usage } from './types.ts'
 
 const PROVIDER_SHAPE = 'must be a provider: an object with a string id, a string model and a complete function'
+
+/** What a profile's research counts when no stage ran: a blank diff has no part, no finding and no vote. */
+const NO_RESEARCH: ResearchRecord = Object.freeze({
+  parts: 0,
+  listed: 0,
+  panel: 0,
+  capped: 0,
+  saturated: 0,
+})
 
 /** The options that must be positive integers when they are set. */
 const LIMITS = ['concurrency', 'maxFindings'] as const
@@ -623,7 +632,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
     source,
     profiles: Object.fromEntries(runs.map((run, index) => [
       run.id,
-      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, tally.invalidRules.get(run.id) ?? 0, withCapped(coverageOf(scope, filtered, outcomes[index]?.packing ?? plans[index]?.packing, outcomes[index]?.parts ?? []), outcomes[index]?.unread ?? []), outcomes[index]?.recovery),
+      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, tally.invalidRules.get(run.id) ?? 0, outcomes[index]?.research ?? NO_RESEARCH, withCapped(coverageOf(scope, filtered, outcomes[index]?.packing ?? plans[index]?.packing, outcomes[index]?.parts ?? []), outcomes[index]?.unread ?? []), outcomes[index]?.recovery),
     ])),
     ...(tally.usage === undefined
       ? {}
@@ -684,10 +693,11 @@ function limitOf(part: PartResult): string {
   return part.pieces.find(({ outcome }) => isLimitName(outcome))?.outcome ?? 'reviewed'
 }
 
-/** What a profile's review comes to: its panel's outcome, and what became of each part of its research, the places the cap left unread, and the packing and recovery counts the coverage and the meta read. */
+/** What a profile's review comes to: its panel's outcome, and what became of each part of its research, the places the cap left unread, its research counts, and the packing and recovery counts the coverage and the meta read. */
 interface ProfileOutcome extends PanelOutcome {
   readonly parts: readonly PartResult[]
   readonly unread: readonly UnreadPlace[]
+  readonly research: ResearchRecord
   readonly packing?: Packing
   readonly recovery?: ProfileMeta['recovery']
 }
@@ -725,6 +735,13 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPla
     ],
     parts: researched.parts,
     unread: researched.unread,
+    research: {
+      parts,
+      listed: researched.counts.listed,
+      panel: candidates.length,
+      capped: researched.counts.capped,
+      saturated: researched.counts.saturated,
+    },
     ...researched.packing === undefined
       ? {}
       : { packing: researched.packing },
@@ -873,7 +890,7 @@ function ruleCounts(runs: readonly ProfileRun[]): Record<string, { listed: numbe
       ]))
 }
 
-function profileMeta(run: ProfileRun, invalidFindings: number, invalidRules: number, coverage: CoverageEntry[], recovery: ProfileMeta['recovery']): ProfileMeta {
+function profileMeta(run: ProfileRun, invalidFindings: number, invalidRules: number, research: ResearchRecord, coverage: CoverageEntry[], recovery: ProfileMeta['recovery']): ProfileMeta {
   return {
     providers: providersOf(run),
     policy: { ...run.thresholds },
@@ -882,6 +899,7 @@ function profileMeta(run: ProfileRun, invalidFindings: number, invalidRules: num
     invalidFindings,
     rules: ruleCountOf(run),
     invalidRules,
+    research: { ...research },
     ...asksNothing(run)
       ? { asksNothing: true as const }
       : {},

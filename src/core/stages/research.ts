@@ -46,6 +46,12 @@ export interface ResearchOutcome {
    */
   unread: UnreadPlace[]
   /**
+   * What the replies that were read came to, for the profile's `research` record: `listed` the entries they listed, the unreadable ones
+   * and those the cap left unread included, `capped` the ones the cap left unread (`listed` less those it read) and `saturated` the replies
+   * that listed at least the findings they were asked for at most. All 0 when no reply was read.
+   */
+  counts: { listed: number, capped: number, saturated: number }
+  /**
    * What became of each research part, in the parts' order: `reviewed` when its reply was a valid findings
    * envelope, the limit's name when the token cap, the deadline or the interrupt stopped it (its gap is written once the
    * profile's panel has run, with the votes the limit stopped), else why it was not read; for a part recovery split,
@@ -331,6 +337,7 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
   const entries = replies.map(({ text }) => researchEntries(text))
   const listed = entries.reduce((sum, own) => sum + own.length, 0)
   const depths = capDepths(entries.map(own => own.length), maxFindings)
+  const taken = depths.reduce((sum, depth) => sum + depth, 0)
   const details: FindingDetails[] = []
   const unreadable: string[] = []
   const saturated: number[] = []
@@ -377,6 +384,7 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
     invalidRules: cited.invalid,
     incomplete,
     unread,
+    counts: { listed, capped: listed - taken, saturated: saturated.length },
   }
 }
 
@@ -449,6 +457,9 @@ function isBlank(text: string): boolean {
   return text.trim() === ''
 }
 
+/** What a research that read no reply counts: nothing listed, capped or saturated. */
+const NOTHING_READ: ResearchOutcome['counts'] = Object.freeze({ listed: 0, capped: 0, saturated: 0 })
+
 /** The outcome of a research that read no reply and found no gap: no finding, `parts` as given. */
 function nothingRead(parts: PartOutcome[]): ResearchOutcome {
   return {
@@ -457,6 +468,7 @@ function nothingRead(parts: PartOutcome[]): ResearchOutcome {
     invalidRules: [],
     incomplete: [],
     unread: [],
+    counts: NOTHING_READ,
     parts,
   }
 }
@@ -1060,6 +1072,7 @@ function gap(ctx: RunContext, entry: IncompleteEntry, outcome: PartOutcome): Res
     invalidRules: [],
     incomplete: [entry],
     unread: [],
+    counts: NOTHING_READ,
     parts: [outcome],
   }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
-import type { Flag, IncompleteEntry, LeftOutFile, PublicView, QuorumResult, ReviewSource, Verdict } from '../core/types.ts'
+import type { Flag, IncompleteEntry, LeftOutFile, PublicView, QuorumResult, ResearchRecord, ReviewSource, Verdict } from '../core/types.ts'
 import { blankResult, contextDocument, FINDINGS, INCOMPLETE, INTERRUPTED, LIFTED, PASS, reportResult, SQL, TOKEN } from '../testing/report.ts'
 import { documentLine } from './lines.ts'
 import { text } from './text.ts'
@@ -75,6 +75,7 @@ const MAIN = [
   '',
   'security (fail-on high): 1 kept, 1 unreviewed, 1 discarded',
   '  1 of 3 files reviewed, 1 in part, 1 not',
+  '  research: 1 part(s), 3 finding(s) listed, 3 to the panel',
   'left out: 1 file',
   '  "assets/logo.png" (binary)',
   'gap: security binary, the diff carries no content for 1 binary file(s), listed',
@@ -160,7 +161,7 @@ describe('text', () => {
 
   it('renders a public view as the result, but each gap in fixed words and the time with no token count', () => {
     const lines = render(publicView(reportResult()))
-    expect(lines).toEqual(MAIN.filter(line => line !== '  in meta.leftOut').map(line => line.startsWith('gap: ')
+    expect(lines).toEqual(MAIN.filter(line => line !== '  in meta.leftOut' && !line.startsWith('  research: ')).map(line => line.startsWith('gap: ')
       ? 'gap: security binary, the diff carries no content for a binary file'
       : line.startsWith('took ')
         ? 'took 41s'
@@ -294,7 +295,7 @@ describe('text', () => {
       9: `${ESC}[35mUNREVIEWED${ESC}[0m  security  ${ESC}[1msrc/session.js:20${ESC}[0m  CWE-338`,
       11: `         ${ESC}[31m-${ESC}[0m   return crypto.randomBytes(32).toString('hex')`,
       12: `   ${ESC}[1m>${ESC}[0m  20 ${ESC}[32m+${ESC}[0m   return Math.random().toString(36).slice(2)`,
-      24: `exit 1, ${ESC}[31mfindings${ESC}[0m: a gating profile kept a finding at or above its fail-on level`,
+      25: `exit 1, ${ESC}[31mfindings${ESC}[0m: a gating profile kept a finding at or above its fail-on level`,
     })[index] ?? line))
   })
 
@@ -322,6 +323,7 @@ describe('text', () => {
       '',
       'security (fail-on high): 0 kept, 0 unreviewed, 0 discarded',
       '  1 of 3 files reviewed, 2 not',
+      '  research: 1 part(s), 3 finding(s) listed, 3 to the panel',
       'left out: 2 files',
       '  ".env" (secret: name)',
       '  "old/.env" (deleted-secret: name)',
@@ -339,7 +341,7 @@ describe('text', () => {
 
   it('lists five files left out, then how many more', () => {
     const leftOut: LeftOutFile[] = Array.from({ length: 7 }, (_, index) => ({ file: `f${index}.bin`, reason: 'binary' }))
-    expect(render(blankResult({ leftOut }), PASS).slice(4, 11)).toEqual([
+    expect(render(blankResult({ leftOut }), PASS).slice(5, 12)).toEqual([
       'left out: 7 files',
       '  "f0.bin" (binary)',
       '  "f1.bin" (binary)',
@@ -372,12 +374,118 @@ describe('text', () => {
     })
     const lines = render(result)
     expect(lines[0]).toBe('quorum 0.6.0 · range 1f3a9c2...7b2e4d0 · security, team · 3 files')
-    expect(lines.slice(16, 20)).toEqual([
+    expect(lines.slice(16, 22)).toEqual([
       'security (fail-on high): 1 kept, 1 unreviewed, 1 discarded',
       '  1 of 3 files reviewed, 1 in part, 1 not',
+      '  research: 1 part(s), 3 finding(s) listed, 3 to the panel',
       'team (fail-on none): 0 kept, 0 unreviewed, 0 discarded, 2 outside the diff',
       '  2 of 3 files reviewed, 1 excluded',
+      '  research: 1 part(s), 3 finding(s) listed, 3 to the panel',
     ])
+  })
+
+  it('writes each profile\'s research counts under its coverage, the cap\'s and the saturated replies\' only when above 0', () => {
+    const { security } = reportResult().meta.profiles
+    const counted = (research: ResearchRecord): QuorumResult => reportResult({
+      meta: {
+        profiles: {
+          security: { ...security, research },
+        },
+      },
+    })
+    /** The lines between the coverage of `security` and what follows its profiles. */
+    const researchOf = (result: QuorumResult | PublicView): string[] => {
+      const lines = render(result)
+      return lines.slice(18, lines.indexOf('left out: 1 file'))
+    }
+    expect(render(counted({
+      parts: 3,
+      listed: 5,
+      panel: 3,
+      capped: 2,
+      saturated: 0,
+    })).slice(16, 19)).toEqual([
+      'security (fail-on high): 1 kept, 1 unreviewed, 1 discarded',
+      '  1 of 3 files reviewed, 1 in part, 1 not',
+      '  research: 3 part(s), 5 finding(s) listed, 3 to the panel, 2 past the cap',
+    ])
+    expect(researchOf(counted({
+      parts: 3,
+      listed: 5,
+      panel: 5,
+      capped: 0,
+      saturated: 1,
+    }))).toEqual([
+      '  research: 3 part(s), 5 finding(s) listed, 5 to the panel, 1 reply(ies) listed',
+      '  all they were asked for',
+    ])
+    expect(researchOf(counted({
+      parts: 3,
+      listed: 5,
+      panel: 3,
+      capped: 2,
+      saturated: 1,
+    }))).toEqual([
+      '  research: 3 part(s), 5 finding(s) listed, 3 to the panel, 2 past the cap, 1',
+      '  reply(ies) listed all they were asked for',
+    ])
+    // The line wraps at 80 columns at spaces, a continuation indented by two spaces, and joined back it is the line `researchWords` writes.
+    const wrapped = researchOf(counted({
+      parts: 3,
+      listed: 5,
+      panel: 3,
+      capped: 2,
+      saturated: 1,
+    }))
+    for (const line of wrapped) expect([...line].length).toBeLessThanOrEqual(80)
+    expect(wrapped.length).toBeGreaterThan(1)
+    expect(wrapped.map((line, index) => index === 0
+      ? line
+      : line.trim()).join(' ')).toBe('  research: 3 part(s), 5 finding(s) listed, 3 to the panel, 2 past the cap, 1 reply(ies) listed all they were asked for')
+    expect(researchOf(counted({
+      parts: 0,
+      listed: 0,
+      panel: 0,
+      capped: 0,
+      saturated: 0,
+    }))).toEqual([
+      '  research: 0 part(s), 0 finding(s) listed, 0 to the panel',
+    ])
+    // Each profile has its own, under its own coverage.
+    const two = reportResult({
+      meta: {
+        profiles: {
+          security,
+          team: {
+            ...security,
+            research: {
+              parts: 4,
+              listed: 9,
+              panel: 6,
+              capped: 3,
+              saturated: 0,
+            },
+          },
+        },
+      },
+    })
+    expect(render(two).slice(16, 22)).toEqual([
+      'security (fail-on high): 1 kept, 1 unreviewed, 1 discarded',
+      '  1 of 3 files reviewed, 1 in part, 1 not',
+      '  research: 1 part(s), 3 finding(s) listed, 3 to the panel',
+      'team (fail-on high): 0 kept, 0 unreviewed, 0 discarded',
+      '  1 of 3 files reviewed, 1 in part, 1 not',
+      '  research: 4 part(s), 9 finding(s) listed, 6 to the panel, 3 past the cap',
+    ])
+    // A public view holds none, so its report has no such line.
+    expect(researchOf(publicView(counted({
+      parts: 3,
+      listed: 5,
+      panel: 3,
+      capped: 2,
+      saturated: 1,
+    })))).toEqual([])
+    expect(render(publicView(two)).filter(line => line.includes('research'))).toEqual([])
   })
 
   it('ends a finding\'s head with its rule, and a profile\'s line with its rules and refused citations', () => {
@@ -602,6 +710,7 @@ describe('text', () => {
       '',
       'security (fail-on high): 0 kept, 0 unreviewed, 0 discarded',
       '  the diff holds no file',
+      '  research: 0 part(s), 0 finding(s) listed, 0 to the panel',
       'took 0.0s, no token count reported',
       'exit 0, pass: no gating profile kept a finding to fail on, and none has a gap',
       '',
@@ -743,7 +852,7 @@ describe('text', () => {
       { file: '', reason: 'binary' },
       { file: 'vendor/x.js', reason: 'skipped', rule: 'vendored' },
     ]
-    expect(render(blankResult({ leftOut }), PASS).slice(4, 7)).toEqual([
+    expect(render(blankResult({ leftOut }), PASS).slice(5, 8)).toEqual([
       'left out: 2 files',
       '  <no path> (binary)',
       '  "vendor/x.js" (skipped: vendored)',

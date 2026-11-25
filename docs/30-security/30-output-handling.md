@@ -99,6 +99,7 @@ A pull request comment, a code scanning alert and the job summary of a public re
 | The discarded findings | A finding the panel cleared tells the author that the finder saw it, and each is the finder's text. `discarded` is empty, and `meta.profiles.<id>.discarded` counts them |
 | The providers and models | A model's name lets an attacker rehearse on the same open pipeline, and a provider's id can name an internal host |
 | `meta.usage` | The tokens measure how close a review came to its cap, which is what a denial-of-wallet attempt aims at |
+| Each profile's `research` counts | The findings its research listed, the panel was asked about and the finding cap left unread measure how close research came to the finding cap, which is what a flood of findings aims at. The view keeps the coverage, where a file the cap left in part reads `partial`, and a report describes the gap in fixed words |
 | Each gap's `detail` | A detail can quote a server's text or a file name. A gap keeps its `profile`, `reason` and `file`, and a report describes it in fixed words |
 
 ### What it keeps
@@ -119,7 +120,7 @@ Under `--view public` a CI log, which a stranger may read, carries less than the
 - **A `warning:` line** is as the full view writes it, and none names a URL, a host, a model or a key: each names a config path, a provider key, a profile id, a variable name or a preset.
 - **Every other line** is as the full view writes it: the `left out:` line, the `flag:` lines and the totals.
 
-The text report of a public view is the report of the result but for two lines: a gap is written in the fixed words of its reason, and the time has no token count.
+The text report of a public view is the report of the result but for three kinds of line: a gap is written in the fixed words of its reason, the time has no token count, and a profile has no research line.
 
 ### Public-only formats
 

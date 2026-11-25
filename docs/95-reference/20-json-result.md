@@ -80,6 +80,7 @@ A usage count is valid when it is a finite number of at least 0. A failed call's
 | `invalidFindings` | number | How many findings it dropped for citing code outside the diff |
 | `rules` | object | `listed`, how many review rules the profile lists, whatever their origin, and `sent`, how many of them the review sent: those whose `paths` match a file of the filtered diff, and every rule with none, when the filtered diff has a file: a change with no file at all, a blank diff or one whose every file `exclude` leaves out, sends no request, so `sent` is 0 for it, the rules with no `paths` too. `{ "listed": 0, "sent": 0 }` for a profile that lists none. Required in every result of this release |
 | `invalidRules` | number | How many rule citations failed their check: a finding's `rule` that names no rule the review sent whose `paths` match its file, and, in a profile that requires a rule, a finding that cites none. Each is a [`finding:invalid` event](./30-library-api.md#events) of cause `rule`, which counts here, and a finding outside the diff is one without a cause, which counts in `invalidFindings`: the two stay apart. In a profile that requires a rule, each of them dropped its finding; in any other, the finding went on with no `rule` |
+| `research` | object | What the profile's research came to, in numbers: `parts`, the research parts of the plan, whether or not each was read (0 for a profile whose research asked nothing and for a blank diff, 1 for a research of one request); `listed`, the findings the research replies that were read listed, the unreadable ones and those the cap left unread included, so it is the sum of the `listed` of the [`part` events](./30-library-api.md#events); `panel`, the findings the panel was asked about, the output of the dedup stage; `capped`, the findings the cap left unread, `listed` less those it read, 0 when nothing was capped; and `saturated`, the research replies that listed at least the findings they were asked for at most. Each is a whole number of at least 0, written in this order. Required in every result of this release: a result of 0.13.0 has none, and `readResult` refuses it. The text report writes them under the profile's coverage ([The text report](../20-using/10-cli.md#the-text-report)), and the public view withholds them |
 | `asksNothing` | `true` | Present, and `true`, for a profile whose research asked nothing: it requires a rule (`requireRule`) and the review sent it none, either because it lists none or because none applies to the change, so its finder was never called, its files read as reviewed, and it reports nothing, which a review that found nothing cannot be told from by the counts of findings and of files. It is the same fact as `parts: 0` in the profile's research `stage:start` and `asksNothing` in the [`context` event](./30-library-api.md#events). Absent, never `false`, for every other profile, so a result with none is as it was. The reports say it: `; rules: <sent> of <listed> sent, so its research asks nothing`, [What a person sees of the rules](../20-using/45-rules-and-guidelines.md#what-a-person-sees-of-the-rules) |
 | `coverage` | entry[] | Every file of the diff once, in its order, with how much of it the profile's research reviewed: [Coverage](#coverage) |
 | `recovery` | object | What recovery did for the profile's research, present only when it split a research part ([Recovering a cut-off part](../20-using/20-configuration.md#recovering-a-cut-off-part)): `parts`, how many parts it split, `pieces`, how many final pieces they ended with, each read or left at the floor, not every piece asked on the way, `saturated`, how many of those splits were of a reply that listed as many findings as it was asked for at most, and `unreadHunks`, how many hunks the floor left unread in the parts it split, cut off even alone: a part cut off at the floor at once was not split, so it has no entry here, and its hunks are in the `reply-cut-off` gap. The key is absent for a profile that split none, and a result of an earlier release has none |
@@ -332,6 +333,7 @@ Each gap makes the review incomplete, as an unreviewed finding does: the CLI exi
 | `meta.profiles.<id>.discarded` | The number of findings of the profile that were discarded, after `gating` |
 | `meta.profiles.<id>.providers` | Absent: no provider and no model is named |
 | `meta.usage` | Absent |
+| `meta.profiles.<id>.research` | Absent: the counts measure how near research came to the finding cap, which a pull request's author can aim a flood of findings at |
 | `meta.context` | Kept whole, as it is: each document's hash, path, commit and counts, never a text |
 | `meta.adaptations` | Kept as it is: a provider's id and code words, nothing a server or a model wrote |
 | `meta.reused` | Kept as it is, when the review has one: two counts |
@@ -574,6 +576,13 @@ A review of a diff that touches three files, run on the one provider, named `def
           "sent": 0
         },
         "invalidRules": 0,
+        "research": {
+          "parts": 1,
+          "listed": 5,
+          "panel": 3,
+          "capped": 0,
+          "saturated": 0
+        },
         "coverage": [
           {
             "file": "src/users.js",
