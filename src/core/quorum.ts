@@ -1147,7 +1147,7 @@ function profileListIssues(profiles: readonly unknown[]): { issues: ConfigIssue[
 }
 
 /**
- * `concurrency`, `maxFindings` and `findingsCap` are positive integers when set, `maxReviewTokens` a whole number of
+ * `concurrency`, `maxFindings` and `findingsCap` are whole numbers from 1 to 9007199254740991 when set, `maxReviewTokens` a whole number of
  * tokens from 1 to 9007199254740991, `reviewTimeoutMs` a whole number of milliseconds from 1000 to
  * 86400000, and `partTokens` a whole number of tokens from 1024 to 9007199254740991. A number is
  * quoted in the first three; anything else is described by the rule alone.
@@ -1155,7 +1155,7 @@ function profileListIssues(profiles: readonly unknown[]): { issues: ConfigIssue[
 function limitIssues(options: Record<string, unknown>): ConfigIssue[] {
   const issues: ConfigIssue[] = LIMITS.flatMap((path) => {
     const value = options[path]
-    if (value === undefined || (typeof value === 'number' && Number.isInteger(value) && value >= 1)) return []
+    if (value === undefined || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 1)) return []
     const got = typeof value === 'number'
       ? `, got ${value}`
       : ''

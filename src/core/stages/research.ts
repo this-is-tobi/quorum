@@ -4,7 +4,7 @@ import type { DiffSection } from '../diff.ts'
 import { cutOf, OutputError, ProviderDownError } from '../errors.ts'
 import { isLimit, isLimitName } from '../limits.ts'
 import type { LimitName } from '../limits.ts'
-import { entryPlace, parseResearchReply, readEntries, researchEntries } from '../output.ts'
+import { entryPlace, readEntries, researchEntries } from '../output.ts'
 import { cutSection, listedFiles, packParts, partText } from '../parts.ts'
 import type { Cut, Packing, PartOutcome, PartResult, Slice, UnreadPlace } from '../parts.ts'
 import type { CompletionRequest } from '../ports.ts'
@@ -300,14 +300,14 @@ function saturationWords(count: number, asked: number, requestFindings: number):
 
 /**
  * Turn the research replies of a profile, in the parts' order, into what the panel receives. Each reply's envelope is
- * parsed once and strictly (`researchEntries`: a malformed envelope, or one with a key other than `findings`,
- * throws, so it never reads as "no findings"), and `maxFindings` of the entries in all are read and checked, taken in
- * turn: every reply's first entry, then every reply's second, and so on (`capDepths`). A reply that lists many
- * findings so never costs the replies after it theirs, and a capped review drops each reply's last findings, the
- * ones the finder listed after its most serious.
+ * parsed strictly (`researchEntries`: a malformed envelope, or one with a key other than `findings`, throws, so it
+ * never reads as "no findings"), as it arrives and once more here, and `maxFindings` of the entries in all are read
+ * and checked, taken in turn: every reply's first entry, then every reply's second, and so on (`capDepths`). A reply
+ * that lists many findings so never costs the replies after it theirs, and a capped review drops each reply's last
+ * findings, the ones the finder listed after its most serious.
  *
  * The work spent on a reply built to flood the run stays bounded, whatever the entries hold: a reply is at most its
- * reply budget and `MAX_REPLY_CHARS` characters, each envelope is parsed once, and an entry is checked as a finding
+ * reply budget and `MAX_REPLY_CHARS` characters, each envelope is parsed twice, and an entry is checked as a finding
  * (`readEntries`) only when the cap takes it, so at most `maxFindings` in all, none of the entries the cap leaves unread.
  * An unreadable entry the cap takes counts toward the cap.
  *
@@ -556,7 +556,7 @@ async function askResearch(ctx: RunContext, run: ProfileRun, where: Position, sp
       check: (text) => {
         let listed: number
         try {
-          listed = parseResearchReply(text, 1).listed
+          listed = researchEntries(text).length
         } catch (error) {
           state.parsed = error
           throw error
