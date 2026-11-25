@@ -3030,6 +3030,45 @@ describe('progress modes', () => {
   })
 })
 
+describe('the summary of a capped review', () => {
+  /** A fetch whose first call is the research reply, and whose later calls keep every vote. */
+  function researchThenVotes(research: string): void {
+    vi.stubGlobal('fetch', vi.fn().mockImplementationOnce(async () => chatReply(research)).mockImplementation(async () => chatReply(vote(true))))
+  }
+
+  it('names findingsCap for the findings the cap left unread, in the summary, the gap and the run\'s result', async () => {
+    researchThenVotes(JSON.stringify({
+      findings: [FINDING, SECOND_FINDING],
+    }))
+    const { io, stdout, stderr } = harness({
+      env: { ...MODEL, QUORUM_FINDINGS_CAP: '1' },
+      stdin: TWO_LINE_DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    expect(stderr().split('\n')).toContain('gaps: 1 gap(s) findings-capped: raise findingsCap')
+    expect(JSON.parse(stdout()).meta.incomplete).toEqual([
+      { profile: 'security', reason: 'findings-capped', detail: '1 of 2 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 1): raise findingsCap' },
+    ])
+  })
+
+  it('names maxTokens for replies that listed all they were asked for when the reply budget asked for fewer than maxFindings', async () => {
+    // A reply budget of 1000 tokens holds 3 findings, the findings it asks for with thinking off, of the 50 maxFindings sizes.
+    const config = write('small-reply.yaml', 'providers:\n  local: {protocol: openai-compatible, baseUrl: "http://localhost:11434/v1", model: m, contextTokens: 131072, maxTokens: 1000, thinking: off}\n')
+    researchThenVotes(JSON.stringify({
+      findings: [FINDING, SECOND_FINDING, FINDING],
+    }))
+    const { io, stdout, stderr } = harness({
+      argv: ['--config', config],
+      stdin: TWO_LINE_DIFF,
+    })
+    expect(await runCli(io)).toBe(EXIT.finding)
+    expect(stderr().split('\n')).toContain('gaps: 1 gap(s) findings-capped: raise maxTokens')
+    expect(JSON.parse(stdout()).meta.incomplete).toEqual([
+      { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 3 findings they were asked for at most, so they may have left some out: raise maxTokens, since the reply budget holds 3 of maxFindings 50' },
+    ])
+  })
+})
+
 describe('interruptSignal', () => {
   it('aborts on the first SIGINT or SIGTERM, and exits 130 on the next', () => {
     for (const [first, second] of [
@@ -3849,6 +3888,53 @@ describe('the sources', () => {
     expect(lines[2]).toMatch(/; the finding cap 3 \(maxFindings\)$/)
     expect(lines[2]).not.toContain('the config sets none of them')
     expect(fetchMock).toHaveBeenCalledTimes(parts)
+  })
+
+  it('reads a config\'s findingsCap as a path review\'s finding cap, and its bounds line says so', async () => {
+    const config = write('findings-cap.yaml', `${TEAM_YAML}findingsCap: 7\n`)
+    const fetchMock = vi.fn().mockImplementation(async () => chatReply(JSON.stringify({ findings: [] })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { io, stderr } = harness({
+      argv: ['--config', config, '--path', 'src'],
+      git: bigGit().seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const { lines, parts, votes } = estimateOf(stderr())
+    // The cap is the one the config sets, not the default a path review of this size would take, and the votes are counted at it.
+    expect(parts).toBeGreaterThan(0)
+    expect(votes).toBe(7 * 3)
+    expect(lines[2]).toMatch(/; the finding cap 7 \(findingsCap\)$/)
+    expect(lines[2]).not.toContain('the config sets none of them')
+    expect(fetchMock).toHaveBeenCalledTimes(parts)
+  })
+
+  it.each([
+    [
+      'a config\'s findingsCap over its maxFindings',
+      'findingsCap: 7\nmaxFindings: 3\n',
+      {},
+      7,
+    ],
+    [
+      'QUORUM_FINDINGS_CAP over a config\'s findingsCap',
+      'findingsCap: 7\n',
+      { QUORUM_FINDINGS_CAP: '5' },
+      5,
+    ],
+  ])('reads %s as a path review\'s finding cap', async (_name, setting, env, cap) => {
+    const config = write('findings-cap-over.yaml', `${TEAM_YAML}${setting}`)
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => chatReply(JSON.stringify({ findings: [] }))))
+    const { io, stderr } = harness({
+      argv: ['--config', config, '--path', 'src'],
+      env,
+      git: bigGit().seam,
+      platform: 'linux',
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const { lines, votes } = estimateOf(stderr())
+    expect(votes).toBe(cap * 3)
+    expect(lines[2]).toMatch(new RegExp(`; the finding cap ${cap} \\(findingsCap\\)$`))
   })
 
   it('writes no large review\'s warning for a small path review whose worst case passes 2000000 through recovery\'s bound alone', async () => {

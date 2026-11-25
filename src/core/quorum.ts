@@ -49,14 +49,17 @@ const NO_RESEARCH: ResearchRecord = Object.freeze({
 })
 
 /** The options that must be positive integers when they are set. */
-const LIMITS = ['concurrency', 'maxFindings'] as const
+const LIMITS = ['concurrency', 'maxFindings', 'findingsCap'] as const
 
 /** What createQuorum compiled: the frozen runs and settings every review of the quorum reads. */
 interface Compiled {
   readonly runs: readonly ProfileRun[]
   /** The review's `concurrency`, or none: each provider then has a lane. */
   readonly concurrency: number | undefined
+  /** The findings each research request asks for at most: it sizes every request. */
   readonly maxFindings: number
+  /** The most findings of the research each profile sends to its panel in a review that gives no cap of its own: the quorum's `findingsCap`, else `maxFindings`. */
+  readonly findingsCap: number
   /** The most tokens one review spends: each review gets a ledger of this cap. */
   readonly maxReviewTokens: number
   /** How long one review runs, in milliseconds: each review arms a deadline of this length on `clock`. */
@@ -99,7 +102,7 @@ interface Tally {
  *
  * Every problem is reported at once, in one ConfigError, never as a TypeError, so an untyped caller
  * gets the checks a config file gets: options and ports that are not objects, no profile, each
- * profile's own issues, a repeated profile id, a `concurrency` or `maxFindings` that is not a
+ * profile's own issues, a repeated profile id, a `concurrency`, `maxFindings` or `findingsCap` that is not a
  * positive integer, a `maxReviewTokens` that is not a whole number of tokens from 1 to
  * 9007199254740991, a `reviewTimeoutMs` that is not a whole number of milliseconds from 1000 to
  * 86400000, a `partTokens` that is not a whole number of tokens from 1024 to 9007199254740991, an
@@ -159,6 +162,7 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
     runs,
     concurrency: options.concurrency,
     ...settings,
+    findingsCap: options.findingsCap ?? settings.maxFindings,
     budgets,
     heldRules: new Map(runs.map(run => [run.id, ruleTextBytes(run.texts.rules) ?? 0])),
     reviewTimeoutMs: options.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
@@ -179,7 +183,7 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
  * What one review of `input.diff` may cost, before any call: no provider is called and nothing is read or
  * written. Per profile, it states what the review's ledger reserves for each research part, in order, exactly
  * as `review` plans and builds them (the diff less the sections `exclude` leaves out, parted on each research
- * provider's stated room), and a bound for the votes: `maxFindings` votes of each lens, each at the request for
+ * provider's stated room), and a bound for the votes: `findingsCap` votes of each lens, each at the request for
  * a finding at its longest citing the largest section of the filtered diff. `expected` counts the research
  * parts alone, each at a third of its reservation, rounded up (`BOUND_OVER_CODE`), and `worst` the parts in full
  * and every vote at its bound, so the votes are in the worst case only. `inFlight` is what the calls that run
@@ -219,7 +223,7 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
     ...compiled,
     maxReviewTokens: limits.maxReviewTokens ?? compiled.maxReviewTokens,
     reviewTimeoutMs: limits.reviewTimeoutMs ?? compiled.reviewTimeoutMs,
-    findingsCap: limits.findingsCap ?? compiled.maxFindings,
+    findingsCap: limits.findingsCap ?? compiled.findingsCap,
   }, input.diff, path => sent.has(path))
 }
 
@@ -334,7 +338,7 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * as it always was; else the filtered diff's sections, in order, are packed into parts of at most
  * `partTokens` whose request fits the room, a section too large for a part split between its hunks and
  * a hunk never cut. Each part is a research call, in order, up to 15 when recovery splits it, that names its position and the change's
- * files; the replies are read in turn, each one's first findings before any one's second, up to `maxFindings` findings in all, each
+ * files; the replies are read in turn, each one's first findings before any one's second, up to the finding cap (`findingsCap`) in all, each
  * checked against the whole diff. A hunk, or a section with no hunk, that fits in no research part of the window is no part's:
  * the profile records one `too-large` gap for them before any call is sent, which no flag lifts for a
  * gating profile. `meta.profiles.<id>.coverage` lists every file of the input diff once, in its order,
@@ -355,8 +359,8 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * the quorum's, and are checked as the quorum's are: a caller that knows the size of its input gives its review the
  * cap and the deadline that fit it, and the reviews that give none keep the quorum's. The gaps, the events and `meta`
  * read the limits the review kept to. `options.findingsCap` is the most findings of the research each profile sends to its
- * panel in this review, `maxFindings` unless set: every research request is still sized by `maxFindings`, so a larger
- * `findingsCap` changes no request and splits no reply, and the findings past it are one `findings-capped` gap.
+ * panel in this review, the quorum's `findingsCap` unless set, which is `maxFindings` unless set: every research request is still sized
+ * by `maxFindings`, so a larger `findingsCap` changes no request and splits no reply, and the findings past it are one `findings-capped` gap.
  *
  * Each profile reads documents as policy: its own `guidelines` and `doNotReport`, its `documents`, then the repository documents
  * of `input.context` that name it, each cleaned (`cleanProse`), capped and joined with the others of its kind in that order by a
@@ -549,7 +553,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
       : { store: options.store },
     adapt: createAdaptations(),
     maxFindings: compiled.maxFindings,
-    findingsCap: options.findingsCap ?? compiled.maxFindings,
+    findingsCap: options.findingsCap ?? compiled.findingsCap,
     budgets: compiled.budgets,
     concurrency: compiled.concurrency ?? REVIEW_CEILING,
     clocks: createClocks(),
@@ -1024,10 +1028,10 @@ function profileListIssues(profiles: readonly unknown[]): { issues: ConfigIssue[
 }
 
 /**
- * `concurrency` and `maxFindings` are positive integers when set, `maxReviewTokens` a whole number of
+ * `concurrency`, `maxFindings` and `findingsCap` are positive integers when set, `maxReviewTokens` a whole number of
  * tokens from 1 to 9007199254740991, `reviewTimeoutMs` a whole number of milliseconds from 1000 to
  * 86400000, and `partTokens` a whole number of tokens from 1024 to 9007199254740991. A number is
- * quoted in the first two; anything else is described by the rule alone.
+ * quoted in the first three; anything else is described by the rule alone.
  */
 function limitIssues(options: Record<string, unknown>): ConfigIssue[] {
   const issues: ConfigIssue[] = LIMITS.flatMap((path) => {
@@ -1070,7 +1074,7 @@ function reviewLimitIssues(options: Record<string, unknown>): ConfigIssue[] {
   ]
 }
 
-/** The problem of a `findingsCap`, which a review's options and an estimate's limits hold and the quorum's options do not: a positive integer when set. */
+/** The problem of a `findingsCap` in a review's options or an estimate's limits (the quorum's options are checked by `limitIssues`): a positive integer when set. */
 function findingsCapIssues(options: Record<string, unknown>): ConfigIssue[] {
   const value = options.findingsCap
   return value === undefined || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 1)

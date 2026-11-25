@@ -208,6 +208,7 @@ function configSchema<P extends z.ZodType, R extends z.ZodType, D extends z.ZodT
     roles: roles.optional().describe('The providers every profile uses, unless it names its own. research is required once several providers are defined; voter is research when unset'),
     concurrency: z.int().min(1).optional().describe('The most provider calls in flight at once in one review, shared by every profile, with no lane and no adaptation; unset, each provider has a lane of its own that follows its rate-limit headers, from 4 calls at once up to 16 in all'),
     maxFindings: z.int().min(1).optional().describe('The most findings of a research reply each profile reads, the only ones that can reach its panel'),
+    findingsCap: z.int().min(1).optional().describe('The most findings of the research each profile sends to its panel in one review; maxFindings when unset, and for a --path review four per research part, at least 50. Set here or in QUORUM_FINDINGS_CAP'),
     partTokens: z.int().min(MIN_PART_TOKENS).optional().describe('The most tokens of diff text, at one token per byte, one research request of a large change holds; 32768 when unset'),
     maxReviewTokens: z.int().min(1).optional().describe('The most tokens, input and output, one review may spend; 2000000 when unset. Set here or in QUORUM_MAX_REVIEW_TOKENS'),
     reviewTimeoutMs: z.int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe('The deadline of one review, in milliseconds; 1800000 when unset. Set here or in QUORUM_REVIEW_TIMEOUT_MS'),

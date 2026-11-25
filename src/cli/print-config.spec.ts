@@ -153,6 +153,12 @@ describe('printConfig', () => {
     expect(printConfig(config({ a: SPEC }, { concurrency: 2, maxFindings: 5 }), undefined)).toContain('\nconcurrency: 2\nmaxFindings: 5\n')
   })
 
+  it('prints findingsCap after maxFindings when the config sets it, and nothing when it does not', () => {
+    expect(printConfig(config({ a: SPEC }, { findingsCap: 300 }), undefined)).toContain('\nconcurrency: auto\nmaxFindings: 50\nfindingsCap: 300\npartTokens: 32768\n')
+    expect(printConfig(config({ a: SPEC }, { maxFindings: 5, findingsCap: 300 }), undefined)).toContain('\nmaxFindings: 5\nfindingsCap: 300\npartTokens: 32768\n')
+    expect(printed(SPEC)).not.toContain('findingsCap')
+  })
+
   it('prints the review\'s limits as the review applies them', () => {
     expect(printConfig(config({ a: SPEC }, { maxReviewTokens: 500000, reviewTimeoutMs: 600000 }), undefined)).toContain('\nmaxReviewTokens: 500000\nreviewTimeoutMs: 600000\n')
   })

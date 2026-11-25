@@ -443,6 +443,38 @@ describe('the review\'s limits variables', () => {
   })
 })
 
+describe('qUORUM_FINDINGS_CAP', () => {
+  const MESSAGE = 'must be a whole number of findings, from 1 to 999999999'
+
+  it.each<[string, number | undefined]>([
+    ['300', 300],
+    ['999999999', 999_999_999],
+    ['0', undefined],
+    ['1.5', undefined],
+    ['abc', undefined],
+    ['01', undefined],
+    ['1000000000', undefined],
+  ])('reads QUORUM_FINDINGS_CAP %j as %j', (value, cap) => {
+    const layer = readEnv({ QUORUM_FINDINGS_CAP: value })
+    if (cap === undefined) {
+      expect(layer.issues).toEqual([
+        { path: 'QUORUM_FINDINGS_CAP', message: MESSAGE },
+      ])
+      expect(Object.hasOwn(layer, 'findingsCap')).toBe(false)
+      expect(JSON.stringify(layer.issues)).not.toContain(`"${value}"`)
+    } else {
+      expect(layer.issues).toEqual([])
+      expect(layer.findingsCap).toBe(cap)
+    }
+  })
+
+  it('is a variable quorum reads, and sets nothing when it is blank or unset', () => {
+    expect(readEnv({ QUORUM_FINDINGS_CAP: '300' }).warnings).toEqual([])
+    expect(Object.hasOwn(readEnv({ QUORUM_FINDINGS_CAP: '  ' }), 'findingsCap')).toBe(false)
+    expect(Object.hasOwn(readEnv({}), 'findingsCap')).toBe(false)
+  })
+})
+
 describe('the strict variable', () => {
   it('reads QUORUM_STRICT as true or false exactly, and refuses any other value', () => {
     expect(readEnv({ QUORUM_STRICT: 'true' })).toMatchObject({ strict: true, issues: [] })

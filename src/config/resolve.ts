@@ -29,6 +29,8 @@ export interface ResolvedConfig {
   readonly profiles: readonly ResolvedProfile[]
   readonly concurrency?: number
   readonly maxFindings?: number
+  /** The most findings of the research each profile sends to its panel in one review: `QUORUM_FINDINGS_CAP`, else the config's; absent when neither sets it, and then `maxFindings` is the cap. */
+  readonly findingsCap?: number
   /** The most tokens of diff text one research request of a large change holds: the config's alone, no variable sets it; absent when the config does not. */
   readonly partTokens?: number
   /** The most tokens one review spends: `QUORUM_MAX_REVIEW_TOKENS`, else the config's; absent when neither sets it. */
@@ -446,8 +448,8 @@ function bindRoles(roles: ConfigInput['roles'], names: readonly string[]): { rea
  * preset's own variable is read only at the preset's origin. Every provider needs a context size, and the issue
  * of a missing one names what to set (`reportMissingContext`). A `claude-code` provider in use gets its
  * command as it gets its key: `QUORUM_CLAUDE_CODE_COMMAND`, else the config's, else `claude` in an absolute
- * entry of `PATH`, found or refused here, and its billing warning. The review's limits, `maxReviewTokens` and
- * `reviewTimeoutMs`, come from `QUORUM_MAX_REVIEW_TOKENS` and `QUORUM_REVIEW_TIMEOUT_MS`, else from the config,
+ * entry of `PATH`, found or refused here, and its billing warning. The review's limits, `maxReviewTokens`,
+ * `reviewTimeoutMs` and `findingsCap`, come from `QUORUM_MAX_REVIEW_TOKENS`, `QUORUM_REVIEW_TIMEOUT_MS` and `QUORUM_FINDINGS_CAP`, else from the config,
  * and are kept only when one of them sets them. `strict` is on when the config's or `QUORUM_STRICT` is `true`, and then a key sent over plain http to another machine is an issue, not a warning. Its `warnings` are the environment layer's, then the providers',
  * then the profiles' (an entry that sets the deprecated `gating`). A resolved config is returned as it is. The
  * input must already have passed a config schema. `options.selection`, when given, names the profiles that
@@ -528,6 +530,7 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
 
   const concurrency = own(input, 'concurrency')
   const maxFindings = own(input, 'maxFindings')
+  const findingsCap = own(layer, 'findingsCap') ?? own(input, 'findingsCap')
   const partTokens = own(input, 'partTokens')
   const maxReviewTokens = own(layer, 'maxReviewTokens') ?? own(input, 'maxReviewTokens')
   const reviewTimeoutMs = own(layer, 'reviewTimeoutMs') ?? own(input, 'reviewTimeoutMs')
@@ -542,6 +545,9 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
     ...maxFindings === undefined
       ? {}
       : { maxFindings },
+    ...findingsCap === undefined
+      ? {}
+      : { findingsCap },
     ...partTokens === undefined
       ? {}
       : { partTokens },

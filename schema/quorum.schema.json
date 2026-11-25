@@ -244,6 +244,12 @@
       "minimum": 1,
       "maximum": 9007199254740991
     },
+    "findingsCap": {
+      "description": "The most findings of the research each profile sends to its panel in one review; maxFindings when unset, and for a --path review four per research part, at least 50. Set here or in QUORUM_FINDINGS_CAP",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
     "partTokens": {
       "description": "The most tokens of diff text, at one token per byte, one research request of a large change holds; 32768 when unset",
       "type": "integer",

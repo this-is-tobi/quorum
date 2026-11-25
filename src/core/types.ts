@@ -629,8 +629,14 @@ export interface QuorumOptions {
    * waits out a Retry-After.
    */
   readonly concurrency?: number
-  /** How many findings of a research reply each profile sends to the panel; `DEFAULT_MAX_FINDINGS` when unset. */
+  /** How many findings each research request asks for at most, and the most of the research each profile sends to its panel unless `findingsCap` says another; `DEFAULT_MAX_FINDINGS` when unset. */
   readonly maxFindings?: number
+  /**
+   * The most findings of the research each profile sends to its panel in one review: a positive integer, `maxFindings` when unset.
+   * It sizes no request, as `maxFindings` does, so raising it reads the findings a capped review left unread and changes no
+   * research request; a review's own `findingsCap` option takes its place for that review.
+   */
+  readonly findingsCap?: number
   /** Path patterns of the files left out of every request; none when unset. */
   readonly exclude?: readonly string[]
   /**

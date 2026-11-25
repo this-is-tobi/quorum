@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { ProfileBudgets } from '../core/budgets.ts'
 import type { Provider } from '../core/ports.ts'
 import type { Estimate } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
@@ -34,7 +35,7 @@ describe('estimateLines', () => {
     fits: true,
     held: 2,
   }
-  const bounds: Bounds = { cap: 'config', deadline: 'config', findings: 'config' }
+  const bounds: Bounds = { cap: 'config', deadline: 'config', findings: 'maxFindings' }
   const cost = 'estimate: research about 16.6k tokens expected, at most 1.85M with every vote and every part recovered, 50.0k of them reserved at once'
   const limits = 'bounds: the token cap 2.00M (maxReviewTokens); the deadline 30m00s (reviewTimeoutMs); the finding cap 50 (maxFindings)'
 
@@ -222,8 +223,13 @@ describe('estimateLines', () => {
     ],
     [
       'the config sets maxFindings alone',
-      { cap: 'estimate', deadline: 'longest', findings: 'config' },
+      { cap: 'estimate', deadline: 'longest', findings: 'maxFindings' },
       'the token cap 9.86M, this estimate\'s worst case; the deadline 24h00m00s, the longest allowed; the finding cap 121 (maxFindings)',
+    ],
+    [
+      'the config sets findingsCap alone',
+      { cap: 'estimate', deadline: 'longest', findings: 'findingsCap' },
+      'the token cap 9.86M, this estimate\'s worst case; the deadline 24h00m00s, the longest allowed; the finding cap 121 (findingsCap)',
     ],
   ] as const)('ends the estimate with its bounds when %s', (_name, bounds, ending) => {
     const cap = bounds.cap === 'estimate'
@@ -242,6 +248,14 @@ describe('estimateLines', () => {
       findingsCap,
     }, bounds)
     expect(last).toBe(`bounds: ${ending}`)
+  })
+
+  it.each([
+    ['findingsCap', 300, 'the finding cap 300 (findingsCap)'],
+    ['maxFindings', 30, 'the finding cap 30 (maxFindings)'],
+  ] as const)('names %s as the finding cap the config sets, and says nothing of a config that sets none', (findings, cap, words) => {
+    const bounded = { ...estimate, reviewTimeoutMs: 86_400_000, findingsCap: cap }
+    expect(estimateLines(bounded, { cap: 'estimate', deadline: 'longest', findings }).at(2)).toBe(`bounds: the token cap 2.00M, this estimate's worst case; the deadline 24h00m00s, the longest allowed; ${words}`)
   })
 
   it('writes the estimate in two lines, the cost then the bounds, each count scaled and the deadline in hours and minutes', () => {
@@ -318,7 +332,7 @@ describe('estimateLines', () => {
     expect(boundWarnings(explicit, { cap: 'config', deadline: 'longest', findings: 'floor' })[0]).toContain('the token cap of 120k (maxReviewTokens) holds about 0 of the 2')
     // The default floor holds the worst case, and a cap the estimate fits under is no warning.
     expect(boundWarnings(estimate, { cap: 'floor', deadline: 'longest', findings: 'floor' })).toEqual([])
-    expect(boundWarnings(estimate, { cap: 'config', deadline: 'config', findings: 'config' })).toEqual([])
+    expect(boundWarnings(estimate, { cap: 'config', deadline: 'config', findings: 'maxFindings' })).toEqual([])
     const below: Estimate = {
       ...estimate,
       maxReviewTokens: 120_000,
@@ -547,21 +561,27 @@ describe('profileProviders', () => {
 })
 
 describe('viewFacts', () => {
-  it('reads the view\'s facts from the config, with the defaults the review uses, and a path review\'s estimate', () => {
-    const config = resolvedConfig({
-      providers: {
-        fake: {
-          model: 'm',
-          complete: async () => ({ text: '{}', model: 'm' }),
-        },
+  const lone = (findings: number) => ({
+    research: { provider: 'api', findings, findingsWithoutThinking: findings },
+    lenses: {},
+  }) satisfies ProfileBudgets
+  const config = resolvedConfig({
+    providers: {
+      fake: {
+        model: 'm',
+        complete: async () => ({ text: '{}', model: 'm' }),
       },
-    })
+    },
+  })
+
+  it('reads the view\'s facts from the config, with the defaults the review uses, and a path review\'s estimate', () => {
     // `concurrency` unset is `auto`: each provider's own lane
     expect(viewFacts(config)).toEqual({
       concurrency: 'auto',
       cap: { tokens: 2_000_000, origin: 'default' },
       deadlineMs: 1_800_000,
       maxFindings: 50,
+      asks: { maxFindings: 50, findings: {} },
     })
     const set = {
       ...config,
@@ -582,18 +602,60 @@ describe('viewFacts', () => {
       fits: true,
       held: 0,
     } satisfies Estimate
-    expect(viewFacts(set, estimate)).toEqual({
+    expect(viewFacts(set, { estimate })).toEqual({
       concurrency: 2,
       cap: { tokens: 300_000, origin: 'config' },
       deadlineMs: 60_000,
       maxFindings: 9,
+      asks: { maxFindings: 9, findings: {} },
       estimate,
     })
     // A path review's finding cap is the facts' maxFindings, which sizes the votes to come.
-    expect(viewFacts(config, estimate, {
-      cap: { tokens: 300_000, origin: 'config' },
-      deadlineMs: 60_000,
-      findingsCap: 121,
+    expect(viewFacts(config, {
+      estimate,
+      bounds: {
+        cap: { tokens: 300_000, origin: 'config' },
+        deadlineMs: 60_000,
+        findingsCap: 121,
+      },
     }).maxFindings).toBe(121)
+  })
+
+  it('states the panel\'s cap as the config\'s findingsCap, else its maxFindings, else the default, a diff review\'s too, and asks by maxFindings', () => {
+    const capped = viewFacts({ ...config, findingsCap: 30, maxFindings: 50 })
+    expect(capped.maxFindings).toBe(30)
+    expect(capped.asks.maxFindings).toBe(50)
+    expect(viewFacts({ ...config, findingsCap: 30 })).toMatchObject({
+      maxFindings: 30,
+      asks: { maxFindings: 50 },
+    })
+    expect(viewFacts({ ...config, maxFindings: 20 })).toMatchObject({
+      maxFindings: 20,
+      asks: { maxFindings: 20 },
+    })
+    // A path review's bounds win over both.
+    expect(viewFacts({ ...config, findingsCap: 30, maxFindings: 50 }, {
+      bounds: {
+        cap: { tokens: 300_000, origin: 'config' },
+        deadlineMs: 60_000,
+        findingsCap: 121,
+      },
+    })).toMatchObject({
+      maxFindings: 121,
+      asks: { maxFindings: 50 },
+    })
+  })
+
+  it('reads the asks of each profile from the quorum\'s budgets', () => {
+    const facts = viewFacts({ ...config, maxFindings: 50 }, {
+      budgets: {
+        security: lone(47),
+        naming: lone(50),
+      },
+    })
+    expect(facts.asks).toEqual({
+      maxFindings: 50,
+      findings: { security: 47, naming: 50 },
+    })
   })
 })

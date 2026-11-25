@@ -797,6 +797,29 @@ describe('fromConfig', () => {
     expect(complete).not.toHaveBeenCalled()
   })
 
+  it('gives the quorum the config\'s findingsCap', async () => {
+    const reply = JSON.stringify({
+      findings: [JSON.parse(finding).findings[0], JSON.parse(finding).findings[0]],
+    })
+    const complete = vi.fn<(request: CompletionRequest) => Promise<CompletionResponse>>()
+      .mockResolvedValueOnce({ text: reply, model: 'm' })
+      .mockResolvedValue({
+        text: JSON.stringify({ keep: true, reasoning: 'r' }),
+        model: 'm',
+      })
+    const quorum = await fromConfig({
+      providers: {
+        mine: { model: 'm', complete },
+      },
+      findingsCap: 1,
+    }, { env: {} })
+    expect(quorum.estimate({ diff })).toMatchObject({ findingsCap: 1, maxFindings: 50 })
+    const result = await quorum.review({ diff })
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'findings-capped', detail: '1 of 2 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 1): raise findingsCap' },
+    ])
+  })
+
   it('hands exclude to the quorum it builds', async () => {
     const requests: CompletionRequest[] = []
     const mine = {

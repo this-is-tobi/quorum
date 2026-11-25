@@ -1,6 +1,7 @@
 import { own } from '../config/profiles.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider } from '../config/schema.ts'
+import type { ProfileBudgets } from '../core/budgets.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../core/limits.ts'
 import type { Provider } from '../core/ports.ts'
 import { DEFAULT_MAX_FINDINGS } from '../core/prompts.ts'
@@ -12,22 +13,22 @@ import { presetOf } from '../providers/presets.ts'
 import { durationText, tokenWords } from '../report/lines.ts'
 import type { ReportView } from '../report/view.ts'
 import { profilePrefix } from './view/lines.ts'
-import type { ViewFacts } from './view/model.ts'
+import type { CapOrigin, ViewFacts } from './view/model.ts'
 
 /**
  * Where a path review's token cap, deadline and finding cap came from, which the estimate's bounds line says: the token cap
  * is the estimate's own worst case (`estimate`), the default floor that holds it (`floor`), or the config's `maxReviewTokens`
  * (`config`); the deadline is the longest allowed (`longest`) or the config's `reviewTimeoutMs` (`config`); the finding cap is
- * the config's `maxFindings` (`config`), one per research part (`parts`), or the default, which holds one per research part (`floor`).
+ * the config's `findingsCap` (`findingsCap`), its `maxFindings` (`maxFindings`), one per research part (`parts`), or the default, which holds one per research part (`floor`).
  */
 export interface Bounds {
   readonly cap: 'estimate' | 'floor' | 'config'
   readonly deadline: 'longest' | 'config'
-  readonly findings: 'config' | 'parts' | 'floor'
+  readonly findings: 'findingsCap' | 'maxFindings' | 'parts' | 'floor'
 }
 
 /**
- * The finding cap of a path review whose config sets no `maxFindings`: the larger of the default, 50, and each profile's
+ * The finding cap of a path review whose config sets no `findingsCap` and no `maxFindings`: the larger of the default, 50, and each profile's
  * research part count, so its panel can read one finding per part. `estimate` is made under the quorum's own limits.
  */
 export function findingsCapOf(estimate: Estimate): number {
@@ -64,7 +65,7 @@ export const EXACT_WORDS: NumberWords = {
 export function estimateLines(estimate: Estimate, bounds: Bounds, words: NumberWords = PERSON_WORDS): string[] {
   const entries = Object.entries(estimate.profiles)
   const prefixed = entries.length > 1
-  const noneSet = bounds.cap !== 'config' && bounds.deadline === 'longest' && bounds.findings !== 'config'
+  const noneSet = bounds.cap !== 'config' && bounds.deadline === 'longest' && (bounds.findings === 'parts' || bounds.findings === 'floor')
   return [
     ...entries.map(([id, { parts, expected, votes, worst, documents }]) => {
       const prefix = prefixed
@@ -98,7 +99,7 @@ function deadlineWords({ reviewTimeoutMs: ms }: Estimate, { deadline }: Bounds, 
 }
 
 function findingsWords({ findingsCap: cap }: Estimate, { findings: origin }: Bounds): string {
-  if (origin === 'config') return `${cap} (maxFindings)`
+  if (origin === 'findingsCap' || origin === 'maxFindings') return `${cap} (${origin})`
   return origin === 'parts'
     ? `${cap}, one per research part`
     : `${cap}, the default, which holds one per research part`
@@ -229,21 +230,34 @@ export function bannerLines(config: ResolvedConfig, view: ReportView = 'full'): 
   })
 }
 
+/** The bounds a path review derived, as the view's facts name them: the cap with where it came from, the deadline and the panel's finding cap. */
+export interface BoundFacts {
+  readonly cap: { readonly tokens: number, readonly origin: CapOrigin }
+  readonly deadlineMs: number
+  readonly findingsCap: number
+}
+
 /**
  * What the view knows of a review before it runs, from its resolved config: the calls at once, the token cap and
- * where it came from, the deadline, `maxFindings`, and for a path review its estimate. A path review's bounds are
- * derived, so it gives them as `bounds`, and they win over the config's: its `findingsCap` is the facts' `maxFindings`, which
- * sizes the votes to come. The view reads the config's numbers only
+ * where it came from, the deadline, the panel's finding cap (`maxFindings` in the facts, which sizes the votes to come: the config's
+ * `findingsCap`, else its `maxFindings`, else the default), what each research request asks for (`asks`, from the quorum's `budgets`
+ * and the config's `maxFindings`, which sizes the requests), and for a path review its estimate. A path review's bounds are
+ * derived, so it gives them as `bounds`, and they win over the config's. The view reads the config's numbers only
  * through these facts.
  */
-export function viewFacts(config: ResolvedConfig, estimate?: Estimate, bounds?: { readonly cap: ViewFacts['cap'], readonly deadlineMs: number, readonly findingsCap: number }): ViewFacts {
+export function viewFacts(config: ResolvedConfig, extra: { readonly estimate?: Estimate, readonly bounds?: BoundFacts, readonly budgets?: Readonly<Record<string, ProfileBudgets>> } = {}): ViewFacts {
+  const { estimate, bounds, budgets = {} } = extra
   return {
     concurrency: config.concurrency ?? 'auto',
     cap: bounds?.cap ?? (config.maxReviewTokens === undefined
       ? { tokens: DEFAULT_MAX_REVIEW_TOKENS, origin: 'default' }
       : { tokens: config.maxReviewTokens, origin: 'config' }),
     deadlineMs: bounds?.deadlineMs ?? config.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
-    maxFindings: bounds?.findingsCap ?? config.maxFindings ?? DEFAULT_MAX_FINDINGS,
+    maxFindings: bounds?.findingsCap ?? config.findingsCap ?? config.maxFindings ?? DEFAULT_MAX_FINDINGS,
+    asks: {
+      maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,
+      findings: Object.fromEntries(Object.entries(budgets).map(([id, { research }]) => [id, research.findings])),
+    },
     ...estimate === undefined
       ? {}
       : { estimate },

@@ -141,6 +141,7 @@ export async function fromConfig(config: ConfigInput | ResolvedConfig, options: 
     profiles: resolved.profiles.map(({ profile }) => profile),
     concurrency: resolved.concurrency,
     maxFindings: resolved.maxFindings,
+    findingsCap: resolved.findingsCap,
     partTokens: resolved.partTokens,
     maxReviewTokens: resolved.maxReviewTokens,
     reviewTimeoutMs: resolved.reviewTimeoutMs,

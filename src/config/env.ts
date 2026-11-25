@@ -53,6 +53,8 @@ export interface EnvLayer {
   readonly maxReviewTokens?: number
   /** `QUORUM_REVIEW_TIMEOUT_MS`: present only when it is set and in range. */
   readonly reviewTimeoutMs?: number
+  /** `QUORUM_FINDINGS_CAP`: present only when it is set and in range. */
+  readonly findingsCap?: number
   /** `QUORUM_STRICT`: `true` only when it is set to `true`; `false` sets nothing, so it never turns off a config's `strict`. */
   readonly strict?: true
   /** The deprecation line, when an alias is set, then the line naming the `QUORUM_` variables nothing reads. */
@@ -112,18 +114,23 @@ const TIMEOUT_RULE: NumberRule = {
 }
 
 /** The variables of the review itself, which belong to no role: each by the field it sets and the rule it is read by. */
-const LIMIT_VARIABLES: ReadonlyArray<{ readonly field: 'maxReviewTokens' | 'reviewTimeoutMs', readonly name: string, readonly rule: NumberRule }> = [
+const LIMIT_VARIABLES: ReadonlyArray<{ readonly field: 'maxReviewTokens' | 'reviewTimeoutMs' | 'findingsCap', readonly name: string, readonly rule: NumberRule }> = [
   {
     field: 'maxReviewTokens',
     name: 'QUORUM_MAX_REVIEW_TOKENS',
     rule: { form: /^[1-9]\d{0,15}$/, max: Number.MAX_SAFE_INTEGER, message: `must be a whole number of tokens, from 1 to ${Number.MAX_SAFE_INTEGER}` },
   },
   { field: 'reviewTimeoutMs', name: 'QUORUM_REVIEW_TIMEOUT_MS', rule: TIMEOUT_RULE },
+  {
+    field: 'findingsCap',
+    name: 'QUORUM_FINDINGS_CAP',
+    rule: { form: /^[1-9]\d{0,8}$/, max: 999_999_999, message: 'must be a whole number of findings, from 1 to 999999999' },
+  },
 ]
 
 /**
  * Every variable the environment layer reads: `QUORUM_CONFIG`, `QUORUM_PROFILES`, `QUORUM_PROGRESS` (which the CLI
- * reads itself), `QUORUM_CLAUDE_CODE_COMMAND`, `QUORUM_STRICT`, the review's two limits, the `QUORUM_` form of each role's variables and the deprecated aliases of those that have one.
+ * reads itself), `QUORUM_CLAUDE_CODE_COMMAND`, `QUORUM_STRICT`, the review's three limits, the `QUORUM_` form of each role's variables and the deprecated aliases of those that have one.
  * The one list: a variable added to `VARIABLES` or `LIMIT_VARIABLES` joins it.
  */
 export const READ_VARIABLES: ReadonlySet<string> = new Set([
@@ -231,7 +238,7 @@ function unreadWarnings(env: Env): string[] {
 }
 
 /** The review's limits the variables set, each as its field and value, and an issue at each variable that is not a whole number in range, which never repeats it. */
-function readLimits(env: Env): Pick<EnvLayer, 'maxReviewTokens' | 'reviewTimeoutMs' | 'issues'> {
+function readLimits(env: Env): Pick<EnvLayer, 'maxReviewTokens' | 'reviewTimeoutMs' | 'findingsCap' | 'issues'> {
   const entries: Array<[string, number]> = []
   const issues: ConfigIssue[] = []
   for (const { field, name, rule } of LIMIT_VARIABLES) {
@@ -300,8 +307,8 @@ function readClaudeCodeCommand(env: Env): Pick<EnvLayer, 'claudeCodeCommand' | '
  * Read the `QUORUM_*` variables: the preset, protocol, base URL, model, context size, deadline, retries and key
  * of each role, which are `QUORUM_RESEARCH_*` and `QUORUM_VOTER_*`, `QUORUM_PROFILES`, and
  * `QUORUM_CLAUDE_CODE_COMMAND`, the executable of the `claude-code` protocol: an absolute path, or a name to
- * find on `PATH`; and the review's two limits, the run-level `QUORUM_MAX_REVIEW_TOKENS` and
- * `QUORUM_REVIEW_TIMEOUT_MS`, which belong to no role and are read as strictly as a role's numbers; and `QUORUM_STRICT`, `true` or `false`.
+ * find on `PATH`; and the review's three limits, the run-level `QUORUM_MAX_REVIEW_TOKENS`,
+ * `QUORUM_REVIEW_TIMEOUT_MS` and `QUORUM_FINDINGS_CAP`, which belong to no role and are read as strictly as a role's numbers; and `QUORUM_STRICT`, `true` or `false`.
  * `RESEARCH_*` and `VOTER_*` are read as deprecated aliases of the base URL, model and key, and
  * the `QUORUM_` form wins; the context size (`QUORUM_RESEARCH_CONTEXT_TOKENS`, `QUORUM_VOTER_CONTEXT_TOKENS`),
  * the deadline (`_TIMEOUT_MS`), the stall window (`_STALL_TIMEOUT_MS`) and the retries (`_RETRIES`) have no alias. Any other variable set under a
