@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.14.0](https://github.com/this-is-tobi/quorum/compare/v0.13.0...v0.14.0) (2026-11-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* meta.settings is a new required field of the JSON result, null for a review whose caller gave no settings record, so a strict reader must accept it; the public view withholds it.
+* meta.profiles.<id>.stages is a new required field of the JSON result, so a strict reader must accept it; a call event may carry failure, of kind unusable-reply for a reply the stage could not read.
+* meta.calls is a new required field of the JSON result, so a strict reader must accept it; the public view withholds it.
+* a --path review with neither findingsCap nor maxFindings set reviews up to four findings per research part instead of one, so it can cast more votes, spend and last longer, and derive a larger token cap; set findingsCap to the old count to keep it.
+* meta.profiles.<id>.research is a new required field of the JSON result, so a strict reader must accept it, and quorum report refuses a result of 0.13.0, which has none.
+* a file whose findings the finding cap left unread reads partial instead of reviewed, and a coverage range may have the reason findings-capped; reviewed now also means that the cap left unread no finding a reply listed on the file within the findings it was asked for.
+* a review whose research lists more findings than its cap reviews each reply's first findings in turn instead of the earlier replies' whole, so its verdicts and its exit code can change; the findings-capped gap's words say which findings went.
+
+### Features
+
+* record each provider's calls by role, and each profile's stage times ([b9e2887](https://github.com/this-is-tobi/quorum/commit/b9e2887834b01787ac40ffb2244a98ea77d62c57))
+* record the models each provider's replies named, and say when one answered as two ([b32c978](https://github.com/this-is-tobi/quorum/commit/b32c978720b61c89986cbdc1fb474dfe40711e0e))
+* record the settings a review ran under, so two results of two configs compare field by field ([143f7c7](https://github.com/this-is-tobi/quorum/commit/143f7c7300e18195dfddc960f73a092c913aec07))
+* write an extraBody value in a record only when a fail-closed rule finds it safe ([feea2f5](https://github.com/this-is-tobi/quorum/commit/feea2f5624b9ef57d68a841c7d5c1ebfcc51fe2c))
+
+
+### Bug Fixes
+
+* cap a path review's panel at four findings per research part, at least 50 ([bd0f49c](https://github.com/this-is-tobi/quorum/commit/bd0f49cb8be287ebd659c031a434ed11becea00f))
+* count a file whose findings the cap left unread as partly reviewed ([8db3080](https://github.com/this-is-tobi/quorum/commit/8db30808a1ab9a9648437d569156876f2ee91522))
+* give the panel's finding cap a setting of its own, findingsCap, and name each gap's lever ([327f05d](https://github.com/this-is-tobi/quorum/commit/327f05d3bead5184fc7f4d6e949a4df5992a8080))
+* read no entry at a reply's arrival, bound the limits by safe integers ([4319583](https://github.com/this-is-tobi/quorum/commit/43195833ed49ffcbf7c7d4294c3eb62b3a22b9ef))
+* record each profile's research counts, the findings the cap left unread among them ([bb52ff9](https://github.com/this-is-tobi/quorum/commit/bb52ff9df115d706d20257609173597257bc5bcb))
+* take each research reply's first findings in turn up to the cap, never a later part whole ([7b69d9d](https://github.com/this-is-tobi/quorum/commit/7b69d9d569ecaf014cf8a9ec8d94195dc40a73e5))
+* warn at the first time estimate of a deadline that comes before research ends ([41f40d7](https://github.com/this-is-tobi/quorum/commit/41f40d7d48e318c95aaa1198c7bc39a946a6c9ab))
+
 ## [0.13.0](https://github.com/this-is-tobi/quorum/compare/v0.12.0...v0.13.0) (2026-11-24)
 
 
