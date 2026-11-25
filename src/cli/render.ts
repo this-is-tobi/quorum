@@ -19,7 +19,7 @@ import type { CapOrigin, ViewFacts } from './view/model.ts'
  * Where a path review's token cap, deadline and finding cap came from, which the estimate's bounds line says: the token cap
  * is the estimate's own worst case (`estimate`), the default floor that holds it (`floor`), or the config's `maxReviewTokens`
  * (`config`); the deadline is the longest allowed (`longest`) or the config's `reviewTimeoutMs` (`config`); the finding cap is
- * the config's `findingsCap` (`findingsCap`), its `maxFindings` (`maxFindings`), one per research part (`parts`), or the default, which holds one per research part (`floor`).
+ * the config's `findingsCap` (`findingsCap`), its `maxFindings` (`maxFindings`), four per research part (`parts`), or the default, which holds four per research part (`floor`).
  */
 export interface Bounds {
   readonly cap: 'estimate' | 'floor' | 'config'
@@ -27,12 +27,15 @@ export interface Bounds {
   readonly findings: 'findingsCap' | 'maxFindings' | 'parts' | 'floor'
 }
 
+/** The findings a path review's panel reads for each research part when its config sets no cap: a finder lists 1.9 a part on average and up to 18 in one, so one a part left most of them unread. */
+export const PATH_FINDINGS_PER_PART = 4
+
 /**
- * The finding cap of a path review whose config sets no `findingsCap` and no `maxFindings`: the larger of the default, 50, and each profile's
- * research part count, so its panel can read one finding per part. `estimate` is made under the quorum's own limits.
+ * The finding cap of a path review whose config sets no `findingsCap` and no `maxFindings`: the larger of the default, 50, and
+ * `PATH_FINDINGS_PER_PART` times each profile's research part count, so its panel can read four findings per part. `estimate` is made under the quorum's own limits.
  */
 export function findingsCapOf(estimate: Estimate): number {
-  return Math.max(DEFAULT_MAX_FINDINGS, ...Object.values(estimate.profiles).map(profile => profile.parts.length))
+  return Math.max(DEFAULT_MAX_FINDINGS, ...Object.values(estimate.profiles).map(profile => PATH_FINDINGS_PER_PART * profile.parts.length))
 }
 
 /** How the estimate writes a token count and a duration: for a person, or as the exact integers a program parses. */
@@ -101,8 +104,8 @@ function deadlineWords({ reviewTimeoutMs: ms }: Estimate, { deadline }: Bounds, 
 function findingsWords({ findingsCap: cap }: Estimate, { findings: origin }: Bounds): string {
   if (origin === 'findingsCap' || origin === 'maxFindings') return `${cap} (${origin})`
   return origin === 'parts'
-    ? `${cap}, one per research part`
-    : `${cap}, the default, which holds one per research part`
+    ? `${cap}, four per research part`
+    : `${cap}, the default, which holds four per research part`
 }
 
 /**

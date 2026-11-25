@@ -369,13 +369,13 @@ The hashes are cut here; the output holds all 64 hexadecimal digits of each.
 
 ## What they cost
 
-A profile's guidelines are in every research request and every vote, and its do-not-report text in every research request, so a long guideline raises the reservation of every call, the estimate and the cap that follows it. What a guideline of 4 KiB and one of 16 KiB cost a path review of 137 research parts, on a window of 248000 tokens with `thinking: low` and `partTokens: 16000`, counted as the estimate counts them (`1.36M` is 1365607 floored):
+A profile's guidelines are in every research request and every vote, and its do-not-report text in every research request, so a long guideline raises the reservation of every call, the estimate and the cap that follows it. What a guideline of 4 KiB and one of 16 KiB cost a path review of 172 research parts, whose finding cap is 688, four per part, on a window of 248000 tokens with `thinking: low` and `partTokens: 16000`, counted as the estimate counts them (`1.71M` is 1712225 floored):
 
 | The guideline | Each request reserves | `expected` (research) | `worst`, the derived cap | Reserved at once |
 | --- | --- | --- | --- | --- |
-| None | | 1.36M | 168M | 297k |
-| 4 KiB | 4.40k more | 1.56M (201k more) | 190M (21.9M more) | 314k |
-| 16 KiB | 16.6k more | 2.12M (762k more) | 251M (83.1M more) | 363k |
+| None | | 1.71M | 459M | 315k |
+| 4 KiB | 4.40k more | 1.96M (252k more) | 500M (41.0M more) | 332k |
+| 16 KiB | 16.6k more | 2.66M (956k more) | 614M (155M more) | 382k |
 
 A reservation counts one token per byte, while English prose takes about four bytes a token, so a guideline of 4 KiB costs about 1.04k tokens in each call it is in, a quarter of what a request reserves for it. `expected` counts research at a third of its bound and no vote, so it shows about a fifth of a guideline's real cost, and `worst`, which the cap follows, is a bound, not a spend. The estimate's line for the profile says what its documents add to each request, and the summary's tokens line what the review spent: [The token cap](./20-configuration.md#the-token-cap). Guidelines that leave a window no room for a hunk are refused when the profile is created, before any call: [Room accounting](./20-configuration.md#room-accounting).
 
