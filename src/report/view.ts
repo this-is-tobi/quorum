@@ -12,7 +12,9 @@
  *   of each is the finder's. The view lists none and counts them per profile, in `discarded`;
  * - **the providers and models, and `meta.calls`:** which model reviewed names what to craft a prompt injection for, and a
  *   provider's id can name an internal host. The models the replies named are that name too, and a sharper one behind a
- *   gateway's alias, since it is the model that read the author's text. The view keeps the profile's policy, level and coverage;
+ *   gateway's alias, since it is the model that read the author's text. Each provider's calls by role (their count, failures,
+ *   retries, tokens and time) go with them: they name the provider and say how a review ran. The view keeps the profile's policy,
+ *   level and coverage, and the time of each of its stages, as it keeps the review's own `durationMs`;
  * - **the usage:** the tokens say how a review ran, and how near it came to its cap, which tells an author
  *   how much text it takes to push the review into a gap;
  * - **each profile's research counts:** the findings its research listed, the panel was asked about and
@@ -94,7 +96,7 @@ function discardedByProfile(discarded: readonly Verdict[]): Map<unknown, number>
   return counts
 }
 
-/** A profile's meta as the view keeps it, read as own data only: no providers, no research counts, and the count of its discarded findings. */
+/** A profile's meta as the view keeps it, read as own data only: no providers, no research counts, its stage times, and the count of its discarded findings. */
 function publicProfile(entry: unknown, discarded: number): PublicProfileMeta {
   const recovery = ownData(entry, 'recovery')
   return {
@@ -105,6 +107,7 @@ function publicProfile(entry: unknown, discarded: number): PublicProfileMeta {
     invalidFindings: ownData(entry, 'invalidFindings') as number,
     rules: structuredClone(ownData(entry, 'rules')) as PublicProfileMeta['rules'],
     invalidRules: ownData(entry, 'invalidRules') as number,
+    stages: structuredClone(ownData(entry, 'stages')) as PublicProfileMeta['stages'],
     ...ownData(entry, 'asksNothing') === undefined
       ? {}
       : {

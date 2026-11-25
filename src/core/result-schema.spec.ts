@@ -2,7 +2,8 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 import type { z } from 'zod'
 import { publicView } from '../report/view.ts'
 import { corpusResult } from '../testing/github-corpus.ts'
-import { blankResult, cast, reportResult, SQL, TOKEN } from '../testing/report.ts'
+import { blankResult, cast, reportMeta, reportResult, SQL, TOKEN } from '../testing/report.ts'
+import { PROVIDER_ERROR_KINDS } from './errors.ts'
 import { publicViewSchema, resultSchema } from './result-schema.ts'
 import type { PublicView, QuorumResult } from './types.ts'
 
@@ -631,6 +632,190 @@ describe('the schemas of a result', () => {
     }).success).toBe(false)
   })
 
+  it('reads each provider\'s role calls and each profile\'s stages, and refuses a failed kind quorum does not write', () => {
+    const role = {
+      calls: 5,
+      failed: { http: 1, network: 1, 'unusable-reply': 1 },
+      stopped: 1,
+      retried: 2,
+      reused: 0,
+      usage: { inputTokens: 5000, outputTokens: 500, costUsd: 0.25 },
+      callMs: { total: 12_000, longest: 4000 },
+    }
+    const stages = { research: 250_000, dedup: 3000, panel: 1_805_000 }
+    const base = reportMeta()
+    const result = reportResult({
+      meta: {
+        calls: {
+          p: {
+            model: 'm',
+            served: [],
+            research: role,
+            vote: { ...role, failed: {} },
+          },
+          q: { model: 'n', served: [], vote: role },
+        },
+        profiles: {
+          security: { ...base.profiles.security, stages },
+        },
+      },
+    })
+    const full = saved(result)
+    const view = saved(publicView(result))
+    expect(resultSchema.parse(full)).toEqual(full)
+    expect(JSON.stringify(resultSchema.parse(full))).toBe(JSON.stringify(full))
+    // The roles sit after the served models and each count in the order the core writes it, so a result read back is written as it was.
+    expect(Object.keys(full.meta.calls.p)).toEqual(['model', 'served', 'research', 'vote'])
+    expect(Object.keys(full.meta.calls.p.research ?? {})).toEqual([
+      'calls',
+      'failed',
+      'stopped',
+      'retried',
+      'reused',
+      'usage',
+      'callMs',
+    ])
+    expect(Object.keys(full.meta.calls.p.research?.callMs ?? {})).toEqual(['total', 'longest'])
+    expect(Object.keys(full.meta.profiles.security.stages)).toEqual(['research', 'dedup', 'panel'])
+    const withCalls = (changes: unknown): Forged => ({
+      ...full,
+      meta: {
+        ...full.meta,
+        calls: { p: changes },
+      },
+    })
+    const withStages = (changes: unknown): Forged => ({
+      ...full,
+      meta: {
+        ...full.meta,
+        profiles: {
+          security: {
+            ...full.meta.profiles.security,
+            stages: changes,
+          },
+        },
+      },
+    })
+    // A provider that played one role has no record of the other, and a profile with no stage ended has none: `{}`.
+    expect(resultSchema.safeParse(withCalls({ model: 'm', served: [], vote: role })).success).toBe(true)
+    expect(resultSchema.safeParse(withCalls({ model: 'm', served: [], research: role })).success).toBe(true)
+    expect(resultSchema.safeParse(withStages({})).success).toBe(true)
+    expect(resultSchema.safeParse(withStages({ panel: 7 })).success).toBe(true)
+    // A failed call is counted under a kind a provider's failure has, or `unusable-reply`, and under no other.
+    for (const kind of [...PROVIDER_ERROR_KINDS, 'unusable-reply']) {
+      expect(resultSchema.safeParse(withCalls({
+        model: 'm',
+        served: [],
+        research: {
+          ...role,
+          failed: { [kind]: 1 },
+        },
+      })).success, kind).toBe(true)
+    }
+    for (const forged of [
+      { 'token-cap': 1 },
+      { 'provider-down': 1 },
+      { 'review-deadline': 1 },
+      { unknown: 1 },
+      { http: -1 },
+      { http: 1.5 },
+      { http: '1' },
+      { http: null },
+    ] as Forged[]) {
+      expect(resultSchema.safeParse(withCalls({
+        model: 'm',
+        served: [],
+        research: { ...role, failed: forged },
+      })).success, JSON.stringify(forged)).toBe(false)
+    }
+    // Each count is a whole number, none is left out, and no record holds a field but its own.
+    for (const forged of [
+      { calls: -1 },
+      { calls: 1.5 },
+      { stopped: '1' },
+      { retried: null },
+      { reused: Number.NaN },
+      { failed: [] },
+      {
+        usage: { inputTokens: -1, outputTokens: 0 },
+      },
+      {
+        usage: { inputTokens: 0 },
+      },
+      {
+        callMs: { total: -1, longest: 0 },
+      },
+      {
+        callMs: { total: 1.5, longest: 0 },
+      },
+      {
+        callMs: { total: 1 },
+      },
+      {
+        callMs: { total: 1, longest: 1, extra: 1 },
+      },
+      { extra: 1 },
+    ] as Forged[]) {
+      expect(resultSchema.safeParse(withCalls({
+        model: 'm',
+        served: [],
+        research: {
+          ...role,
+          ...forged,
+        },
+      })).success, JSON.stringify(forged)).toBe(false)
+    }
+    for (const key of Object.keys(role)) {
+      const { [key]: _left, ...short } = role as Record<string, unknown>
+      expect(resultSchema.safeParse(withCalls({ model: 'm', served: [], research: short })).success, key).toBe(false)
+    }
+    // Each stage is one of the three, with a whole number of milliseconds.
+    for (const forged of [
+      { review: 1 },
+      { research: -1 },
+      { research: 1.5 },
+      { research: '1' },
+      { research: null },
+      [250_000],
+    ] as Forged[]) {
+      expect(resultSchema.safeParse(withStages(forged)).success, JSON.stringify(forged)).toBe(false)
+    }
+    // A result of 0.13.0 has no stages, and a profile's meta without them is no result.
+    const { stages: _stages, ...older } = full.meta.profiles.security
+    expect(resultSchema.safeParse({
+      ...full,
+      meta: {
+        ...full.meta,
+        profiles: { security: older },
+      },
+    }).success).toBe(false)
+    // The public view keeps the stages and withholds the roles with the rest of `meta.calls`.
+    expect(view.meta.profiles.security.stages).toEqual(stages)
+    expect(view.meta).not.toHaveProperty('calls')
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(JSON.stringify(publicViewSchema.parse(view))).toBe(JSON.stringify(view))
+    const { stages: _kept, ...viewless } = view.meta.profiles.security
+    expect(publicViewSchema.safeParse({
+      ...view,
+      meta: {
+        ...view.meta,
+        profiles: { security: viewless },
+      },
+    }).success).toBe(false)
+    expect(publicViewSchema.safeParse({
+      ...view,
+      meta: {
+        ...view.meta,
+        profiles: {
+          security: {
+            ...view.meta.profiles.security,
+            stages: { review: 1 },
+          },
+        },
+      },
+    }).success).toBe(false)
+  })
+
   it('reads a profile\'s asksNothing as true alone, after its invalidRules, in the public view too, and does not require it', () => {
     const base = reportResult().meta
     // The profile as the core writes it: the flag after the counts of rules, before the coverage.
@@ -654,17 +839,19 @@ describe('the schemas of a result', () => {
     expect(publicViewSchema.parse(view)).toEqual(view)
     expect(JSON.stringify(publicViewSchema.parse(view))).toBe(JSON.stringify(view))
     // It sits after the counts of rules, where the core writes it, so a result read back is written as it was.
-    expect(Object.keys(full.meta.profiles.security).slice(4, 9)).toEqual([
+    expect(Object.keys(full.meta.profiles.security).slice(4, 10)).toEqual([
       'invalidFindings',
       'rules',
       'invalidRules',
       'research',
+      'stages',
       'asksNothing',
     ])
-    expect(Object.keys(view.meta.profiles.security).slice(4, 8)).toEqual([
+    expect(Object.keys(view.meta.profiles.security).slice(4, 9)).toEqual([
       'invalidFindings',
       'rules',
       'invalidRules',
+      'stages',
       'asksNothing',
     ])
     // A result that holds none is read as it always was, the field absent in what the schema returns.

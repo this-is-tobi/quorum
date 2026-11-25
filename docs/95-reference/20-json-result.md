@@ -59,7 +59,7 @@ A failed vote counts as a reject. Its `failure` holds only what the code read, n
 | `source` | object | Where the diff came from: [The source](#the-source) |
 | `profiles` | object | One entry per profile, keyed by profile id, in the order of the review's profiles |
 | `usage` | object | Only when at least one call reported valid counts: `inputTokens` and `outputTokens` summed over those calls, then `costUsd`, summed over the calls that reported one, when any did |
-| `calls` | object | What each provider's replies named as the model that answered, one entry per provider id that made a call, keyed by it, in the order its first call ended: [The calls](#the-calls). `{}` when the review made no call. Required in every result of this release: a result of 0.13.0 has none, and `readResult` refuses it. The public view withholds it |
+| `calls` | object | What each provider's calls came to, one entry per provider id that made a call, keyed by it, in the order its first call ended: the models its replies named as the model that answered, and its research calls and its votes, counted apart: [The calls](#the-calls). `{}` when the review made no call. Required in every result of this release: a result of 0.13.0 has none, and `readResult` refuses it. The public view withholds it |
 | `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's gaps for the files left out first, then its `too-large` gap, then its research gaps, then its panel's, then its limits'. A review is complete when this list and `unreviewed` are both empty |
 | `leftOut` | entry[] | Every file the review left out, once per file, reason and rule: the files its source left out before it made the diff first, then the diff's own in its order: [A file left out](#a-file-left-out). Empty when it left none out, a blank diff included |
 | `flags` | flag[] | The advisory flags, the `secret-file` flags of the files left out first, in the order `leftOut` lists them, then those read from the diff, file by file in its order, then the `guideline-edited` flags, in the order of the review's documents: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
@@ -68,7 +68,7 @@ A failed vote counts as a reject. Its `failure` holds only what the code read, n
 | `concurrency` | object | Only when the review made a call: what each provider's lane did, one entry per provider id, keyed by it: [The lanes](#the-lanes) |
 | `reused` | object | Only when the review was given a state directory (`--state`, or a `store` in the library), even when nothing was reused: `research`, the research calls, and `votes`, the votes, that the store answered instead of a provider, whole numbers of at least 0, counted from the `call` events that say `reused`: [Saved state](../20-using/20-configuration.md#saved-state). A call the store answered spends nothing and adds nothing to `usage` |
 
-A usage count is valid when it is a finite number of at least 0. A failed call's usage counts too, when its reply reported valid counts, as a reply refused or cut off at its token limit does. `meta.usage`, `meta.calls` and each `invalidFindings` and `invalidRules` are counted from the review's own events, so `meta` and the events cannot disagree.
+A usage count is valid when it is a finite number of at least 0. A failed call's usage counts too, when its reply reported valid counts, as a reply refused or cut off at its token limit does. `meta.usage`, `meta.calls`, each profile's `stages` and each `invalidFindings` and `invalidRules` are counted from the review's own events, so `meta` and the events cannot disagree.
 
 ### Per profile
 
@@ -82,6 +82,7 @@ A usage count is valid when it is a finite number of at least 0. A failed call's
 | `rules` | object | `listed`, how many review rules the profile lists, whatever their origin, and `sent`, how many of them the review sent: those whose `paths` match a file of the filtered diff, and every rule with none, when the filtered diff has a file: a change with no file at all, a blank diff or one whose every file `exclude` leaves out, sends no request, so `sent` is 0 for it, the rules with no `paths` too. `{ "listed": 0, "sent": 0 }` for a profile that lists none. Required in every result of this release |
 | `invalidRules` | number | How many rule citations failed their check: a finding's `rule` that names no rule the review sent whose `paths` match its file, and, in a profile that requires a rule, a finding that cites none. Each is a [`finding:invalid` event](./30-library-api.md#events) of cause `rule`, which counts here, and a finding outside the diff is one without a cause, which counts in `invalidFindings`: the two stay apart. In a profile that requires a rule, each of them dropped its finding; in any other, the finding went on with no `rule` |
 | `research` | object | What the profile's research came to, in numbers: `parts`, the research parts of the plan, whether or not each was read (0 for a profile whose research asked nothing and for a blank diff, 1 for a research of one request); `listed`, the findings the research replies that were read listed, the unreadable ones and those the cap left unread included, so it is the sum of the `listed` of the [`part` events](./30-library-api.md#events); `panel`, the findings the panel was asked about, the output of the dedup stage; `capped`, the findings the cap left unread, `listed` less those it read, 0 when nothing was capped; and `saturated`, the research replies that listed at least the findings they were asked for at most. Each is a whole number of at least 0, written in this order. Required in every result of this release: a result of 0.13.0 has none, and `readResult` refuses it. The text report writes them under the profile's coverage ([The text report](../20-using/10-cli.md#the-text-report)), and the public view withholds them |
+| `stages` | object | How long each of the profile's stages took, in whole milliseconds, as its `stage:end` events say: `research`, `dedup` and `panel`, each present once it ended, in the order the stages ended, and `{}` for a blank diff. Each is the stage's wall-clock time, the waits for a slot and for the cap included, so the stages of the profiles, which run at once, overlap, and the review's `durationMs` is not their sum. A stage the review stopped before its end has none. Required in every result of this release: a result of 0.13.0 has none, and `readResult` refuses it. The text report's `by role:` line reads them, and the public view keeps them, as it keeps `durationMs` |
 | `asksNothing` | `true` | Present, and `true`, for a profile whose research asked nothing: it requires a rule (`requireRule`) and the review sent it none, either because it lists none or because none applies to the change, so its finder was never called, its files read as reviewed, and it reports nothing, which a review that found nothing cannot be told from by the counts of findings and of files. It is the same fact as `parts: 0` in the profile's research `stage:start` and `asksNothing` in the [`context` event](./30-library-api.md#events). Absent, never `false`, for every other profile, so a result with none is as it was. The reports say it: `; rules: <sent> of <listed> sent, so its research asks nothing`, [What a person sees of the rules](../20-using/45-rules-and-guidelines.md#what-a-person-sees-of-the-rules) |
 | `coverage` | entry[] | Every file of the diff once, in its order, with how much of it the profile's research reviewed: [Coverage](#coverage) |
 | `recovery` | object | What recovery did for the profile's research, present only when it split a research part ([Recovering a cut-off part](../20-using/20-configuration.md#recovering-a-cut-off-part)): `parts`, how many parts it split, `pieces`, how many final pieces they ended with, each read or left at the floor, not every piece asked on the way, `saturated`, how many of those splits were of a reply that listed as many findings as it was asked for at most, and `unreadHunks`, how many hunks the floor left unread in the parts it split, cut off even alone: a part cut off at the floor at once was not split, so it has no entry here, and its hunks are in the `reply-cut-off` gap. The key is absent for a profile that split none, and a result of an earlier release has none |
@@ -302,15 +303,29 @@ Each change of a limit is a `concurrency` event ([Events](./30-library-api.md#ev
 
 ### The calls
 
-`meta.calls` has one entry for each provider id that made a call, keyed by it, in the order the first call of each ended, and is `{}` for a review that made none, a blank diff included. It counts the `call` events of the review, every profile's, so a provider that serves two profiles holds both, and two provider objects of one id are merged, the first one's `model` kept. It says which model answered when the config names a gateway's alias, and whether the gateway switched models in the middle of a review.
+`meta.calls` has one entry for each provider id that made a call, keyed by it, in the order the first call of each ended, and is `{}` for a review that made none, a blank diff included. It counts the `call` events of the review, every profile's, so a provider that serves two profiles holds both, and two provider objects of one id are merged, the first one's `model` kept. It says which model answered when the config names a gateway's alias, and whether the gateway switched models in the middle of a review, and what the provider cost in each role, so two runs can be compared by what research and the panel each spent.
 
 | Field | Type | Holds |
 | --- | --- | --- |
 | `model` | string | The model the provider's config names, as the review's events hold it |
 | `served` | entry[] | The models the replies of the provider's answered calls named, in the order they were first named, at most 8: each `{ model, calls }`, `model` the name as the `call` event carries it, `calls` the answered calls whose reply named it, at least 1. The array is empty when no reply named a model |
 | `servedOthers` | number | The answered calls whose reply named a ninth model or a later one, at least 1. Absent when there are none |
+| `research` | object | What the provider did as a research provider, in the fields below. Absent when it made no research call |
+| `vote` | object | What it did as a voter, in the same fields. Absent when it made no vote's call |
 
-A served `model` is the server's own text, so quorum cleans it as it does a finding's category: its hidden characters are removed, its white space is collapsed to single spaces, and it is cut at 100 characters with `…`. An adapter whose server names no model reports the configured one, so `served` then holds the configured model. A call that failed, a call that `--state` answered, which no provider answered in this review, and a reply whose model is nothing but white space and hidden characters are in no count, so the counts of `served` and `servedOthers` can add up to less than the calls the review made. The summary and the text report say when a provider answered as another model than its config names, and warn when it answered as two or more: [The summary](../20-using/10-cli.md#the-summary).
+Each of `research` and `vote` holds, in this order:
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `calls` | number | Every `call` event of the role: the calls that answered, the failed ones, and those `--state` answered. At least 1 |
+| `failed` | object | The calls that failed, counted by what they failed with, `{}` when none did: the keys are the kinds a provider's failure has (`http`, `network`, `process`, `timeout`, `aborted`, `refusal`, `truncated`, `no-answer`, `invalid-response`, `unsupported` and `too-large`) and `unusable-reply`, and a key is present only for a kind that occurred. It counts the `failure` of the role's `call` events, so `unusable-reply` counts the calls whose reply answered and could not be read by the stage, which their event carries as `ok: true` |
+| `stopped` | number | The calls that failed and name no failure of their provider: the token cap, the review's deadline or its interrupt ended them, or the provider was found down since the call's last send, which is never counted under the kind of the calls that found it down |
+| `retried` | number | The sends beyond each call's first, the sum of the calls' `attempts` less one: a retry after a failure, the one more send of a bad reply and an adaptation's re-send each count |
+| `reused` | number | The calls `--state` answered, which no provider answered in this review |
+| `usage` | object | `inputTokens` and `outputTokens` summed over the role's calls that reported valid counts, then `costUsd` when any reported one: `0` and `0` when none did, which is not a count of what the provider spent |
+| `callMs` | object | `total`, the sum of the role's calls' `durationMs`, and `longest`, the longest one, in whole milliseconds. The calls run at once and each includes its waits, so `total` is no wall-clock time: a stage's time is the profile's [`stages`](#per-profile) |
+
+A served `model` is the server's own text, so quorum cleans it as it does a finding's category: its hidden characters are removed, its white space is collapsed to single spaces, and it is cut at 100 characters with `…`. An adapter whose server names no model reports the configured one, so `served` then holds the configured model. A call that failed, a call that `--state` answered, which no provider answered in this review, and a reply whose model is nothing but white space and hidden characters are in no count, so the counts of `served` and `servedOthers` can add up to less than the calls the review made, while the `calls` of its two roles add up to every one. The roles' `usage` adds up to `meta.usage`, and their `calls` to the review's `call` events. The summary and the text report say when a provider answered as another model than its config names, and warn when it answered as two or more: [The summary](../20-using/10-cli.md#the-summary); and they tell each role's tokens, and the text report each role's time and calls: [The text report](../20-using/10-cli.md#the-text-report).
 
 ```json
 {
@@ -321,14 +336,32 @@ A served `model` is the server's own text, so quorum cleans it as it does a find
         "served": [
           { "model": "local-model-a", "calls": 41 },
           { "model": "local-model-b", "calls": 3 }
-        ]
+        ],
+        "research": {
+          "calls": 12,
+          "failed": {},
+          "stopped": 0,
+          "retried": 0,
+          "reused": 0,
+          "usage": { "inputTokens": 480000, "outputTokens": 31000 },
+          "callMs": { "total": 640000, "longest": 91000 }
+        },
+        "vote": {
+          "calls": 33,
+          "failed": { "http": 1, "unusable-reply": 1 },
+          "stopped": 0,
+          "retried": 2,
+          "reused": 0,
+          "usage": { "inputTokens": 410000, "outputTokens": 52000 },
+          "callMs": { "total": 880000, "longest": 64000 }
+        }
       }
     }
   }
 }
 ```
 
-`readResult` refuses a `served` of nine entries, a served `model` of more than 100 characters, a `calls` or a `servedOthers` that is no whole number of at least 1, and a field that is none of these.
+`readResult` refuses a `served` of nine entries, a served `model` of more than 100 characters, a `calls` or a `servedOthers` of `served` that is no whole number of at least 1, a role's count that is no whole number of at least 0, a `failed` key that is none of the kinds above, and a field that is none of these.
 
 ## Incomplete reasons
 
@@ -364,15 +397,16 @@ Each gap makes the review incomplete, as an unreviewed finding does: the CLI exi
 | `meta.profiles.<id>.discarded` | The number of findings of the profile that were discarded, after `gating` |
 | `meta.profiles.<id>.providers` | Absent: no provider and no model is named |
 | `meta.usage` | Absent |
-| `meta.calls` | Absent: a served model is a model's name, which lets an attacker rehearse on the same open pipeline, and a sharper one behind a gateway's alias |
+| `meta.calls` | Absent, each provider's roles with it: a served model is a model's name, which lets an attacker rehearse on the same open pipeline, and a sharper one behind a gateway's alias, and a role's calls, failures, tokens and time say how a review ran |
 | `meta.profiles.<id>.research` | Absent: the counts measure how near research came to the finding cap, which a pull request's author can aim a flood of findings at |
 | `meta.context` | Kept whole, as it is: each document's hash, path, commit and counts, never a text |
 | `meta.adaptations` | Kept as it is: a provider's id and code words, nothing a server or a model wrote |
 | `meta.reused` | Kept as it is, when the review has one: two counts |
 | `meta.profiles.<id>.recovery` | Kept as it is, when the profile has one: four counts |
+| `meta.profiles.<id>.stages` | Kept as it is, after `invalidRules`: the time of each stage that ended, as `meta.durationMs` is kept |
 | An incomplete entry | `profile`, `reason`, then `file` when it has one, and no `detail`: a report describes a gap by its reason, in fixed words |
 
-Everything else is as in the full result: the findings with their evidence and the id of the rule each cites, the profiles' policy, `failOn`, `gating`, `invalidFindings`, `rules`, `invalidRules`, `asksNothing` and coverage, the files left out, a held file's name, reason and rule included, and the flags with their details. `meta` is written in this order: `version`, `view`, `startedAt`, `durationMs`, `source`, `profiles`, `incomplete`, `leftOut`, `flags`, `context`, `adaptations`, then `reused` when the review has one; a profile in this one: `policy`, `failOn`, `gating`, `discarded`, `invalidFindings`, `rules`, `invalidRules`, `asksNothing` when the profile asked nothing, `coverage`.
+Everything else is as in the full result: the findings with their evidence and the id of the rule each cites, the profiles' policy, `failOn`, `gating`, `invalidFindings`, `rules`, `invalidRules`, `asksNothing` and coverage, the files left out, a held file's name, reason and rule included, and the flags with their details. `meta` is written in this order: `version`, `view`, `startedAt`, `durationMs`, `source`, `profiles`, `incomplete`, `leftOut`, `flags`, `context`, `adaptations`, then `reused` when the review has one; a profile in this one: `policy`, `failOn`, `gating`, `discarded`, `invalidFindings`, `rules`, `invalidRules`, `stages`, `asksNothing` when the profile asked nothing, `coverage`.
 
 ```json
 {
@@ -412,6 +446,7 @@ Everything else is as in the full result: the findings with their evidence and t
         "invalidFindings": 0,
         "rules": { "listed": 0, "sent": 0 },
         "invalidRules": 0,
+        "stages": { "research": 4, "dedup": 0, "panel": 7 },
         "coverage": [{ "file": "src/users.js", "status": "reviewed" }]
       }
     },
@@ -615,6 +650,11 @@ A review of a diff that touches three files, run on the one provider, named `def
           "capped": 0,
           "saturated": 0
         },
+        "stages": {
+          "research": 4,
+          "dedup": 0,
+          "panel": 7
+        },
         "coverage": [
           {
             "file": "src/users.js",
@@ -643,7 +683,39 @@ A review of a diff that touches three files, run on the one provider, named `def
             "model": "qwen3.6:27b",
             "calls": 9
           }
-        ]
+        ],
+        "research": {
+          "calls": 1,
+          "failed": {},
+          "stopped": 0,
+          "retried": 0,
+          "reused": 0,
+          "usage": {
+            "inputTokens": 5000,
+            "outputTokens": 600
+          },
+          "callMs": {
+            "total": 4,
+            "longest": 4
+          }
+        },
+        "vote": {
+          "calls": 9,
+          "failed": {
+            "http": 1
+          },
+          "stopped": 0,
+          "retried": 0,
+          "reused": 0,
+          "usage": {
+            "inputTokens": 4080,
+            "outputTokens": 580
+          },
+          "callMs": {
+            "total": 9,
+            "longest": 2
+          }
+        }
       }
     },
     "incomplete": [

@@ -482,6 +482,12 @@ export interface ProfileMeta {
   /** What its research came to: the parts, the findings its replies listed, those the panel was asked about, those the cap left unread and the replies that listed all they were asked for. */
   research: ResearchRecord
   /**
+   * How long each of its stages took, in whole milliseconds, as its `stage:end` events say: wall-clock time, the waits for a
+   * slot and for the cap included, keyed by stage in the order the stages ended. A stage that did not end (the review stopped
+   * before it did) has none, and a profile of a blank diff has `{}`. Each profile's stages are its own: profiles run at once.
+   */
+  stages: Partial<Record<StageName, number>>
+  /**
    * `true` for a profile whose research asked nothing: it requires a rule (`Profile.requireRule`) and the review sent none, so its
    * finder was never called, its files read as reviewed and it reports nothing, which no count of findings can tell from a review
    * that found nothing. Absent, never `false`, for every other profile, so a result with none is unchanged. The `context` event
@@ -550,9 +556,31 @@ export interface ServedModel {
 }
 
 /**
- * What one provider's replies named as the model that answered, as `meta.calls.<id>` records it, so a review through a
- * gateway's alias can say which model answered, and whether the gateway switched models mid-review. Two provider objects
- * of one id are merged, the first one's `model` kept.
+ * What one provider did in one role of a review, as `meta.calls.<id>.research` and `.vote` record it, counted from the review's
+ * `call` events (a role's calls are those events whose `role` it is), so two runs can be compared by what research and the panel
+ * each cost. Two provider objects of one id are merged.
+ */
+export interface RoleCalls {
+  /** Every `call` event of the role: the calls that answered, the failed ones and those a store answered. */
+  calls: number
+  /** The calls that failed, by what they failed with: the `kind` of the event's `failure`, a provider failure's or `unusable-reply` for a reply the stage could not read. Absent kinds did not occur. */
+  failed: Partial<Record<ProviderErrorKind | 'unusable-reply', number>>
+  /** The calls that failed with no failure of their provider's: a limit, the deadline, the stop or a provider found down ended them. */
+  stopped: number
+  /** The sends beyond each call's first: the sum of `attempts - 1` over its events, so a retry, the once-more send of a bad reply and an adaptation's re-send each count. */
+  retried: number
+  /** The calls a store answered, which no provider answered in this review: they spent no tokens. */
+  reused: number
+  /** The usage summed over the role's calls that reported valid counts: 0 and 0 when none did. */
+  usage: Usage
+  /** How long the role's calls took, in whole milliseconds: the sum of the events' `durationMs` (calls run at once, so it is no wall-clock time; a stage's time is `meta.profiles.<id>.stages`), and the longest one. */
+  callMs: { total: number, longest: number }
+}
+
+/**
+ * What one provider's calls came to, as `meta.calls.<id>` records it: which models its replies named, so a review through a
+ * gateway's alias can say which model answered, and whether the gateway switched models mid-review, and what it did in each
+ * role. Two provider objects of one id are merged, the first one's `model` kept.
  */
 export interface ProviderCalls {
   /** The model the provider's config names, as the events' `ProviderRef` holds it. */
@@ -561,6 +589,10 @@ export interface ProviderCalls {
   served: ServedModel[]
   /** The answered calls whose reply named a further model, once `served` held `MAX_SERVED`: absent when there are none. */
   servedOthers?: number
+  /** What it did as a research provider: absent when it made no research call. */
+  research?: RoleCalls
+  /** What it did as a voter: absent when it made no vote's call. */
+  vote?: RoleCalls
 }
 
 /** What a review records about itself, besides its verdicts. */
@@ -577,7 +609,7 @@ export interface QuorumMeta {
   profiles: Record<string, ProfileMeta>
   /** The usage summed over the calls that reported valid counts; absent when none did. */
   usage?: Usage
-  /** What each provider's replies named as the model that answered, by provider id, counted from the `call` events: `{}` when no call was made. The public view withholds it. */
+  /** What each provider's calls came to, by provider id: the models its replies named and, by role, its calls, their failures, retries, usage and time, counted from the `call` events: `{}` when no call was made. The public view withholds it. */
   calls: Record<string, ProviderCalls>
   /** Gaps that are not findings. An entry here, or an unreviewed finding, makes the review incomplete. */
   incomplete: IncompleteEntry[]
@@ -617,7 +649,7 @@ export interface PublicVote {
 /** A verdict of the public view: the verdict with its votes reduced to `PublicVote`s. */
 export type PublicVerdict = Omit<Verdict, 'votes'> & { votes: PublicVote[] }
 
-/** What the public view records about a profile: no providers, no research counts, which measure how near research came to the finding cap, and the count of its discarded findings, which the view does not list. */
+/** What the public view records about a profile: no providers, no research counts, which measure how near research came to the finding cap, and the count of its discarded findings, which the view does not list. Its stage times are kept, as the review's `durationMs` is. */
 export interface PublicProfileMeta extends Omit<ProfileMeta, 'providers' | 'research'> {
   /** How many findings of the profile the panel discarded. */
   discarded: number
@@ -939,9 +971,13 @@ export type QuorumEvent
      * whose server names none fills with the provider's configured model), cleaned as a category is, its hidden characters
      * removed and its white space collapsed, and cut at `MAX_MODEL` (100) characters with an ellipsis. It is absent when
      * nothing is left of it, when the provider's reply held none, and on a call that failed or that the store answered,
-     * which no provider answered in this review; a call whose reply the stage could not read carries it.
+     * which no provider answered in this review; a call whose reply the stage could not read carries it. `failure` is what a
+     * failed call (`ok` false) said of itself, as `call:retry`'s does (`providerFailure`): its last failure's kind, with its status
+     * when it is an `http` one, and absent when no failure of the provider ended the call (the token cap, the deadline, the stop or a provider
+     * found down since did); an answered call whose reply the stage could not read (`ok` true, no `listed`) has
+     * `{ kind: 'unusable-reply' }`. Facts only, never a word a server or a reply held.
      */
-    | { type: 'call', call?: number, profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, part?: Position, finding?: string, durationMs: number, ok: boolean, attempts?: number, usage?: Usage, spent: number, reused?: true, listed?: number, reasoning?: boolean, firstTokenMs?: number, longestSilenceMs?: number, ceilingMs?: number, model?: string }
+    | { type: 'call', call?: number, profile: string, role: 'research' | 'vote', lens?: string, provider: ProviderRef, part?: Position, finding?: string, durationMs: number, ok: boolean, attempts?: number, usage?: Usage, spent: number, reused?: true, listed?: number, reasoning?: boolean, firstTokenMs?: number, longestSilenceMs?: number, ceilingMs?: number, model?: string, failure?: CallFailure | UnusableReply }
     /**
      * A provider was found down: three of its calls in a row failed for a reason of its own (`kind`, and for an
      * `http` failure its `status`), so no call goes to it for the rest of the review. Sent once per provider, at the

@@ -86,6 +86,7 @@ export type {
   ReviewInput,
   ReviewRule,
   ReviewSource,
+  RoleCalls,
   SecretRule,
   ServedModel,
   SkipRule,

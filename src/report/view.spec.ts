@@ -121,6 +121,7 @@ describe('publicView', () => {
             invalidFindings: 0,
             rules: { listed: 0, sent: 0 },
             invalidRules: 0,
+            stages: security.stages,
             coverage: security.coverage,
           },
         },
@@ -156,6 +157,7 @@ describe('publicView', () => {
       'invalidFindings',
       'rules',
       'invalidRules',
+      'stages',
       'coverage',
     ])
     expect(Object.keys(view.kept[0])).toEqual(Object.keys(SQL))
@@ -194,6 +196,52 @@ describe('publicView', () => {
         },
       },
     } as unknown as PublicView)).toThrow('the public view is not one quorum writes, at meta.profiles.security')
+  })
+
+  it('keeps each profile\'s stage times in the public view, as a copy', () => {
+    const stages = { research: 250_000, dedup: 3000, panel: 1_805_000 }
+    const base = reportMeta()
+    const result = reportResult({
+      meta: {
+        ...base,
+        profiles: {
+          security: { ...base.profiles.security, stages },
+        },
+      },
+    })
+    const view = publicView(result)
+    expect(view.meta.profiles.security.stages).toEqual(stages)
+    expect(view.meta.profiles.security.stages).not.toBe(stages)
+    expect(Object.keys(view.meta.profiles.security)).toContain('stages')
+    // A profile whose research ended and whose panel did not keeps the stages it has, and a blank diff's are none.
+    const partial = publicView(reportResult({
+      meta: {
+        ...base,
+        profiles: {
+          security: {
+            ...base.profiles.security,
+            stages: { research: 7 },
+          },
+        },
+      },
+    }))
+    expect(partial.meta.profiles.security.stages).toEqual({ research: 7 })
+    expect(publicView(blankResult()).meta.profiles.security.stages).toEqual({})
+    // The view of a view is the view, the result's own stages are left as they were, and a view with another kind of stage is no view quorum writes.
+    expect(publicView(view)).toBe(view)
+    expect(result.meta.profiles.security.stages).toEqual(stages)
+    expect(() => publicView({
+      ...view,
+      meta: {
+        ...view.meta,
+        profiles: {
+          security: {
+            ...view.meta.profiles.security,
+            stages: { review: 1 },
+          },
+        },
+      },
+    } as unknown as PublicView)).toThrow('the public view is not one quorum writes, at meta.profiles.security.stages')
   })
 
   it('withholds meta.calls from the public view', () => {
@@ -253,6 +301,7 @@ describe('publicView', () => {
       'invalidFindings',
       'rules',
       'invalidRules',
+      'stages',
       'coverage',
       'recovery',
     ])
@@ -282,6 +331,7 @@ describe('publicView', () => {
       'invalidFindings',
       'rules',
       'invalidRules',
+      'stages',
       'asksNothing',
       'coverage',
     ])

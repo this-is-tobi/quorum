@@ -423,6 +423,7 @@ export function resultWith(parts: {
             capped: 0,
             saturated: 0,
           },
+          stages: {},
           coverage: [],
         },
       },

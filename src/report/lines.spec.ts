@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { ContextDocument, LensVote, QuorumMeta, Verdict, VoteFailure } from '../core/types.ts'
-import { cast, contextDocument, reportResult, SQL } from '../testing/report.ts'
-import { contextSummary, documentLine, documentLineParts, durationText, modelLines, ruleCountWords, ruleWords, tokenWords, voteFailureWords, votesWords } from './lines.ts'
+import type { ContextDocument, LensVote, ProfileMeta, ProviderCalls, PublicMeta, QuorumMeta, RoleCalls, Verdict, VoteFailure } from '../core/types.ts'
+import { cast, contextDocument, reportMeta, reportResult, SQL } from '../testing/report.ts'
+import { contextSummary, documentLine, documentLineParts, durationText, modelLines, roleLine, roleTokens, ruleCountWords, ruleWords, tokenWords, voteFailureWords, votesWords } from './lines.ts'
 import { publicView } from './view.ts'
 
 /** A failed vote of the lens `angle`, which failed with `failure`. */
@@ -361,6 +361,268 @@ describe('modelLines', () => {
     ],
   ])('writes the models of %s as %j', (_label, expected, calls) => {
     expect(modelLines(calls)).toEqual(expected)
+  })
+})
+
+/** What a role records of `calls` calls that spent `inputTokens` and `outputTokens`, and nothing else worth saying. */
+function roleOf(calls: number, inputTokens: number, outputTokens: number): RoleCalls {
+  return {
+    calls,
+    failed: {},
+    stopped: 0,
+    retried: 0,
+    reused: 0,
+    usage: { inputTokens, outputTokens },
+    callMs: { total: 0, longest: 0 },
+  }
+}
+
+describe('roleLine', () => {
+  /** A review's meta whose profiles ended `stages`, and whose providers made `calls`; its usage is the roles' tokens summed, as a review's is. */
+  function metaOf(stages: Array<ProfileMeta['stages']>, calls: QuorumMeta['calls']): QuorumMeta {
+    const base = reportMeta()
+    const roles = Object.values(calls).flatMap(record => [record.research, record.vote]).filter(role => role !== undefined)
+    return {
+      ...base,
+      usage: {
+        inputTokens: roles.reduce((sum, role) => sum + role.usage.inputTokens, 0),
+        outputTokens: roles.reduce((sum, role) => sum + role.usage.outputTokens, 0),
+      },
+      calls,
+      profiles: Object.fromEntries(stages.map((ended, index) => [
+        index === 0
+          ? 'security'
+          : `profile-${index}`,
+        { ...base.profiles.security, stages: ended },
+      ])),
+    }
+  }
+  const both: Pick<ProviderCalls, 'research' | 'vote'> = {
+    research: roleOf(3, 3600, 2700),
+    vote: roleOf(3, 1200, 450),
+  }
+  const ENDED = { research: 250_000, dedup: 3000, panel: 1_805_000 }
+
+  it.each<[string, string | undefined, QuorumMeta | PublicMeta]>([
+    [
+      'a full result with both roles',
+      'by role: research 4m10s, 3 call(s), 3.60k tokens in and 2.70k out; panel 30m05s, 3 vote(s), 1.20k in and 450 out',
+      metaOf([ENDED], {
+        p: { model: 'm', served: [], ...both },
+      }),
+    ],
+    [
+      'a full result whose panel made no call',
+      'by role: research 4m10s, 3 call(s), 3.60k tokens in and 2.70k out; panel 0.0s',
+      metaOf([
+        { research: 250_000, panel: 0 },
+      ], {
+        p: { model: 'm', served: [], research: both.research },
+      }),
+    ],
+    [
+      'a public view',
+      'by role: research 4m10s; panel 30m05s',
+      publicView(reportResult({
+        meta: metaOf([ENDED], {
+          p: { model: 'm', served: [], ...both },
+        }),
+      })).meta,
+    ],
+    [
+      'a full result whose stages ended and whose providers made no call',
+      'by role: research 4m10s; panel 30m05s',
+      metaOf([ENDED], {}),
+    ],
+    [
+      'a full result whose panel never ended, though its votes made calls',
+      'by role: research 4m10s, 3 call(s), 3.60k tokens in and 2.70k out',
+      metaOf([
+        { research: 250_000 },
+      ], {
+        p: { model: 'm', served: [], ...both },
+      }),
+    ],
+    [
+      'a full result whose research never ended',
+      'by role: panel 30m05s, 3 vote(s), 1.20k in and 450 out',
+      metaOf([
+        { panel: 1_805_000 },
+      ], {
+        p: { model: 'm', served: [], ...both },
+      }),
+    ],
+    [
+      'a full result whose calls reported no usage, which is no spend of zero',
+      'by role: research 4m10s, 3 call(s); panel 30m05s, 3 vote(s)',
+      metaOf([ENDED], {
+        p: {
+          model: 'm',
+          served: [],
+          research: roleOf(3, 0, 0),
+          vote: roleOf(3, 0, 0),
+        },
+      }),
+    ],
+    [
+      'a full result whose research reported usage and whose votes did not',
+      'by role: research 4m10s, 3 call(s), 3.60k tokens in and 2.70k out; panel 30m05s, 3 vote(s)',
+      metaOf([ENDED], {
+        p: {
+          model: 'm',
+          served: [],
+          research: both.research,
+          vote: roleOf(3, 0, 0),
+        },
+      }),
+    ],
+    [
+      'a result of a blank diff',
+      undefined,
+      metaOf([{}], {}),
+    ],
+    [
+      'a result that kept a dedup time alone',
+      undefined,
+      metaOf([
+        { dedup: 3000 },
+      ], {
+        p: { model: 'm', served: [], ...both },
+      }),
+    ],
+    [
+      'two profiles, which run at once, so a role takes the longest of their times',
+      'by role: research 4m10s, 3 call(s), 3.60k tokens in and 2.70k out; panel 33m20s, 3 vote(s), 1.20k in and 450 out',
+      metaOf([
+        { research: 100_000, panel: 2_000_000 },
+        { research: 250_000, panel: 1_805_000 },
+      ], {
+        p: { model: 'm', served: [], ...both },
+      }),
+    ],
+    [
+      'two providers, whose calls of a role are summed',
+      'by role: research 4m10s, 5 call(s), 4.00k tokens in and 2.80k out; panel 30m05s, 3 vote(s), 1.20k in and 450 out',
+      metaOf([ENDED], {
+        p: { model: 'm', served: [], ...both },
+        q: {
+          model: 'n',
+          served: [],
+          research: roleOf(2, 400, 100),
+        },
+      }),
+    ],
+  ])('writes the by-role line of %s as %j', (_label, expected, meta) => {
+    expect(roleLine(meta)).toBe(expected)
+  })
+})
+
+describe('roleTokens', () => {
+  it.each<[string, string, QuorumMeta['calls']]>([
+    ['no call', '', {}],
+    [
+      'a provider that made no record of a role',
+      '',
+      {
+        p: { model: 'm', served: [] },
+      },
+    ],
+    [
+      'research alone',
+      'research 1.20M in and 80.0k out',
+      {
+        p: {
+          model: 'm',
+          served: [],
+          research: roleOf(226, 1_200_000, 80_000),
+        },
+      },
+    ],
+    [
+      'votes alone',
+      'votes 150k in and 50.0k out',
+      {
+        p: {
+          model: 'm',
+          served: [],
+          vote: roleOf(678, 150_000, 50_000),
+        },
+      },
+    ],
+    [
+      'both roles',
+      'research 1.20M in and 80.0k out, votes 150k in and 50.0k out',
+      {
+        p: {
+          model: 'm',
+          served: [],
+          research: roleOf(226, 1_200_000, 80_000),
+          vote: roleOf(678, 150_000, 50_000),
+        },
+      },
+    ],
+    [
+      'two providers, summed by role',
+      'research 1.50M in and 100k out, votes 150k in and 50.0k out',
+      {
+        p: {
+          model: 'm',
+          served: [],
+          research: roleOf(226, 1_200_000, 80_000),
+        },
+        q: {
+          model: 'n',
+          served: [],
+          research: roleOf(10, 300_000, 20_000),
+          vote: roleOf(678, 150_000, 50_000),
+        },
+      },
+    ],
+    [
+      'a role whose calls reported no usage, which is no spend of zero',
+      '',
+      {
+        p: {
+          model: 'm',
+          served: [],
+          research: roleOf(4, 0, 0),
+          vote: roleOf(4, 0, 0),
+        },
+      },
+    ],
+    [
+      'a role whose calls the store answered',
+      'votes 150k in and 50.0k out',
+      {
+        p: {
+          model: 'm',
+          served: [],
+          research: {
+            ...roleOf(4, 0, 0),
+            reused: 4,
+          },
+          vote: roleOf(678, 150_000, 50_000),
+        },
+      },
+    ],
+    [
+      'two providers, one whose calls reported no usage',
+      'research 300k in and 20.0k out',
+      {
+        p: {
+          model: 'm',
+          served: [],
+          research: roleOf(226, 0, 0),
+        },
+        q: {
+          model: 'n',
+          served: [],
+          research: roleOf(10, 300_000, 20_000),
+        },
+      },
+    ],
+  ])('writes the tokens of %s as %j', (_label, expected, calls) => {
+    expect(roleTokens(calls)).toBe(expected)
   })
 })
 
