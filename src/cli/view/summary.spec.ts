@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ConcurrencyRecord } from '../../core/lanes.ts'
-import type { IncompleteReason, QuorumEvent, StageName } from '../../core/types.ts'
+import type { IncompleteReason, ProviderCalls, QuorumEvent, RoleCalls, StageName } from '../../core/types.ts'
 import type { ReportView } from '../../report/view.ts'
 import { longReview, replay } from '../../testing/events.ts'
 import { contextDocument, reportMeta, reportResult, SQL, TOKEN } from '../../testing/report.ts'
@@ -183,6 +183,71 @@ describe('summaryLines', () => {
       ]),
     }
     expect(lines(several)[1]).toBe('tokens: 74 percent of the cap of 2.00M, the default; api 200k in and 40.0k out, local 1.00k in and 200 out')
+  })
+
+  it('writes each role\'s tokens in the tokens line, before each provider\'s usage', () => {
+    const roleOf = (calls: number, inputTokens: number, outputTokens: number): RoleCalls => ({
+      calls,
+      failed: {},
+      stopped: 0,
+      retried: 0,
+      reused: 0,
+      usage: { inputTokens, outputTokens },
+      callMs: { total: 0, longest: 0 },
+    })
+    /** A result whose provider made `roles`, its usage the roles' sum as a review's is: 1.48M tokens of a cap of 2.00M, whose events the state folds. */
+    const resultOf = (roles: Pick<ProviderCalls, 'research' | 'vote'>): SummaryFacts => factsOf({
+      result: reportResult({
+        unreviewed: [],
+        meta: {
+          durationMs: 2_285_000,
+          usage: { inputTokens: 1_350_000, outputTokens: 130_000 },
+          calls: {
+            api: { model: 'm', served: [], ...roles },
+          },
+        },
+      }),
+    })
+    const state = replay(longReview())
+    const both = resultOf({
+      research: roleOf(226, 1_200_000, 80_000),
+      vote: roleOf(678, 150_000, 50_000),
+    })
+    expect(lines(state, both)[1]).toBe('tokens: 74 percent of the cap of 2.00M, the default; research 1.20M in and 80.0k out, votes 150k in and 50.0k out')
+    // Each role that made a call, and the per-provider clause after them.
+    expect(lines(state, resultOf({
+      research: roleOf(226, 1_350_000, 130_000),
+    }))[1]).toBe('tokens: 74 percent of the cap of 2.00M, the default; research 1.35M in and 130k out')
+    expect(lines(state, resultOf({
+      vote: roleOf(678, 1_350_000, 130_000),
+    }))[1]).toBe('tokens: 74 percent of the cap of 2.00M, the default; votes 1.35M in and 130k out')
+    const several = {
+      ...state,
+      usage: new Map([
+        [
+          'api',
+          { inputTokens: 1_200_000, outputTokens: 80_000 },
+        ],
+        [
+          'local',
+          { inputTokens: 150_000, outputTokens: 50_000 },
+        ],
+      ]),
+    }
+    expect(lines(several, both)[1]).toBe('tokens: 74 percent of the cap of 2.00M, the default; research 1.20M in and 80.0k out, votes 150k in and 50.0k out; api 1.20M in and 80.0k out, local 150k in and 50.0k out')
+    // A review whose calls reported no usage has no meta.usage, and its roles' tokens are no spend of zero: no clause.
+    const unreported = resultOf({
+      research: roleOf(226, 0, 0),
+      vote: roleOf(678, 0, 0),
+    })
+    const { usage: _usage, ...meta } = unreported.result.meta
+    expect(lines(state, {
+      ...unreported,
+      result: { ...unreported.result, meta },
+    })[1]).toBe('tokens: 74 percent of the cap of 2.00M, the default')
+    // A review that made no call has no role to tell, and the public view has no tokens line at all.
+    expect(lines(state)[1]).toBe('tokens: 74 percent of the cap of 2.00M, the default')
+    expect(lines(state, both, 'public').join('\n')).not.toContain('research 1.20M')
   })
 
   it('leaves the tokens line out under the public view, and a used-up quota\'s words with it', () => {

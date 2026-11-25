@@ -17,7 +17,7 @@ import { rulesBlock } from './rules.ts'
 import { resultSchema } from './result-schema.ts'
 import { findingId, FINGERPRINT_PATTERN } from './stages/research.ts'
 import { requestTokens, tokenBound } from './tokens.ts'
-import type { Finding, IncompleteEntry, LeftOutFile, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, ReviewDocument, ReviewSource, Usage, VoteFailure } from './types.ts'
+import type { Finding, IncompleteEntry, LeftOutFile, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, ReviewDocument, ReviewSource, RoleCalls, Usage, VoteFailure } from './types.ts'
 
 /** Replies, in call order, for the one fake provider that plays both roles. */
 const complete = vi.fn<(request: CompletionRequest) => Promise<string>>()
@@ -75,6 +75,29 @@ const findings = (...items: unknown[]): string => JSON.stringify({ findings: ite
 const isVote = (request: CompletionRequest): boolean => request.output.name === 'panel_vote'
 /** A request with its nonces named alike, so two requests built apart compare equal. */
 const plain = (request: CompletionRequest): unknown => JSON.parse(JSON.stringify({ system: request.system, messages: request.messages }).replaceAll(/(untrusted-[a-z]+)-[0-9a-f]{8}/g, '$1-N'))
+
+/** What a role records of `calls` answered calls that reported no usage and none of the other counts, its time as the test reads it from the events. */
+function roleOf(calls: number): RoleCalls {
+  return {
+    calls,
+    failed: {},
+    stopped: 0,
+    retried: 0,
+    reused: 0,
+    usage: { inputTokens: 0, outputTokens: 0 },
+    callMs: {
+      total: expect.any(Number) as number,
+      longest: expect.any(Number) as number,
+    },
+  }
+}
+
+/** The stages a review's profile ended, each with the time its event gave: real time, since a stage is timed on the system's clock. */
+const ENDED = {
+  research: expect.any(Number) as number,
+  dedup: expect.any(Number) as number,
+  panel: expect.any(Number) as number,
+}
 
 interface Fake extends Provider {
   readonly requests: CompletionRequest[]
@@ -1322,6 +1345,7 @@ describe('meta and events', () => {
             capped: 0,
             saturated: 0,
           },
+          stages: ENDED,
           coverage: [
             { file: 'a.js', status: 'reviewed' },
             { file: 'other.js', status: 'reviewed' },
@@ -1334,12 +1358,14 @@ describe('meta and events', () => {
           served: [
             { model: 'finder-model', calls: 1 },
           ],
+          research: roleOf(1),
         },
         voter: {
           model: 'voter-model',
           served: [
             { model: 'voter-model', calls: 3 },
           ],
+          vote: roleOf(3),
         },
       },
       incomplete: [],
@@ -1403,6 +1429,7 @@ describe('meta and events', () => {
       'rules',
       'invalidRules',
       'research',
+      'stages',
       'coverage',
     ])
   })
@@ -6013,7 +6040,6 @@ describe('adaptations', () => {
     message: 'x',
   })
   const turn = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
-
   /** A provider that asks for no room and answers from the request and its position, stating `adapts`. */
   function providerOf(id: string, adapts: Provider['adapts'], answer: (request: CompletionRequest, call: number) => string | Promise<string>, extra: Partial<Provider> = {}): Fake {
     const requests: CompletionRequest[] = []
@@ -6262,13 +6288,16 @@ describe('adaptations', () => {
           { model: 'local-model-a', calls: 3 },
           { model: 'local-model-b', calls: 3 },
         ],
+        research: roleOf(3),
+        vote: roleOf(3),
       },
     })
     expect(events.flatMap(event => event.type === 'call'
       ? [event.model]
       : [])).toEqual(expect.arrayContaining(['local-model-a', 'local-model-b']))
-    // The record sits after the usage and before the gaps, and a result read back is written as it was.
+    // The record sits after the usage and before the gaps, its roles after the served models, and a result read back is written as it was.
     expect(Object.keys(result.meta).slice(4, 7)).toEqual(['profiles', 'calls', 'incomplete'])
+    expect(Object.keys(result.meta.calls.local)).toEqual(['model', 'served', 'research', 'vote'])
     const saved = JSON.parse(JSON.stringify(result)) as unknown
     expect(resultSchema.parse(saved)).toEqual(saved)
   })
@@ -6301,8 +6330,18 @@ describe('adaptations', () => {
         model: 'local-model',
         served: Array.from({ length: 8 }, (_, index) => ({ model: `local-model-${index + 1}`, calls: 1 })),
         servedOthers: 2,
+        research: roleOf(5),
+        vote: roleOf(5),
       },
     })
+    // `servedOthers` came after the roles were made, and is written before them all the same.
+    expect(Object.keys(result.meta.calls.local)).toEqual([
+      'model',
+      'served',
+      'servedOthers',
+      'research',
+      'vote',
+    ])
     const saved = JSON.parse(JSON.stringify(result)) as unknown
     expect(resultSchema.parse(saved)).toEqual(saved)
   })
@@ -6345,8 +6384,231 @@ describe('adaptations', () => {
     for (const call of calls) expect(call).not.toHaveProperty('model')
     // The provider made its calls and no reply named a model: its record says so.
     expect(result.meta.calls).toEqual({
-      local: { model: 'local-model', served: [] },
+      local: {
+        model: 'local-model',
+        served: [],
+        research: roleOf(3),
+        vote: roleOf(3),
+      },
     })
+  })
+
+  it('counts each provider\'s calls by role from the review\'s events, of a profile of its own', async () => {
+    const clock = fakeClock()
+    const finder = providerOf('finder', undefined, () => '', {
+      async complete(request) {
+        return {
+          text: findings(named(fileOf(request))),
+          model: 'finder-model',
+          usage: { inputTokens: 1000, outputTokens: 100 },
+        }
+      },
+    })
+    const tried = new Map<string, number>()
+    const voter = providerOf('voter', undefined, () => '', {
+      retries: 1,
+      async complete(request) {
+        const file = fileOf(request)
+        tried.set(file, (tried.get(file) ?? 0) + 1)
+        // The first vote fails with a server error and is retried; the second fails with a network error twice.
+        if (file === 'a.js' && tried.get(file) === 1) {
+          throw new ProviderError({
+            providerId: 'voter',
+            kind: 'http',
+            status: 503,
+            message: 'x',
+          })
+        }
+        if (file === 'b.js') throw new ProviderError({ providerId: 'voter', kind: 'network', message: 'x' })
+        return {
+          text: vote(true),
+          model: 'voter-model',
+          usage: { inputTokens: 100, outputTokens: 10 },
+        }
+      },
+    })
+    const events: QuorumEvent[] = []
+    const result = await settle(clock, createQuorumWith({
+      profiles: [naming],
+      partTokens: 1024,
+    }, {
+      ...portsFor(naming, finder, voter),
+      events: event => events.push(event),
+    }, clock).review({ diff: bigDiff }))
+    expect(result.kept).toHaveLength(2)
+    expect(result.meta.calls.voter.vote).toEqual({
+      calls: 3,
+      failed: { network: 1 },
+      stopped: 0,
+      retried: 2,
+      reused: 0,
+      usage: { inputTokens: 200, outputTokens: 20 },
+      callMs: { total: 500, longest: 250 },
+    })
+    expect(result.meta.calls.finder.research).toEqual({
+      calls: 3,
+      failed: {},
+      stopped: 0,
+      retried: 0,
+      reused: 0,
+      usage: { inputTokens: 3000, outputTokens: 300 },
+      callMs: { total: 0, longest: 0 },
+    })
+    // A provider that played one role has no record of the other.
+    expect(result.meta.calls.voter).not.toHaveProperty('research')
+    expect(result.meta.calls.finder).not.toHaveProperty('vote')
+    // The record is the sums and the largest of the review's own events, and the roles' usage is the review's.
+    const votes = events.flatMap(event => event.type === 'call' && event.role === 'vote'
+      ? [event]
+      : [])
+    expect(votes).toHaveLength(3)
+    expect(result.meta.calls.voter.vote?.callMs).toEqual({
+      total: votes.reduce((sum, event) => sum + event.durationMs, 0),
+      longest: Math.max(...votes.map(event => event.durationMs)),
+    })
+    const roles = Object.values(result.meta.calls).flatMap(record => [record.research, record.vote]).filter(role => role !== undefined)
+    expect(roles.reduce((sum, role) => sum + role.usage.inputTokens, 0)).toBe(result.meta.usage?.inputTokens)
+    expect(roles.reduce((sum, role) => sum + role.usage.outputTokens, 0)).toBe(result.meta.usage?.outputTokens)
+    expect(roles.reduce((sum, role) => sum + role.calls, 0)).toBe(events.filter(event => event.type === 'call').length)
+    const saved = JSON.parse(JSON.stringify(result)) as unknown
+    expect(resultSchema.parse(saved)).toEqual(saved)
+  })
+
+  it('counts the calls a store answered as reused, and a call a limit stopped as stopped', async () => {
+    const usage = { inputTokens: 1000, outputTokens: 100 }
+    const local = providerOf('local', undefined, () => '', {
+      async complete(request) {
+        return {
+          text: isVote(request)
+            ? vote(true)
+            : findings(named(fileOf(request))),
+          model: 'local-model',
+          usage,
+        }
+      },
+    })
+    const store = memory()
+    const quorum = createQuorum({
+      profiles: [naming],
+      partTokens: 1024,
+    }, portsFor(naming, local))
+    const first = await quorum.review({ diff: bigDiff }, { store })
+    expect(first.meta.calls.local.research).toMatchObject({
+      calls: 3,
+      reused: 0,
+      usage: { inputTokens: 3000, outputTokens: 300 },
+    })
+    const again = await quorum.review({ diff: bigDiff }, { store })
+    // Every call of the rerun came from the store: counted, reused, and no provider answered, so no usage and no model.
+    expect(again.meta.reused).toEqual({ research: 3, votes: 3 })
+    for (const role of ['research', 'vote'] as const) {
+      expect(again.meta.calls.local[role]).toMatchObject({
+        calls: 3,
+        failed: {},
+        stopped: 0,
+        retried: 0,
+        reused: 3,
+        usage: { inputTokens: 0, outputTokens: 0 },
+      })
+    }
+    expect(again.meta.calls.local.served).toEqual([])
+
+    // The votes never answer, so the review's deadline stops each one: a call ended by a limit, no failure of its provider's.
+    const clock = fakeClock()
+    const silent = providerOf('local', undefined, () => '', {
+      timeoutMs: 600_000,
+      async complete(request) {
+        if (isVote(request)) return new Promise<CompletionResponse>(() => {})
+        return {
+          text: findings(named(fileOf(request))),
+          model: 'local-model',
+        }
+      },
+    })
+    const stopped = await settle(clock, createQuorumWith({
+      profiles: [naming],
+      partTokens: 1024,
+      reviewTimeoutMs: 1000,
+    }, portsFor(naming, silent), clock).review({ diff: bigDiff }))
+    expect(stopped.meta.calls.local.research).toMatchObject({ calls: 3, failed: {}, stopped: 0 })
+    expect(stopped.meta.calls.local.vote).toEqual({
+      calls: 3,
+      failed: {},
+      stopped: 3,
+      retried: 0,
+      reused: 0,
+      usage: { inputTokens: 0, outputTokens: 0 },
+      callMs: { total: 3000, longest: 1000 },
+    })
+  })
+
+  it('counts a reply the stage could not read as a failed call of the kind unusable-reply', async () => {
+    const clock = fakeClock()
+    const finder = providerOf('finder', undefined, () => '', {
+      retries: 1,
+      async complete(request) {
+        return {
+          text: fileOf(request) === 'b.js'
+            ? '{"findings": [], "findings": []}'
+            : findings(named(fileOf(request))),
+          model: 'finder-model',
+        }
+      },
+    })
+    const result = await settle(clock, createQuorumWith({
+      profiles: [naming],
+      partTokens: 1024,
+    }, portsFor(naming, finder, keeps()), clock).review({ diff: bigDiff }))
+    // The reply was sent once more, as it was, and read as no answer again: one call that answered, counted failed, and retried once.
+    expect(result.meta.calls.finder.research).toMatchObject({
+      calls: 3,
+      failed: { 'unusable-reply': 1 },
+      stopped: 0,
+      retried: 1,
+    })
+  })
+
+  it('records each profile\'s stage times from its stage:end events, and none for a blank diff', async () => {
+    const local = localOf(file => [
+      named(file),
+    ])
+    const events: QuorumEvent[] = []
+    const ports: QuorumPorts = {
+      profiles: {
+        naming: {
+          research: local,
+          voters: { clarity: local },
+        },
+        style: {
+          research: local,
+          voters: { naming: local, layout: local },
+        },
+      },
+      events: event => events.push(event),
+    }
+    const result = await createQuorum({
+      profiles: [naming, style],
+      partTokens: 1024,
+    }, ports).review({ diff: bigDiff })
+    const ended = (profile: string): Array<[string, number]> => events.flatMap(event => event.type === 'stage:end' && event.profile === profile
+      ? [
+          [event.stage, event.durationMs] as [string, number],
+        ]
+      : [])
+    // Each profile's stages are its own, each the `durationMs` of its own event, in the order the stages ended.
+    for (const profile of ['naming', 'style']) {
+      expect(ended(profile).map(([stage]) => stage)).toEqual(['research', 'dedup', 'panel'])
+      expect(result.meta.profiles[profile].stages).toEqual(Object.fromEntries(ended(profile)))
+      expect(Object.keys(result.meta.profiles[profile].stages)).toEqual(['research', 'dedup', 'panel'])
+    }
+    // The stages sit after the research counts, and a result read back is written as it was.
+    expect(Object.keys(result.meta.profiles.style).slice(7, 10)).toEqual(['research', 'stages', 'coverage'])
+    const saved = JSON.parse(JSON.stringify(result)) as unknown
+    expect(resultSchema.parse(saved)).toEqual(saved)
+    const blank = await createQuorum({
+      profiles: [naming],
+    }, portsFor(naming, local)).review({ diff: '  \n' })
+    expect(blank.meta.profiles.naming.stages).toEqual({})
   })
 
   it('sends a vote in flight at the old setting once more at the settled one, so no vote fails for it', async () => {
@@ -7279,6 +7541,7 @@ describe('recovery', () => {
       'rules',
       'invalidRules',
       'research',
+      'stages',
       'coverage',
     ])
   })
@@ -9762,11 +10025,12 @@ describe('documents', () => {
       expect(none.parts).toBe(0)
       expect(none.entry).toEqual({ listed: 1, sent: 0, asksNothing: true })
       // The flag sits after the counts of rules and before the coverage, where the schema keeps it.
-      expect(Object.keys(none.meta as object).slice(4, 10)).toEqual([
+      expect(Object.keys(none.meta as object).slice(4, 11)).toEqual([
         'invalidFindings',
         'rules',
         'invalidRules',
         'research',
+        'stages',
         'asksNothing',
         'coverage',
       ])

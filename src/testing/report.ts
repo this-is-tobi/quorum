@@ -74,7 +74,10 @@ export const UPLOAD: Verdict = {
   confidence: undefined,
 }
 
-/** The calls a review records when its provider `p`, which its config names `m`, answered as two other models: one named for 3 calls and one for 2. */
+/**
+ * The calls a review records when its provider `p`, which its config names `m`, answered as two other models: one named for its 3
+ * research calls and one for its 2 votes. The roles' tokens sum to the usage `reportMeta` records, as a review's do.
+ */
 export const SERVED_AS_TWO: QuorumMeta['calls'] = {
   p: {
     model: 'm',
@@ -82,6 +85,24 @@ export const SERVED_AS_TWO: QuorumMeta['calls'] = {
       { model: 'local-model-2026', calls: 3 },
       { model: 'local-model-2027', calls: 2 },
     ],
+    research: {
+      calls: 3,
+      failed: {},
+      stopped: 0,
+      retried: 0,
+      reused: 0,
+      usage: { inputTokens: 40_000, outputTokens: 3000 },
+      callMs: { total: 9000, longest: 4000 },
+    },
+    vote: {
+      calls: 2,
+      failed: {},
+      stopped: 0,
+      retried: 0,
+      reused: 0,
+      usage: { inputTokens: 8120, outputTokens: 1190 },
+      callMs: { total: 5000, longest: 3000 },
+    },
   },
 }
 
@@ -111,6 +132,7 @@ export function reportMeta(): QuorumMeta {
           capped: 0,
           saturated: 0,
         },
+        stages: {},
         coverage: [
           { file: 'src/auth/login.ts', status: 'reviewed' },
           {

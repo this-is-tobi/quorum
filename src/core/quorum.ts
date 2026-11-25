@@ -36,7 +36,7 @@ import { panel } from './stages/panel.ts'
 import type { PanelOutcome } from './stages/panel.ts'
 import { planResearch, research } from './stages/research.ts'
 import type { ResearchPlan } from './stages/research.ts'
-import type { ContextRecord, CoverageEntry, Estimate, Profile, ProfileMeta, ProfileProviders, ProviderCalls, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ResearchRecord, ReviewContext, ReviewDocument, ReviewInput, ReviewSource, Usage } from './types.ts'
+import type { ContextRecord, CoverageEntry, Estimate, Profile, ProfileMeta, ProfileProviders, ProviderCalls, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ResearchRecord, ReviewContext, ReviewDocument, ReviewInput, ReviewSource, RoleCalls, Usage } from './types.ts'
 
 const PROVIDER_SHAPE = 'must be a provider: an object with a string id, a string model and a complete function'
 
@@ -95,20 +95,39 @@ interface Tally {
   readonly invalidRules: Map<string, number>
   /** The research calls and the votes a store answered, counted from the `call` events that say `reused`. */
   readonly reused: { research: number, votes: number }
-  /** What each provider's answered calls' replies named as the model that answered, by provider id in the order its first call ended, counted from the `call` events that name one (`countCall`). */
+  /** What each provider's calls came to, by provider id in the order its first call ended: the models its replies named and its roles' counts, counted from the `call` events (`countCall`). */
   readonly calls: Map<string, ProviderCalls>
+  /** The `durationMs` of each profile's `stage:end` events, by profile id, in the order they ended. */
+  readonly stages: Map<string, ProfileMeta['stages']>
 }
 
 /**
  * Counts a `call` event into its provider's record, which the provider's first event makes, with the `model` its `ProviderRef`
- * holds and no served model: an answered call adds one to the model its reply named, one that names a ninth model or a later one
- * adds one to `servedOthers`, and a call that named none (a failed one, one the store answered) adds none.
+ * holds, no served model and no role: an answered call adds one to the model its reply named, one that names a ninth model or a
+ * later one adds one to `servedOthers`, and a call that named none (a failed one, one the store answered) adds none; and every
+ * call is counted in the record of its role (`countRole`).
  */
 function countCall(calls: Map<string, ProviderCalls>, event: Extract<QuorumEvent, { type: 'call' }>): void {
   const { provider, model } = event
   const record = calls.get(provider.id) ?? { model: provider.model, served: [] }
   calls.set(provider.id, record)
-  if (model === undefined) return
+  if (model !== undefined) countServed(record, model)
+  const role = event.role === 'research'
+    ? 'research'
+    : 'vote'
+  record[role] = countRole(record[role] ?? {
+    calls: 0,
+    failed: {},
+    stopped: 0,
+    retried: 0,
+    reused: 0,
+    usage: { inputTokens: 0, outputTokens: 0 },
+    callMs: { total: 0, longest: 0 },
+  }, event)
+}
+
+/** Adds one answered call to the served model `model` of `record`, or to `servedOthers` once `record` lists `MAX_SERVED` of them. */
+function countServed(record: ProviderCalls, model: string): void {
   const named = record.served.find(served => served.model === model)
   if (named !== undefined) {
     named.calls += 1
@@ -119,11 +138,43 @@ function countCall(calls: Map<string, ProviderCalls>, event: Extract<QuorumEvent
   }
 }
 
-/** The providers' records as `meta.calls` holds them: copies, so the tally and the result share nothing. */
+/**
+ * Adds a `call` event to a role's record: the call, its failure by `kind` when it names one (a failed call's and an unreadable
+ * reply's), a failed call that names none as stopped (a limit or the stop ended it), the sends beyond its first, a call the store
+ * answered as reused, its usage and its time. The record it is given, changed.
+ */
+function countRole(role: RoleCalls, event: Extract<QuorumEvent, { type: 'call' }>): RoleCalls {
+  role.calls += 1
+  if (event.failure !== undefined) {
+    role.failed[event.failure.kind] = (role.failed[event.failure.kind] ?? 0) + 1
+  } else if (!event.ok) {
+    role.stopped += 1
+  }
+  role.retried += (event.attempts ?? 1) - 1
+  if (event.reused === true) role.reused += 1
+  role.usage = addUsage(role.usage, event.usage) ?? role.usage
+  role.callMs.total += event.durationMs
+  role.callMs.longest = Math.max(role.callMs.longest, event.durationMs)
+  return role
+}
+
+/** The providers' records as `meta.calls` holds them: copies, their keys in the order the schema reads them, so the tally and the result share nothing. */
 function callsRecord(calls: ReadonlyMap<string, ProviderCalls>): QuorumMeta['calls'] {
-  return Object.fromEntries([...calls].map(([id, record]) => [
+  return Object.fromEntries([...calls].map(([id, { model, served, servedOthers, research, vote }]) => [
     id,
-    structuredClone(record),
+    structuredClone({
+      model,
+      served,
+      ...servedOthers === undefined
+        ? {}
+        : { servedOthers },
+      ...research === undefined
+        ? {}
+        : { research },
+      ...vote === undefined
+        ? {}
+        : { vote },
+    }),
   ]))
 }
 
@@ -540,9 +591,16 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
     invalidRules: new Map(),
     reused: { research: 0, votes: 0 },
     calls: new Map(),
+    stages: new Map(),
   }
   const emit = (event: QuorumEvent): void => {
     if (signal.aborted) return
+    if (event.type === 'stage:end') {
+      tally.stages.set(event.profile, {
+        ...tally.stages.get(event.profile),
+        [event.stage]: event.durationMs,
+      })
+    }
     if (event.type === 'call') countCall(tally.calls, event)
     if (event.type === 'call' && event.usage !== undefined) tally.usage = addUsage(tally.usage, event.usage)
     if (event.type === 'call' && event.reused === true) {
@@ -669,7 +727,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
     source,
     profiles: Object.fromEntries(runs.map((run, index) => [
       run.id,
-      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, tally.invalidRules.get(run.id) ?? 0, outcomes[index]?.research ?? NO_RESEARCH, withCapped(coverageOf(scope, filtered, outcomes[index]?.packing ?? plans[index]?.packing, outcomes[index]?.parts ?? []), outcomes[index]?.unread ?? []), outcomes[index]?.recovery),
+      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, tally.invalidRules.get(run.id) ?? 0, outcomes[index]?.research ?? NO_RESEARCH, tally.stages.get(run.id) ?? {}, withCapped(coverageOf(scope, filtered, outcomes[index]?.packing ?? plans[index]?.packing, outcomes[index]?.parts ?? []), outcomes[index]?.unread ?? []), outcomes[index]?.recovery),
     ])),
     ...(tally.usage === undefined
       ? {}
@@ -928,7 +986,7 @@ function ruleCounts(runs: readonly ProfileRun[]): Record<string, { listed: numbe
       ]))
 }
 
-function profileMeta(run: ProfileRun, invalidFindings: number, invalidRules: number, research: ResearchRecord, coverage: CoverageEntry[], recovery: ProfileMeta['recovery']): ProfileMeta {
+function profileMeta(run: ProfileRun, invalidFindings: number, invalidRules: number, research: ResearchRecord, stages: ProfileMeta['stages'], coverage: CoverageEntry[], recovery: ProfileMeta['recovery']): ProfileMeta {
   return {
     providers: providersOf(run),
     policy: { ...run.thresholds },
@@ -938,6 +996,7 @@ function profileMeta(run: ProfileRun, invalidFindings: number, invalidRules: num
     rules: ruleCountOf(run),
     invalidRules,
     research: { ...research },
+    stages: { ...stages },
     ...asksNothing(run)
       ? { asksNothing: true as const }
       : {},

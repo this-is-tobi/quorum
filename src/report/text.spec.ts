@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
-import type { Flag, IncompleteEntry, LeftOutFile, PublicView, QuorumResult, ResearchRecord, ReviewSource, Verdict } from '../core/types.ts'
-import { blankResult, contextDocument, FINDINGS, INCOMPLETE, INTERRUPTED, LIFTED, PASS, reportResult, SERVED_AS_TWO, SQL, TOKEN } from '../testing/report.ts'
+import type { Flag, IncompleteEntry, LeftOutFile, PublicView, QuorumResult, ResearchRecord, ReviewSource, RoleCalls, Verdict } from '../core/types.ts'
+import { blankResult, contextDocument, FINDINGS, INCOMPLETE, INTERRUPTED, LIFTED, PASS, reportMeta, reportResult, SERVED_AS_TWO, SQL, TOKEN } from '../testing/report.ts'
 import { documentLine } from './lines.ts'
 import { text } from './text.ts'
 import { publicView } from './view.ts'
@@ -183,7 +183,8 @@ describe('text', () => {
     ])
   })
 
-  it('writes the models lines after the time line of a full result, wrapped at 80 columns, and none for the public view', () => {
+  it('writes the models lines after the by-role line, which follows the time line, of a full result, wrapped at 80 columns, and none for the public view', () => {
+    const base = reportMeta()
     const result = reportResult({
       meta: {
         calls: {
@@ -195,19 +196,27 @@ describe('text', () => {
             ],
           },
         },
+        profiles: {
+          security: {
+            ...base.profiles.security,
+            stages: { research: 250_000, dedup: 3000, panel: 1_805_000 },
+          },
+        },
       },
     })
     const lines = render(result)
     const took = lines.findIndex(line => line.startsWith('took '))
-    expect(lines.slice(took, took + 5)).toEqual([
+    expect(lines.slice(took, took + 7)).toEqual([
       'took 41s, 48.1k tokens in and 4.19k out',
+      'by role: research 4m10s, 3 call(s), 40.0k tokens in and 3.00k out; panel 30m05s,',
+      '  2 vote(s), 8.12k in and 1.19k out',
       'models: q answered as local-model-2026, its config names local-model',
       'warning: p answered as 2 models in this review: local-model-2026 in 3 call(s),',
       '  local-model-2027 in 2',
       'exit 1, findings: a gating profile kept a finding at or above its fail-on level',
     ])
     // The rest of the report is the one a result with no record writes.
-    expect(lines.filter((line, index) => index < took + 1 || index > took + 3)).toEqual(MAIN)
+    expect(lines.filter((line, index) => index < took + 1 || index > took + 5)).toEqual(MAIN)
     // The public view names no model, so it writes none of these lines.
     const view = render(publicView(result))
     expect(view.some(line => line.startsWith('models:') || line.startsWith('warning:'))).toBe(false)
@@ -225,6 +234,78 @@ describe('text', () => {
         },
       },
     }))).toEqual(MAIN)
+  })
+
+  it('writes the by-role line after the time line, in the full and the public view', () => {
+    const base = reportMeta()
+    const result = reportResult({
+      meta: {
+        calls: {
+          p: {
+            ...SERVED_AS_TWO.p,
+            served: [
+              { model: 'm', calls: 5 },
+            ],
+          },
+        },
+        profiles: {
+          security: {
+            ...base.profiles.security,
+            stages: { research: 250_000, dedup: 3000, panel: 1_805_000 },
+          },
+        },
+      },
+    })
+    const lines = render(result)
+    const took = lines.findIndex(line => line.startsWith('took '))
+    // The full result gives each role's calls and tokens, wrapped at 80 columns; the report is otherwise the one a result with no stage time writes.
+    expect(lines.slice(took, took + 4)).toEqual([
+      'took 41s, 48.1k tokens in and 4.19k out',
+      'by role: research 4m10s, 3 call(s), 40.0k tokens in and 3.00k out; panel 30m05s,',
+      '  2 vote(s), 8.12k in and 1.19k out',
+      'exit 1, findings: a gating profile kept a finding at or above its fail-on level',
+    ])
+    expect(lines.filter((line, index) => index < took + 1 || index > took + 2)).toEqual(MAIN)
+    for (const line of lines) expect([...line].length).toBeLessThanOrEqual(80)
+    // The public view has the times alone: the view withholds the calls and the tokens.
+    const view = render(publicView(result))
+    const viewTook = view.findIndex(line => line.startsWith('took '))
+    expect(view.slice(viewTook, viewTook + 3)).toEqual([
+      'took 41s',
+      'by role: research 4m10s; panel 30m05s',
+      'exit 1, findings: a gating profile kept a finding at or above its fail-on level',
+    ])
+    expect(view.join('\n')).not.toContain('call(s)')
+    expect(view.join('\n')).not.toContain('tokens in')
+    // A role whose calls reported no usage has its time and its calls, and no tokens, which would read as a spend of zero.
+    const unreported = (role: 'research' | 'vote'): RoleCalls => ({
+      ...SERVED_AS_TWO.p[role]!,
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+    const silent = render(reportResult({
+      meta: {
+        calls: {
+          p: {
+            ...SERVED_AS_TWO.p,
+            served: [
+              { model: 'm', calls: 5 },
+            ],
+            research: unreported('research'),
+            vote: unreported('vote'),
+          },
+        },
+        profiles: {
+          security: {
+            ...base.profiles.security,
+            stages: { research: 250_000, dedup: 3000, panel: 1_805_000 },
+          },
+        },
+      },
+    }))
+    expect(silent.filter(line => line.startsWith('by role:'))).toEqual(['by role: research 4m10s, 3 call(s); panel 30m05s, 2 vote(s)'])
+    // A result with no stage time, as a blank diff's, writes none.
+    expect(render(blankResult()).some(line => line.startsWith('by role:'))).toBe(false)
+    expect(render(publicView(blankResult())).some(line => line.startsWith('by role:'))).toBe(false)
   })
 
   it('writes a served model as inert text, whatever a result read from a file holds', () => {

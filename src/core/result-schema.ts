@@ -23,7 +23,7 @@
 
 import { z } from 'zod'
 import { COMMIT_ID, MAX_DOCUMENT_PATH, SHA256 } from './documents.ts'
-import { NO_ANSWERS } from './errors.ts'
+import { NO_ANSWERS, PROVIDER_ERROR_KINDS } from './errors.ts'
 import { SKIP_RULES, sourceIssues } from './inputs.ts'
 import { FAIL_ON_LEVELS, PROFILE_ID_PATTERN } from './profile.ts'
 import { RULE_ID } from './rules.ts'
@@ -114,7 +114,20 @@ export const usageSchema = z.strictObject({
   outputTokens: amount,
   costUsd: amount.optional(),
 })
-/** What a provider's replies named as the model that answered (`ProviderCalls`): the served models, at most `MAX_SERVED` of them, each cut at `MAX_MODEL` characters, and the calls of the rest. */
+/** What a provider did in one role of a review (`RoleCalls`): its calls, the failed ones by kind (a provider failure's, or `unusable-reply`), and the stopped, retried and reused ones, its usage and its time. */
+const roleCalls = z.strictObject({
+  calls: count,
+  failed: z.partialRecord(z.enum([...PROVIDER_ERROR_KINDS, 'unusable-reply']), count),
+  stopped: count,
+  retried: count,
+  reused: count,
+  usage: usageSchema,
+  callMs: z.strictObject({
+    total: count,
+    longest: count,
+  }),
+})
+/** What a provider's calls came to (`ProviderCalls`): the models its replies named, at most `MAX_SERVED` of them, each cut at `MAX_MODEL` characters, and the calls of the rest, then what it did in each role. */
 const providerCalls = z.strictObject({
   model: z.string(),
   served: z.array(z.strictObject({
@@ -122,6 +135,8 @@ const providerCalls = z.strictObject({
     calls: z.int().min(1),
   })).max(MAX_SERVED),
   servedOthers: z.int().min(1).optional(),
+  research: roleCalls.optional(),
+  vote: roleCalls.optional(),
 })
 /** How many research calls and votes a review reused from its store. */
 const reused = z.strictObject({
@@ -184,6 +199,8 @@ const ruleCounts = z.strictObject({
   listed: count,
   sent: count,
 })
+/** How long each stage of a profile took, in whole milliseconds, for the stages that ended. */
+const stages = z.partialRecord(z.enum(['research', 'dedup', 'panel']), count)
 /** What a profile's research came to: the counts `ResearchRecord` holds, in the order the core writes them. */
 const researchRecord = z.strictObject({
   parts: count,
@@ -205,11 +222,12 @@ const profileMeta = z.strictObject({
   rules: ruleCounts,
   invalidRules: count,
   research: researchRecord,
+  stages,
   asksNothing: z.literal(true).optional(),
   coverage: z.array(coverageEntry),
   recovery: recovery.optional(),
 })
-/** A profile's meta in the public view: no providers, no research counts, and the count of its discarded findings. */
+/** A profile's meta in the public view: no providers, no research counts, and the count of its discarded findings; its stage times are kept. */
 const publicProfileMeta = z.strictObject({
   policy: thresholds,
   failOn,
@@ -218,6 +236,7 @@ const publicProfileMeta = z.strictObject({
   invalidFindings: count,
   rules: ruleCounts,
   invalidRules: count,
+  stages,
   asksNothing: z.literal(true).optional(),
   coverage: z.array(coverageEntry),
   recovery: recovery.optional(),

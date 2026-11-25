@@ -496,7 +496,9 @@ export function elapsed(started: number): number {
  * is saturated (a research reply that listed as many findings as it was asked for at most, which the stage splits and
  * does not read), and how many findings it listed, and the call returns `saturated` for such a reply, with no text. A
  * throw from it, an `OutputError` the stage tells as a gap, ends the call with that error after the one `ok` event,
- * which then holds no `listed`: no second event is sent, the health is told nothing more, and `onFailure` hears it.
+ * which then holds no `listed` and says `failure` `unusable-reply`: no second event is sent, the health is told nothing more,
+ * and `onFailure` hears it. A call that failed says `failure` too, as `providerFailure` reads its last failure, and none when a
+ * limit, the stop or the down rule ended it.
  * Every call that built its request tells `onEnd`, once, inside its slot, what it spent and when it started.
  *
  * With a store (`ctx.store`), each send of a call, the first and every re-send, is looked up under its own key once its
@@ -562,6 +564,10 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
     /** Ends the call with `error`: its failed event when an attempt was made, then `onFailure`; the error to throw. */
     const end = (error: unknown): unknown => {
       if (attempts > 0 || reused) {
+        // What the failure said of itself, when a provider's failure ended the call: a limit, the stop or the down rule says none (a `ProviderDownError` holds the kind of the calls before this one).
+        const failure = error instanceof ProviderDownError
+          ? undefined
+          : providerFailure(error)
         ctx.emit({
           type: 'call',
           ...numbered(number),
@@ -570,6 +576,9 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
           durationMs: took(),
           ok: false,
           ...counted(attempts, usage, spent),
+          ...failure === undefined
+            ? {}
+            : { failure },
         })
       }
       // A refusal by the down rule is no failure of the provider: it counts nowhere and says nothing of a reply.
@@ -881,6 +890,12 @@ export async function callProvider(ctx: RunContext, requester: Requester, target
       ...timings === undefined
         ? {}
         : timings,
+      // The reply answered and the stage could not read it: no provider failure names that.
+      ...read === undefined
+        ? {
+            failure: { kind: 'unusable-reply' as const },
+          }
+        : {},
     })
     options.onEnd?.({ spent, startedAt: started, reused: reused && attempts === 0 })
     if (read === undefined) {

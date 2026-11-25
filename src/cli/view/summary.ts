@@ -1,6 +1,6 @@
 /**
  * The summary every view ends with: once the report and the `--output` files are written, the lines that say how
- * the review went (the time of each stage, the tokens against the cap, the calls, the models that answered, each gap with
+ * the review went (the time of each stage, the tokens against the cap and by role, the calls, the models that answered, each gap with
  * its fix, and where the report went), a fold of the review's events (`model.ts`) and the facts of the run. It names formats,
  * never paths, shows counts, durations, provider ids, the cleaned models that answered and code words only, repeats nothing
  * the report says, and passes `inertLine` whole.
@@ -10,7 +10,7 @@ import { CUT_ADVICE, failureFix, QUOTA_FIX, STALL_FIX } from '../../core/errors.
 import { inertLine } from '../../core/sanitize.ts'
 import type { ConcurrencyRecord } from '../../core/lanes.ts'
 import type { IncompleteReason, ProfileMeta, QuorumMeta, QuorumResult, StageName } from '../../core/types.ts'
-import { contextSummary, durationText, listed, modelLines, tokenWords } from '../../report/lines.ts'
+import { contextSummary, durationText, listed, modelLines, roleTokens, tokenWords } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords } from './eta.ts'
 import { stageStart, stageTime } from './model.ts'
@@ -170,10 +170,19 @@ const CAP_WORDS: Readonly<Record<CapOrigin, string>> = {
   floor: 'the default, which holds this review\'s estimated worst case',
 }
 
-function tokensLine(state: ViewState): string {
+/**
+ * The tokens line: the share of the cap spent and where the cap came from, then what each role that reported usage spent (`roleTokens`,
+ * read from the result's `meta.calls`, and none when the result holds no usage: no call reported any), then each provider's usage when
+ * several answered.
+ */
+function tokensLine(state: ViewState, { usage, calls }: Pick<QuorumMeta, 'usage' | 'calls'>): string {
   const { tokens, origin } = state.facts.cap
   const percent = Math.floor(state.spent * 100 / tokens)
   let line = `tokens: ${percent} percent of the cap of ${tokenWords(tokens)}, ${CAP_WORDS[origin]}`
+  const roles = usage === undefined
+    ? ''
+    : roleTokens(calls)
+  if (roles !== '') line += `; ${roles}`
   if (state.usage.size > 1) line += `; ${[...state.usage].map(([id, usage]) => `${id} ${tokenWords(usage.inputTokens)} in and ${tokenWords(usage.outputTokens)} out`).join(', ')}`
   return line
 }
@@ -359,7 +368,7 @@ function resultLine(facts: SummaryFacts, view: ReportView): string {
 
 /**
  * The summary's lines for a review whose events were folded into `state`, in this order, each left out when it has
- * nothing to say: the time, the tokens (not under the public view), the calls, the models that answered (not under the public view,
+ * nothing to say: the time, the tokens, by role too (not under the public view), the calls, the models that answered (not under the public view,
  * which names none), a line for each profile that has a document or a rule, the gaps with their fixes, where the report went and,
  * when a rerun could fill what is missing, how to resume it. A review whose stages never started has no summary. `dash` is the glyph set's.
  */
@@ -369,7 +378,7 @@ export function summaryLines(state: ViewState, facts: SummaryFacts, view: Report
     timeLine(state, facts, view, dash),
     view === 'public'
       ? undefined
-      : tokensLine(state),
+      : tokensLine(state, facts.result.meta),
     callsLine(state, facts.result.meta.concurrency),
     ...view === 'public'
       ? []

@@ -143,6 +143,7 @@ describe('the deadline of an attempt', () => {
         durationMs: 1000,
         ok: false,
         spent: 16_516,
+        failure: { kind: 'timeout' },
       },
     ])
   })
@@ -1581,6 +1582,73 @@ describe('the review\'s token cap', () => {
     expect(clock.pending()).toBe(0)
   })
 
+  it('names a failed call\'s failure on its event, an unreadable reply\'s as unusable-reply, and none for a call a limit stopped', async () => {
+    // An http 503 that its retries did not cure: the failure the last attempt said of itself, status included.
+    const clock = fakeClock(0.5)
+    const { ctx, events } = context(clock)
+    const down = target(async () => {
+      throw failure({ kind: 'http', status: 503, retryable: true })
+    }, { retries: 1 })
+    await settle(clock, callProvider(ctx, requester, down, () => request)).catch(() => undefined)
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'call',
+        ok: false,
+        attempts: 2,
+        failure: { kind: 'http', status: 503 },
+      }),
+    ])
+
+    // A reply the stage's check refused twice: the call is `ok`, its reply was read as no answer, and it says so.
+    const unreadable = fakeClock(0.5)
+    const read = context(unreadable)
+    const refused = target(async () => ({ text: 'bad', model: 'm' }), { retries: 1 })
+    await settle(unreadable, callProvider(read.ctx, requester, refused, () => request, {
+      check: () => {
+        throw new OutputError('vote', 'reply contains a JSON object that repeats a key', 'bad')
+      },
+    })).catch(() => undefined)
+    expect(read.events).toEqual([
+      expect.objectContaining({
+        type: 'call',
+        ok: true,
+        attempts: 2,
+        failure: { kind: 'unusable-reply' },
+      }),
+    ])
+    expect(read.events[0]).not.toHaveProperty('listed')
+
+    // A call the token cap refused after an attempt: no provider failure ended it, so the event names none.
+    const capped = fakeClock(0.5)
+    const limited = context(capped, new AbortController(), 1, { cap: 130 })
+    const flaky = target(async () => {
+      throw failure({
+        kind: 'http',
+        status: 503,
+        retryable: true,
+        usage: { inputTokens: 40, outputTokens: 40 },
+      })
+    }, {
+      ...worst(60),
+      retries: 2,
+    })
+    await expect(settle(capped, callProvider(limited.ctx, requester, flaky, () => request))).rejects.toBeInstanceOf(LimitError)
+    expect(limited.events).toEqual([
+      expect.objectContaining({
+        type: 'call',
+        ok: false,
+        usage: { inputTokens: 40, outputTokens: 40 },
+      }),
+    ])
+    expect(limited.events[0]).not.toHaveProperty('failure')
+
+    // An answered call whose reply the check read names none.
+    const answered = context(fakeClock(0.5))
+    await callProvider(answered.ctx, requester, target(async () => ({ text: 'ok', model: 'm' })), () => request)
+    expect(answered.events[0]).toMatchObject({ type: 'call', ok: true })
+    expect(answered.events[0]).not.toHaveProperty('failure')
+  })
+
   it.each<[string, () => Promise<CompletionResponse>, number]>([
     [
       'a reply\'s usage',
@@ -2153,6 +2221,31 @@ describe('the adaptations of a call', () => {
     // The probe settled: the setting is tried and nobody waits on it.
     await ctx.adapt.ready(down, ctx.stop)
     expect(ctx.adapt.probe(down, cutOff())).toBeUndefined()
+  })
+
+  it('names no failure on the event of a call the down rule ended, whatever kind the calls that found the provider down failed with', async () => {
+    const clock = fakeClock()
+    const { ctx, events } = context(clock)
+    const down = target(async () => {
+      // Three calls of another kind find the provider down while this one is in flight, then its own failure is a cut-off.
+      for (let call = 0; call < 3; call++) {
+        ctx.health.failed(down.provider, 'p', new ProviderError({
+          providerId: 'p',
+          kind: 'http',
+          status: 503,
+          message: 'down',
+        }))
+      }
+      throw cutOff()
+    }, lowers)
+    const error = await settle(clock, callProvider(ctx, requester, down, () => request)).catch((caught: unknown) => caught)
+    // The call ends with the down rule's error, which holds the streak's kind, and is no failure of the call's own: it is stopped.
+    expect(error).toBeInstanceOf(ProviderDownError)
+    expect(error).toMatchObject({ kind: 'http', status: 503 })
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'call', call: 1, ok: false }),
+    ])
+    expect(events[0]).not.toHaveProperty('failure')
   })
 
   it('settles a probe the token cap refused, moves nothing, and lets the provider\'s calls meet the cap themselves', async () => {

@@ -2,8 +2,8 @@
  * The pieces of a line that the text report, the Markdown summary and the progress lines of the CLI write one
  * way: how many of a thing, a file left out, where a flag points, the words of a gap, the words of a verdict, a
  * source, a finding's level, votes and rule, its place among the findings and its evidence's rows, a document a review read
- * and each profile's summary of them, how many rules a profile sent, and the numbers a person reads: a token count
- * scaled and a duration in one form (past a minute in minutes). None makes its text inert: a file name is a diff's and a
+ * and each profile's summary of them, how many rules a profile sent, what each role cost (the by-role line and the tokens
+ * clause), and the numbers a person reads: a token count scaled and a duration in one form (past a minute in minutes). None makes its text inert: a file name is a diff's and a
  * flag's detail a diff's too, so the line that holds them passes through `inertLine` whole.
  */
 
@@ -12,7 +12,7 @@ import { elapsedWords } from '../core/duration.ts'
 import { ownData } from '../core/facts.ts'
 import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
 import { failsItsProfile } from '../core/outcome.ts'
-import type { ContextDocument, ContextRecord, CoverageEntry, CoverageStatus, DocumentKind, Flag, IncompleteReason, LeftOutFile, ProfileMeta, PublicVerdict, PublicView, QuorumMeta, ResearchRecord, ReviewSource, Verdict, VoteFailure } from '../core/types.ts'
+import type { ContextDocument, ContextRecord, CoverageEntry, CoverageStatus, DocumentKind, Flag, IncompleteReason, LeftOutFile, ProfileMeta, PublicMeta, PublicVerdict, PublicView, QuorumMeta, ResearchRecord, ReviewSource, StageName, Usage, Verdict, VoteFailure } from '../core/types.ts'
 import { voteFailed } from './view.ts'
 
 /** A token count told in three significant digits at most, floored: `999`, `1.23k`, `12.3k`, `812k`, `9.86M`. */
@@ -389,6 +389,109 @@ export function modelLines(calls: QuorumMeta['calls']): string[] {
       : [`models: ${another.join('; ')}`],
     ...warnings,
   ]
+}
+
+/** The two roles of a review: the role of a `call` event, the stage whose time it is told with, its name in the by-role line and in the tokens clause, and the noun of its calls. */
+const ROLES = [
+  {
+    role: 'research',
+    stage: 'research',
+    named: 'research',
+    tokens: 'research',
+    calls: 'call(s)',
+  },
+  {
+    role: 'vote',
+    stage: 'panel',
+    named: 'panel',
+    tokens: 'votes',
+    calls: 'vote(s)',
+  },
+] as const
+
+/**
+ * What every provider's calls of `role` came to: their number, and their usage summed, or undefined when no provider made one. The usage
+ * is undefined too when the calls reported none: a role's record holds 0 and 0 for that, which a line must not read as a spend of zero.
+ */
+function roleSum(calls: QuorumMeta['calls'], role: 'research' | 'vote'): { calls: number, usage: Usage | undefined } | undefined {
+  const made = Object.values(calls).flatMap((record) => {
+    const mine = record[role]
+    return mine === undefined
+      ? []
+      : [mine]
+  })
+  const total = made.reduce((sum, mine) => sum + mine.calls, 0)
+  if (total === 0) return undefined
+  const inputTokens = made.reduce((sum, mine) => sum + mine.usage.inputTokens, 0)
+  const outputTokens = made.reduce((sum, mine) => sum + mine.usage.outputTokens, 0)
+  return {
+    calls: total,
+    usage: inputTokens === 0 && outputTokens === 0
+      ? undefined
+      : { inputTokens, outputTokens },
+  }
+}
+
+/** The tokens of a usage, as the summary and the by-role line tell them: `1.20M in and 80.0k out`. */
+function usageWords({ inputTokens, outputTokens }: Usage): string {
+  return `${tokenWords(inputTokens)} in and ${tokenWords(outputTokens)} out`
+}
+
+/**
+ * What each role whose calls reported usage spent, as the summary's tokens line says it after the cap's words (without the `; `
+ * that joins them): `research 1.20M in and 80.0k out, votes 2.00M in and 461k out`, each provider's calls of a role summed, and
+ * nothing (the empty text) for a review whose calls made none or reported none, so a line never reads a role as having spent nothing.
+ */
+export function roleTokens(calls: QuorumMeta['calls']): string {
+  return ROLES.flatMap(({ role, tokens }) => {
+    const sum = roleSum(calls, role)
+    return sum?.usage === undefined
+      ? []
+      : [`${tokens} ${usageWords(sum.usage)}`]
+  }).join(', ')
+}
+
+/** The longest time any of `profiles` took in `stage`, in milliseconds, when one ended it: the profiles run at once, so a role takes as long as the slowest of them. */
+function stageTime(profiles: readonly unknown[], stage: StageName): number | undefined {
+  const times = profiles.flatMap((profile) => {
+    const time = ownData(ownData(profile, 'stages'), stage)
+    return typeof time === 'number'
+      ? [time]
+      : []
+  })
+  return times.length === 0
+    ? undefined
+    : Math.max(...times)
+}
+
+/**
+ * What each role took, as the text report's line after its time line: `by role: research 4m10s, 226 call(s), 12.0M tokens in and
+ * 400k out; panel 30m05s, 678 vote(s), 6.00M in and 800k out`. A role's time is the longest of its stage across the profiles (they run
+ * at once), and a role whose stage never ended is left out, with its calls, since a time is what the line is for. A role that made no call
+ * has its time alone, `panel 0.0s`, and so has a public view, which has no calls: `by role: research 4m10s; panel 30m05s`. A role whose
+ * calls reported no usage has its time and its calls, and no tokens: `research 4m10s, 226 call(s)`. A review with no stage time has no
+ * line (undefined).
+ */
+export function roleLine(meta: QuorumMeta | PublicMeta): string | undefined {
+  const profiles = Object.values(meta.profiles)
+  const calls = ownData(meta, 'view') === 'public'
+    ? {}
+    : (meta as QuorumMeta).calls
+  const parts = ROLES.flatMap(({ role, stage, named, calls: noun }) => {
+    const time = stageTime(profiles, stage)
+    if (time === undefined) return []
+    const sum = roleSum(calls, role)
+    if (sum === undefined) return [`${named} ${durationText(time)}`]
+    if (sum.usage === undefined) return [`${named} ${durationText(time)}, ${sum.calls} ${noun}`]
+    // Research says `tokens` once, as the report's time line does; the panel's, right after it, need not.
+    const spent = role === 'research'
+      ? `${tokenWords(sum.usage.inputTokens)} tokens in and ${tokenWords(sum.usage.outputTokens)} out`
+      : usageWords(sum.usage)
+    return [`${named} ${durationText(time)}, ${sum.calls} ${noun}, ${spent}`]
+  })
+  return parts.length === 0
+    ? undefined
+    : `by role: ${parts.join('; ')}`
 }
 
 /** How many of the files a profile's coverage lists are reviewed, in part, not, or excluded, as `2 of 3 files reviewed, 1 not`, or `the diff holds no file`. */
