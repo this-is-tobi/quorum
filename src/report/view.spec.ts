@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { inertJson } from '../core/sanitize.ts'
 import type { LensVote, PublicView, QuorumResult, Verdict } from '../core/types.ts'
-import { blankResult, RANGE, reportMeta, reportResult, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
+import { blankResult, RANGE, reportMeta, reportResult, SETTINGS, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
 import { discardedOf, isPublicView, publicView, voteFailed } from './view.ts'
 
 const CANARIES = [
@@ -270,6 +270,35 @@ describe('publicView', () => {
       meta: {
         ...view.meta,
         calls,
+      },
+    } as unknown as PublicView)).toThrow('the public view is not one quorum writes, at meta')
+  })
+
+  it('withholds meta.settings from the public view', () => {
+    const settings = {
+      ...SETTINGS,
+      providers: {
+        'SETTINGS-CANARY-PROVIDER': {
+          model: 'SETTINGS-CANARY-MODEL',
+          extraBody: { reasoning_effort: 'SETTINGS-CANARY-BODY' },
+        },
+      },
+    }
+    const result = reportResult({
+      meta: { settings },
+    })
+    const view = publicView(result)
+    expect(view.meta).not.toHaveProperty('settings')
+    expect(inertJson(view)).not.toContain('SETTINGS-CANARY')
+    // The view is the one a result with no settings makes, and the result's own are left as they were.
+    expect(view).toStrictEqual(publicView(reportResult()))
+    expect(result.meta.settings).toEqual(settings)
+    // A view that holds them is no view quorum writes.
+    expect(() => publicView({
+      ...view,
+      meta: {
+        ...view.meta,
+        settings,
       },
     } as unknown as PublicView)).toThrow('the public view is not one quorum writes, at meta')
   })

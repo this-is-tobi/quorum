@@ -599,7 +599,7 @@ That run set a base URL on its own, so its provider is `openai-compatible`. With
 What it leaves out, so that the output can stay in a public CI log:
 
 - **A key** prints as `apiKey: "[redacted]"`, whether it came from `apiKey`, from the variable `apiKeyEnv` names, from a preset's variable or from `QUORUM_RESEARCH_API_KEY`.
-- **`headers`, `query` and `extraBody`** print their names, each with the value `[redacted]`: a gateway's own credential can sit in a header, a query parameter or a body field.
+- **`headers`, `query` and `extraBody`** print their names, each with the value `[redacted]`: a gateway's own credential can sit in a header, a query parameter or a body field. A name that is not a safe string prints as one entry, `"[redacted]": "[redacted]"`, where the first of them stood, however many there were: a name that holds a credential, the provider's key or an e-mail address, that holds a run of 20 or more characters mixing letters and digits (`x-amz-content-sha256` is one), that is longer than 64 code points, or that is the word `[redacted]` itself. Every other name prints as before: [What a result records of a provider](../30-security/10-threat-model.md#what-a-result-records-of-a-provider).
 - **A `claude-code` provider's `command` and `args`** print as they are: the path of the executable and its flags are the config's own, and a job can check them.
 - **A base URL** prints as its `origin`, the scheme, host and port, since a gateway can carry a token in the path, as `team-token` does above.
 - **A prompt or a document** prints as `sha256:` and the lowercase hex SHA-256 of its UTF-8 text, never the text: a guidelines, do-not-report or rules file as read, before it is cleaned ([Rules and guidelines](./45-rules-and-guidelines.md#what---print-config-shows)). **A review rule** prints as its id alone, never its text, and a rules file as the hash of its text and the ids it holds. `sha256sum` of a prompt or document file gives the same hex, a byte-order mark aside, so a job can compare it with the hash of the file on the base branch. A provider's `systemPrompt` is only a placement, `native` or `inline`.
@@ -626,6 +626,10 @@ providers:
 Under `inherit`, with `ANTHROPIC_API_KEY` set, `warnings` holds the billing warning: `providers.default: ANTHROPIC_API_KEY is set, so Claude Code bills that key rather than its login: unset it, or set auth to login or api-key`.
 
 A CI job can print it before the review, to check which file, providers and profiles it runs.
+
+### What the result records of it
+
+A review's JSON result records, in `meta.settings`, the same provider view that `--print-config` prints, so two results of two configs compare field by field: [The settings](../95-reference/20-json-result.md#the-settings). The result's view of a provider is the one above, less what a result never holds: its `origin`, so no base URL and no host, its `command`, its `args` and its `apiKey`. The names of `headers` and `query` are written and their values are `[redacted]`, as here, and `extraBody` is written with the values a rule finds safe, which `--print-config` never prints: a thinking level or a stop sequence appears, and a value under a key that names a secret, a credential, an e-mail address or a long opaque string is `[redacted]` ([What a result records of a provider](../30-security/10-threat-model.md#what-a-result-records-of-a-provider)). The record is for the operator, and the public view withholds it, so what a CI log or an artifact shows is `--print-config`'s redacted view and no more.
 
 ## Using it in CI
 

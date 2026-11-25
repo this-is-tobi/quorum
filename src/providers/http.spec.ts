@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProviderError } from '../core/errors.ts'
 import type { CompletionResponse, StreamSignal } from '../core/ports.ts'
+import { REDACTED } from '../core/result-schema.ts'
 import { brokenReply, jsonReply, streamedReply, textReply } from '../testing/http.ts'
 import { endpointUrl, httpOrigin, originOf, postStream, rateLimitOf, redactionsOf, replyOf, retryAfterHint, snippet } from './http.ts'
 import type { ErrorHints } from './http.ts'
@@ -22,6 +23,10 @@ describe('snippet', () => {
     expect(snippet('bad token: Bearer sk-secret', 100, ['sk-secret'])).toBe('"bad token: Bearer [redacted]"')
     expect(snippet('sk-secret and sk-secret', 100, ['sk-secret'])).toBe('"[redacted] and [redacted]"')
     expect(snippet(`${'a'.repeat(496)}sk-secret`, 500, ['sk-secret'])).not.toContain('sk-')
+  })
+
+  it('redacts with the word a result writes in place of a value it cannot show, which the adapters hold as a copy of the core\'s', () => {
+    expect(snippet('key sk-secret', 100, ['sk-secret'])).toBe(`"key ${REDACTED}"`)
   })
 
   it('redacts the secret as a JSON string would carry it, with or without escaped slashes', () => {

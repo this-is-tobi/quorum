@@ -313,6 +313,20 @@ describe('quorum bench', () => {
     expect(stderr).toMatch(/^\[5\/6\] trial 1, case docs, configuration 1 \(a\.yaml\): control; 0 kept, 0 discarded, 0 unreviewed, 0 gaps; (?:\d+\.\ds|\d+s|\d+m\d\ds)$/m)
   })
 
+  it('records a bench review\'s result with no settings and its calls', async () => {
+    const { code } = await bench(TWO)
+    expect(code).toBe(0)
+    const results = lines().map(line => (JSON.parse(line) as { result: { meta: { settings: unknown, calls: Record<string, { model: string }> } } }).result)
+    expect(results).toHaveLength(6)
+    for (const { meta } of results) {
+      // A bench run's fingerprint identifies its configuration, so its reviews are given no settings record.
+      expect(meta.settings).toBeNull()
+      // Its calls are recorded by provider, whose model the config names.
+      expect(Object.keys(meta.calls)).toEqual(['local'])
+    }
+    expect(results.map(({ meta }) => meta.calls.local.model).toSorted()).toEqual(['m1', 'm1', 'm1', 'm2', 'm2', 'm2'])
+  })
+
   it('runs an attack suite: its kinds in the plan, a forced keep scored against its twin, and the attack section', async () => {
     const keep = {
       ...ATTACK,

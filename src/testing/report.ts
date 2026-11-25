@@ -1,7 +1,7 @@
 /** The results the reporters' specs render: a review of a range with one kept, one unreviewed and one discarded finding, and a blank one. */
 
 import type { Outcome } from '../core/outcome.ts'
-import type { ContextDocument, LensVote, QuorumMeta, QuorumResult, ReviewSource, Verdict } from '../core/types.ts'
+import type { ContextDocument, LensVote, QuorumMeta, QuorumResult, ReviewSettings, ReviewSource, Verdict } from '../core/types.ts'
 
 const id = (start: string, length = 40): string => start.padEnd(length, 'a')
 export function cast(keep: boolean): LensVote {
@@ -106,6 +106,68 @@ export const SERVED_AS_TWO: QuorumMeta['calls'] = {
   },
 }
 
+/** A prompt or a lens question as a record writes it: `sha256:` and 64 hexadecimal digits, `digit` repeated. */
+const hash = (digit: string): string => `sha256:${digit.repeat(64)}`
+
+/**
+ * The settings record of a review of the profile `security` through one provider `p`, as `reviewSettings` builds it from a
+ * config that sets nothing but the provider: every bound its default, a header, a query and a body of safe values.
+ */
+export const SETTINGS: ReviewSettings = {
+  runtime: {
+    name: 'node',
+    version: '26.12.0',
+    platform: 'linux',
+    arch: 'x64',
+  },
+  strict: false,
+  concurrency: 'auto',
+  exclude: [],
+  partTokens: { value: 32_768, origin: 'default' },
+  maxFindings: { value: 50, origin: 'default' },
+  findingsCap: { value: 50, origin: 'default' },
+  maxReviewTokens: { value: 2_000_000, origin: 'default' },
+  reviewTimeoutMs: { value: 1_800_000, origin: 'default' },
+  providers: {
+    p: {
+      preset: 'ollama',
+      model: 'm',
+      contextTokens: 131_072,
+      headers: { 'x-team': '[redacted]' },
+      query: { v: '[redacted]' },
+      extraBody: { reasoning_effort: 'low', api_token: '[redacted]' },
+    },
+  },
+  profiles: {
+    security: {
+      research: 'p',
+      lenses: {
+        reachability: {
+          provider: 'p',
+          question: hash('1'),
+        },
+        impact: {
+          provider: 'p',
+          question: hash('2'),
+        },
+        defenses: {
+          provider: 'p',
+          question: hash('3'),
+        },
+      },
+      prompts: {
+        research: hash('a'),
+        vote: hash('b'),
+      },
+      findings: 50,
+      replyTokens: {
+        research: 21_024,
+        votes: { reachability: 9216, impact: 9216, defenses: null },
+      },
+    },
+  },
+}
+
 /** The meta of `reportResult`: a profile `security` at fail-on high over three files, one binary file left out, its gap and one flag. */
 export function reportMeta(): QuorumMeta {
   return {
@@ -113,6 +175,7 @@ export function reportMeta(): QuorumMeta {
     startedAt: '2026-11-16T00:00:00.000Z',
     durationMs: 41_000,
     source: RANGE,
+    settings: null,
     profiles: {
       security: {
         providers: {

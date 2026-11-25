@@ -1,6 +1,7 @@
 import { own } from '../config/profiles.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { isProvider } from '../config/schema.ts'
+import { providerOrigin } from '../config/settings.ts'
 import type { ProfileBudgets } from '../core/budgets.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../core/limits.ts'
 import type { Provider } from '../core/ports.ts'
@@ -8,8 +9,6 @@ import { DEFAULT_MAX_FINDINGS } from '../core/prompts.ts'
 import { inertLine } from '../core/sanitize.ts'
 import type { Estimate } from '../core/types.ts'
 import { isClaudeCode } from '../providers/build.ts'
-import { originOf } from '../providers/http.ts'
-import { presetOf } from '../providers/presets.ts'
 import { durationText, tokenWords } from '../report/lines.ts'
 import type { ReportView } from '../report/view.ts'
 import { profilePrefix } from './view/lines.ts'
@@ -165,15 +164,6 @@ function findingsLines(estimate: Estimate): string[] {
     lines.push(`estimate: on ${provider} a research reply asks for at most ${findings} of maxFindings ${estimate.maxFindings} findings: parts with more split, so expect more calls than this estimate; a larger window, or thinking: off, raises N`)
   }
   return lines
-}
-
-/**
- * The origin of a provider defined as data, as the banner and `--print-config` name its endpoint: the
- * scheme, host and port of its own base URL, else of its preset's. Both are read as own fields, so a
- * polluted `Object.prototype` fills neither.
- */
-export function providerOrigin(spec: Exclude<ResolvedProvider, Provider>): string {
-  return originOf(own(spec, 'baseUrl') ?? presetOf(own(spec, 'preset'))?.baseUrl ?? '')
 }
 
 /** Where a provider defined as data is reached, as the banner names it: its origin, or `claude-code` for the CLI, which has none. */

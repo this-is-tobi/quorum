@@ -27,7 +27,7 @@ afterEach(() => {
 })
 
 describe('the public API', () => {
-  it('exports createQuorum, defineConfig, fileStore, fromConfig, loadConfig, outcome, readContext, readSource, renderReport, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer, cleanProse, publicView, readResult and runQuorum', () => {
+  it('exports createQuorum, defineConfig, fileStore, fromConfig, loadConfig, outcome, readContext, readSource, renderReport, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer, cleanProse, publicView, readResult, reviewSettings and runQuorum', () => {
     expect(Object.keys(api).sort()).toEqual([
       'ConfigError',
       'GitError',
@@ -62,6 +62,7 @@ describe('the public API', () => {
       'readResult',
       'readSource',
       'renderReport',
+      'reviewSettings',
       'runQuorum',
       'securityProfile',
     ])

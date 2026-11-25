@@ -11,7 +11,7 @@ import { diffSections, splitDiff } from './diff.ts'
 import { createHealth } from './down.ts'
 import { contextTotalIssues, documentCommit, documentIssues, joined, profileTexts, withRepository } from './documents.ts'
 import type { ProfileTexts } from './documents.ts'
-import { ConfigError } from './errors.ts'
+import { ConfigError, issuePath } from './errors.ts'
 import type { ConfigIssue, ProviderDownError } from './errors.ts'
 import { estimateReview } from './estimate.ts'
 import { excludeIssues, excludeMatcher } from './exclude.ts'
@@ -23,7 +23,7 @@ import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, INT
 import { isRecord } from './output.ts'
 import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap, withCapped } from './parts.ts'
 import type { Packing, PartResult, UnreadPlace } from './parts.ts'
-import { MAX_SERVED } from './result-schema.ts'
+import { MAX_SERVED, settingsSchema } from './result-schema.ts'
 import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, slotsProblem, streamsProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts, ReplyStore } from './ports.ts'
 import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
@@ -284,7 +284,7 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
  * config documents, so the estimate counts them in each part's reservation and each vote's bound as `review` sends them. An
  * estimate names no source, so it checks no document's commit.
  *
- * @throws ConfigError listing every issue of the input that `review` refuses: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut`, a `send` or a `context` it cannot take, repository documents that leave a research provider less than 1024 tokens of diff or take a profile's texts over their caps; and of the `limits`: a `maxReviewTokens` or a `reviewTimeoutMs` out of range, a `findingsCap` that is no positive integer
+ * @throws ConfigError listing every issue of the input that `review` refuses: an input that is not an object, a `diff` that is not a string, a `source`, a `settings` that is no record `reviewSettings` builds, a `leftOut`, a `send` or a `context` it cannot take, repository documents that leave a research provider less than 1024 tokens of diff or take a profile's texts over their caps; and of the `limits`: a `maxReviewTokens` or a `reviewTimeoutMs` out of range, a `findingsCap` that is no positive integer
  */
 function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimits = {}): Estimate {
   const issues = [
@@ -427,7 +427,7 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * with how much of it the profile's research reviewed: reviewed, partly (with the ranges left), not
  * (with the reason), or excluded by `exclude`; each profile has its own, since each has its own
  * research model. A file is reviewed when no research part of it failed or was left unsent and no finding a reply listed on it,
- * within the findings that reply was asked for, was left unread by the finding cap: a file such a finding names, at a line the diff
+ * among the findings each reply was asked for after its last one read, was left unread by the finding cap: a file such a finding names, at a line the diff
  * shows, is partly reviewed, with ranges of the reason `findings-capped` (see `withCapped`).
  *
  * A review spends at most `maxReviewTokens` tokens. Each review has its own ledger of that cap: every
@@ -443,6 +443,10 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * read the limits the review kept to. `options.findingsCap` is the most findings of the research each profile sends to its
  * panel in this review, the quorum's `findingsCap` unless set, which is `maxFindings` unless set: every research request is still sized
  * by `maxFindings`, so a larger `findingsCap` changes no request and splits no reply, and the findings past it are one `findings-capped` gap.
+ *
+ * `input.settings` is what the review ran under, which the core cannot know: a caller builds it (`reviewSettings` does, from a config), and
+ * the review checks it against the schema of a result (`settingsSchema`), refuses one that does not match, before any call, with
+ * the path of the first field and no value, and records a copy, made before the first await, in `meta.settings`: `null` when none is given.
  *
  * Each profile reads documents as policy: its own `guidelines` and `doNotReport`, its `documents`, then the repository documents
  * of `input.context` that name it, each cleaned (`cleanProse`), capped and joined with the others of its kind in that order by a
@@ -464,7 +468,7 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * `meta.profiles.<id>.rules` records how many rules the profile lists and how many the review sent, and the `context` event holds the
  * same for each profile that lists one.
  *
- * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `leftOut`, a `send` or a `context` it cannot take (a repository document of a profile the quorum lacks, of another origin, at a commit the source does not read documents from, of a `diff` source, over its cap once cleaned or too deep to clean), repository documents that leave a research provider less than 1024 tokens of diff, options that are not an object, a `signal` that is not an AbortSignal, a `store` that is no object with a `get` and a `put` function, a `maxReviewTokens` or a `reviewTimeoutMs` out of range, a `findingsCap` that is no positive integer
+ * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `settings` that is no record `reviewSettings` builds, a `leftOut`, a `send` or a `context` it cannot take (a repository document of a profile the quorum lacks, of another origin, at a commit the source does not read documents from, of a `diff` source, over its cap once cleaned or too deep to clean), repository documents that leave a research provider less than 1024 tokens of diff, options that are not an object, a `signal` that is not an AbortSignal, a `store` that is no object with a `get` and a `put` function, a `maxReviewTokens` or a `reviewTimeoutMs` out of range, a `findingsCap` that is no positive integer
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
  * @throws the error of a sink that throws
  * @throws ProviderDownError when no research call of any profile answered and a research provider was found down, or each of whose calls failed for a reason of its own
@@ -547,6 +551,10 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
   // Copied before the first await, so the caller's later changes to its input reach neither the result nor the events.
   const sent = new Set(input.send)
   const source = sourceOf(input.source)
+  // A copy of the record `reviewIssues` checked: the caller's later changes reach neither the result nor the events.
+  const settings = input.settings === undefined
+    ? null
+    : structuredClone(settingsSchema.parse(input.settings))
   const scope: ReviewScope = whole === undefined
     ? { diff: input.diff, leftOut: [], files: [] }
     : reviewScope(input.diff, compiled.excluded, path => sent.has(path))
@@ -725,6 +733,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
     startedAt,
     durationMs,
     source,
+    settings,
     profiles: Object.fromEntries(runs.map((run, index) => [
       run.id,
       profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, tally.invalidRules.get(run.id) ?? 0, outcomes[index]?.research ?? NO_RESEARCH, tally.stages.get(run.id) ?? {}, withCapped(coverageOf(scope, filtered, outcomes[index]?.packing ?? plans[index]?.packing, outcomes[index]?.parts ?? []), outcomes[index]?.unread ?? []), outcomes[index]?.recovery),
@@ -864,7 +873,7 @@ function reviewIssues(input: unknown, options: unknown, profiles: ReadonlySet<st
   } else {
     if (typeof input.diff !== 'string') issues.push({ path: 'diff', message: 'must be a string' })
     const source = sourceIssues(input.source)
-    issues.push(...source, ...leftOutIssues(input.leftOut), ...sendIssues(input.send))
+    issues.push(...source, ...settingsIssues(input.settings), ...leftOutIssues(input.leftOut), ...sendIssues(input.send))
     issues.push(...contextIssues(input.context, profiles, {
       held,
       ...commit && source.length === 0
@@ -881,6 +890,23 @@ function reviewIssues(input: unknown, options: unknown, profiles: ReadonlySet<st
     issues.push(...reviewLimitIssues(options), ...findingsCapIssues(options))
   }
   return issues
+}
+
+/**
+ * The problem of a review's `settings`, when it is not the record `reviewSettings` builds: one issue at `settings`, naming the path
+ * of the first field that does not match as `issuePath` prints it, and never a value, so a key or a header a record holds is not
+ * repeated. The schema places an issue of a provider's field at the field, so no key a person wrote is a segment of the path.
+ */
+function settingsIssues(settings: unknown): ConfigIssue[] {
+  if (settings === undefined) return []
+  const read = settingsSchema.safeParse(settings)
+  if (read.success) return []
+  return [
+    { path: 'settings', message: `must be a review's settings record, as reviewSettings builds it: ${issuePath([
+      'settings',
+      ...read.error.issues[0]?.path ?? [],
+    ])} does not match` },
+  ]
 }
 
 /** The problems of a review's `context`: it is an object, and its documents are repository documents of the quorum's profiles, at the commit `rule` names. */

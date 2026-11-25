@@ -1,106 +1,16 @@
-import { createHash } from 'node:crypto'
 import { stringify } from 'yaml'
 import { own } from '../config/profiles.ts'
 import type { RepositoryEntry, ResolvedProfile } from '../config/profiles.ts'
-import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
+import type { ResolvedConfig } from '../config/resolve.ts'
 import { isProvider, statedFacts } from '../config/schema.ts'
+import { objectView, providerView, textHash } from '../config/settings.ts'
 import type { ProfileBudgets } from '../core/budgets.ts'
-import type { Provider } from '../core/ports.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../core/limits.ts'
 import { DEFAULT_PART_TOKENS } from '../core/parts.ts'
 import { thresholdsFor } from '../core/profile.ts'
 import { inertLine } from '../core/sanitize.ts'
 import { DEFAULT_MAX_FINDINGS } from '../core/stages/research.ts'
 import type { DocumentKind } from '../core/types.ts'
-import { isClaudeCode } from '../providers/build.ts'
-import { providerOrigin } from './render.ts'
-
-/** What stands for a secret in the view: the word `http.ts` redacts with. */
-const REDACTED = '[redacted]'
-
-type ProviderSpec = Exclude<ResolvedProvider, Provider>
-
-/** `sha256:` and the lowercase hex SHA-256 of the UTF-8 text: what a prompt prints as, short, and a CI job can compare it with the hash of a file. */
-function sha256(text: string): string {
-  return `sha256:${createHash('sha256').update(text).digest('hex')}`
-}
-
-/** The keys of a record, each with the redacted word: a header, query or body value can be a credential. */
-function redactedValues(record: Readonly<Record<string, unknown>> | undefined): Record<string, string> | undefined {
-  return record === undefined
-    ? undefined
-    : Object.fromEntries(Object.keys(record).map(key => [key, REDACTED]))
-}
-
-/** The auth style as set: a name, or the header and the prefix a key is sent with. Neither holds the key. */
-function authView(auth: ProviderSpec['auth']): unknown {
-  return typeof auth === 'object'
-    ? {
-        header: own(auth, 'header'),
-        prefix: own(auth, 'prefix'),
-      }
-    : auth
-}
-
-/** Where the instructions go (`native` or `inline`), the only values a spec accepts; any other value is a prompt, so it prints as its hash. */
-function systemPromptView(value: unknown): string | undefined {
-  if (value === undefined || value === 'native' || value === 'inline') return value
-  return typeof value === 'string'
-    ? sha256(value)
-    : REDACTED
-}
-
-/**
- * A provider defined as data, field by field: a field of a spec that is not listed here prints nothing.
- * `undefined` leaves a field out, as `stringify` keeps no `undefined` value. A `claude-code` provider has
- * no origin and runs a `command` and `args`, and its `auth` is `inherit` when it sets none, as it runs.
- */
-function specView(spec: ProviderSpec): Record<string, unknown> {
-  const cli = isClaudeCode(own(spec, 'protocol'))
-  return {
-    preset: own(spec, 'preset'),
-    protocol: own(spec, 'protocol'),
-    command: own(spec, 'command'),
-    origin: cli
-      ? undefined
-      : providerOrigin(spec),
-    model: own(spec, 'model'),
-    contextTokens: own(spec, 'contextTokens'),
-    apiKey: own(spec, 'apiKey') === undefined
-      ? undefined
-      : REDACTED,
-    auth: authView(own(spec, 'auth') ?? (cli ? 'inherit' : undefined)),
-    args: own(spec, 'args'),
-    headers: redactedValues(own(spec, 'headers')),
-    query: redactedValues(own(spec, 'query')),
-    extraBody: redactedValues(own(spec, 'extraBody')),
-    structuredOutput: own(spec, 'structuredOutput'),
-    temperature: own(spec, 'temperature'),
-    maxTokens: own(spec, 'maxTokens'),
-    maxTokensField: own(spec, 'maxTokensField'),
-    thinking: own(spec, 'thinking'),
-    systemPrompt: systemPromptView(own(spec, 'systemPrompt')),
-    stream: own(spec, 'stream'),
-    timeoutMs: own(spec, 'timeoutMs'),
-    stallTimeoutMs: own(spec, 'stallTimeoutMs'),
-    retries: own(spec, 'retries'),
-  }
-}
-
-/** A provider object by what it implements, its model when that is a string, and the `timeoutMs`, `stallTimeoutMs` and `retries` it states; never its function. */
-function objectView(provider: Readonly<Provider>): Record<string, unknown> {
-  const model = own(provider, 'model')
-  const { timeoutMs, stallTimeoutMs, retries } = statedFacts(provider).stated
-  return {
-    implements: 'Provider',
-    model: typeof model === 'string'
-      ? model
-      : undefined,
-    timeoutMs,
-    stallTimeoutMs,
-    retries,
-  }
-}
 
 /** A `{ repository }` entry as printed: its path, and `optional: true` when it is. */
 function repositoryView(entry: RepositoryEntry): Record<string, unknown> {
@@ -128,7 +38,7 @@ function inOrder(files: ReadonlyMap<number, unknown>, others: readonly unknown[]
  */
 function documentsView({ profile, repository }: ResolvedProfile, kind: DocumentKind, profileText: string | undefined): unknown[] | undefined {
   const documents = (profile.documents ?? []).filter(document => document.kind === kind).map(document => document.origin.sha256 === undefined
-    ? sha256(document.text ?? '')
+    ? textHash(document.text ?? '')
     : `sha256:${document.origin.sha256}`)
   const files = new Map(repository.filter(entry => entry.kind === kind).map(entry => [
     entry.index,
@@ -138,7 +48,7 @@ function documentsView({ profile, repository }: ResolvedProfile, kind: DocumentK
     ? []
     : [
         {
-          builtIn: sha256(profileText),
+          builtIn: textHash(profileText),
         },
       ]
   // A `{ repository }` entry sits at its own position among the field's entries, and the documents fill the others in order.
@@ -189,8 +99,8 @@ function profileView(resolved: ResolvedProfile): Record<string, unknown> {
     lenses: { ...voters },
     thresholds: thresholdsFor(profile),
     prompts: {
-      research: sha256(profile.prompts.research),
-      vote: sha256(profile.prompts.vote),
+      research: textHash(profile.prompts.research),
+      vote: textHash(profile.prompts.vote),
     },
     guidelines: documentsView(resolved, 'guidelines', profile.guidelines),
     doNotReport: documentsView(resolved, 'do-not-report', profile.doNotReport),
@@ -257,8 +167,9 @@ function budgetWarnings(config: ResolvedConfig, budgets: Readonly<Record<string,
  * The resolved config as the YAML `--print-config` writes, for a CI log that anyone can read: the file it
  * came from (`null` for none), the providers, the profiles that run, the limits the review applies
  * (`concurrency`, `auto` when unset, `maxFindings`, `findingsCap` only when set, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs`, defaults filled in), `strict`, the
- * patterns it excludes, the files it sends though held as secrets, and the warnings. A key and every value of
- * `headers`, `query` and `extraBody` print as `[redacted]`, a base URL as its origin, and a prompt as its
+ * patterns it excludes, the files it sends though held as secrets, and the warnings. Every value of
+ * `headers`, `query` and `extraBody` prints as `[redacted]`, and so does a key that is no safe string (it holds a credential,
+ * an e-mail address, the provider's key or a long opaque run), the keys of one map that are none as one `[redacted]` entry, a base URL as its origin, and a prompt as its
  * SHA-256, as does each of a profile's guidelines and do-not-report documents (the hash of its text as read, and a built-in
  * profile's own text as `{ builtIn: <hash> }`), never a text; a `{ repository }` entry prints as its path, with `optional: true` when it is.
  * A profile's rules print as their ids, a rules file as the hash of its text and the ids it holds, never a rule's text, then
@@ -282,7 +193,7 @@ export function printConfig(config: ResolvedConfig, source: string | undefined, 
       name,
       isProvider(provider)
         ? objectView(provider)
-        : specView(provider),
+        : providerView(provider, 'print-config'),
     ])),
     profiles: Object.fromEntries(config.profiles.map(resolved => [
       resolved.profile.id,

@@ -22,6 +22,8 @@ export { loadConfig } from './config/load.ts'
 export type { FailOnOverride, ProfileSelection, RepositoryEntry, ResolvedProfile } from './config/profiles.ts'
 export type { ResolvedConfig, ResolvedProvider } from './config/resolve.ts'
 export type { ConfigInput, QuorumConfig, QuorumConfigFile } from './config/schema.ts'
+export { reviewSettings } from './config/settings.ts'
+export type { SettingsFacts } from './config/settings.ts'
 export type { ProfileBudgets, ReplyFacts, ThinkingLevel } from './core/budgets.ts'
 export { ConfigError, OutputError, ProviderDownError, ProviderError, QuorumError } from './core/errors.ts'
 export type { ConfigIssue, NoAnswer, ProviderErrorKind, ReplyLack } from './core/errors.ts'
@@ -66,9 +68,11 @@ export type {
   ProfileEstimate,
   ProfileMeta,
   ProfileProviders,
+  ProfileSettings,
   Prompts,
   ProviderCalls,
   ProviderRef,
+  ProviderSettings,
   PublicGap,
   PublicMeta,
   PublicProfileMeta,
@@ -85,10 +89,14 @@ export type {
   ReviewDocument,
   ReviewInput,
   ReviewRule,
+  ReviewSettings,
   ReviewSource,
   RoleCalls,
+  RuntimeRecord,
   SecretRule,
   ServedModel,
+  SettingOrigin,
+  SettingValue,
   SkipRule,
   StageName,
   Thresholds,

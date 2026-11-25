@@ -1,9 +1,17 @@
+import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
-import { EXTRA_BODY_DEPTH, EXTRA_BODY_STRING, EXTRA_BODY_VALUES, REDACTED } from '../core/result-schema.ts'
+import { printConfig } from '../cli/print-config.ts'
+import { documentSha256 } from '../core/documents.ts'
+import type { Provider } from '../core/ports.ts'
+import { EXTRA_BODY_DEPTH, EXTRA_BODY_STRING, EXTRA_BODY_VALUES, REDACTED, settingsSchema } from '../core/result-schema.ts'
 import { SECRET_RULES } from '../core/secrets.ts'
-import type { CredentialKind } from '../core/types.ts'
+import type { CredentialKind, ReviewSettings, RuntimeRecord } from '../core/types.ts'
+import { resolvedConfig } from '../testing/bench.ts'
 import { fakeCredential } from '../testing/credentials.ts'
-import { EMAIL, extraBodyRecord, keyWords, namesSecret, OPAQUE_RUN, safeString, SECRET_PARTS, SECRET_WORDS } from './settings.ts'
+import { SETTINGS } from '../testing/report.ts'
+import { fromConfig } from './from-config.ts'
+import type { ResolvedConfig, ResolvedProvider } from './resolve.ts'
+import { EMAIL, extraBodyRecord, keyWords, namesSecret, objectView, OPAQUE_RUN, providerOrigin, providerView, reviewSettings, safeString, SECRET_PARTS, SECRET_WORDS } from './settings.ts'
 
 const KINDS = SECRET_RULES.filter((rule): rule is CredentialKind => rule !== 'name')
 /** The resolved key of the provider the rows belong to: 9 characters, no run of 20. */
@@ -679,5 +687,603 @@ describe('the rule\'s values', () => {
       'username',
       'email',
     ])
+  })
+})
+
+/** A provider defined as data, as a resolved config holds it. */
+type Spec = Exclude<ResolvedProvider, Provider>
+
+/** What ran the reviews of these rows. */
+const RUNTIME: RuntimeRecord = {
+  name: 'node',
+  version: '26.12.0',
+  platform: 'linux',
+  arch: 'x64',
+}
+
+/** A spec with a preset, a base URL whose path holds a token, a key, a header, a query and a body that holds a key's name. */
+const GATEWAY: Spec = {
+  preset: 'mistral',
+  baseUrl: 'https://gw.example/token-SECRET/v1',
+  apiKey: API_KEY,
+  model: 'gpt-5',
+  contextTokens: 131_072,
+  headers: { 'x-team': 't' },
+  query: { v: '1' },
+  extraBody: { reasoning_effort: 'low', api_token: 'abc' },
+}
+
+describe('providerView', () => {
+  it('records a provider as print-config prints it, less its origin, command, args and key, and its extraBody by the rule', () => {
+    // What 0.13.0's `specView` gave for the spec, field for field, written out.
+    expect(providerView(GATEWAY, 'print-config')).toEqual({
+      preset: 'mistral',
+      origin: 'https://gw.example',
+      model: 'gpt-5',
+      contextTokens: 131_072,
+      apiKey: '[redacted]',
+      headers: { 'x-team': '[redacted]' },
+      query: { v: '[redacted]' },
+      extraBody: { reasoning_effort: '[redacted]', api_token: '[redacted]' },
+    })
+    expect(Object.keys(providerView(GATEWAY, 'print-config'))).toEqual([
+      'preset',
+      'origin',
+      'model',
+      'contextTokens',
+      'apiKey',
+      'headers',
+      'query',
+      'extraBody',
+    ])
+    const recorded = providerView(GATEWAY, 'result')
+    expect(recorded).toEqual({
+      preset: 'mistral',
+      model: 'gpt-5',
+      contextTokens: 131_072,
+      headers: { 'x-team': '[redacted]' },
+      query: { v: '[redacted]' },
+      extraBody: { reasoning_effort: 'low', api_token: '[redacted]' },
+    })
+    expect(Object.keys(recorded)).toEqual([
+      'preset',
+      'model',
+      'contextTokens',
+      'headers',
+      'query',
+      'extraBody',
+    ])
+    // Neither holds the base URL's host, nor its path, nor the key.
+    for (const view of [
+      providerView(GATEWAY, 'print-config'),
+      recorded,
+    ]) {
+      const text = JSON.stringify(view)
+      expect(text).not.toContain('gw.example/')
+      expect(text).not.toContain('SECRET')
+      expect(text).not.toContain(API_KEY)
+    }
+    expect(JSON.stringify(recorded)).not.toContain('gw.example')
+    expect(settingsSchema.safeParse({
+      ...SETTINGS,
+      providers: { gateway: recorded },
+    }).success).toBe(true)
+  })
+
+  it('records a claude-code provider with no origin, command, args or key, and the auth it runs with', () => {
+    const cli: Spec = {
+      protocol: 'claude-code',
+      command: '/opt/claude/bin/claude',
+      model: 'sonnet',
+      contextTokens: 1_000_000,
+      apiKey: API_KEY,
+      args: ['--effort', 'high'],
+    }
+    expect(providerView(cli, 'print-config')).toEqual({
+      protocol: 'claude-code',
+      command: '/opt/claude/bin/claude',
+      model: 'sonnet',
+      contextTokens: 1_000_000,
+      apiKey: '[redacted]',
+      auth: 'inherit',
+      args: ['--effort', 'high'],
+    })
+    expect(providerView(cli, 'result')).toEqual({
+      protocol: 'claude-code',
+      model: 'sonnet',
+      contextTokens: 1_000_000,
+      auth: 'inherit',
+    })
+  })
+
+  it('records an auth style, a prompt as its hash and the timeouts the spec sets, which print-config prints too', () => {
+    const spec: Spec = {
+      protocol: 'openai-compatible',
+      baseUrl: 'https://gw.example/v1',
+      model: 'm',
+      contextTokens: 131_072,
+      auth: { header: 'x-gateway-key', prefix: 'Key ' },
+      systemPrompt: 'Always answer in French.' as never,
+      timeoutMs: 60_000,
+      stallTimeoutMs: 120_000,
+      retries: 2,
+      thinking: 'low',
+      temperature: null,
+    }
+    for (const sink of ['print-config', 'result'] as const) {
+      expect(providerView(spec, sink)).toMatchObject({
+        auth: { header: 'x-gateway-key', prefix: 'Key ' },
+        systemPrompt: `sha256:${documentSha256('Always answer in French.')}`,
+        timeoutMs: 60_000,
+        stallTimeoutMs: 120_000,
+        retries: 2,
+        thinking: 'low',
+        temperature: null,
+      })
+    }
+    expect(JSON.stringify(providerView(spec, 'result'))).not.toContain('French')
+    expect(settingsSchema.safeParse({
+      ...SETTINGS,
+      providers: {
+        p: providerView(spec, 'result'),
+      },
+    }).success).toBe(true)
+    // An auth style with no prefix records none, and no field holds `undefined`, which a copy of the record would keep.
+    const bare = providerView({
+      ...spec,
+      auth: { header: 'x-gateway-key' },
+    }, 'result')
+    expect(bare.auth).toEqual({ header: 'x-gateway-key' })
+    expect(Object.values(bare)).not.toContain(undefined)
+    expect(settingsSchema.safeParse({
+      ...SETTINGS,
+      providers: { p: bare },
+    }).success).toBe(true)
+  })
+
+  // One refused key in each of the three maps, among safe ones, with a second refused key after it: the maps keep the safe ones in their places and write one [redacted] entry where the first refused one stood.
+  it.each([
+    [
+      'print-config',
+      'extraBody',
+      { before: '[redacted]', [REDACTED]: REDACTED, after: '[redacted]' },
+    ],
+    [
+      'print-config',
+      'query',
+      { before: '[redacted]', [REDACTED]: REDACTED, after: '[redacted]' },
+    ],
+    [
+      'print-config',
+      'headers',
+      { before: '[redacted]', [REDACTED]: REDACTED, after: '[redacted]' },
+    ],
+    [
+      'result',
+      'extraBody',
+      { before: 'a', [REDACTED]: REDACTED, after: 'c' },
+    ],
+    [
+      'result',
+      'query',
+      { before: '[redacted]', [REDACTED]: REDACTED, after: '[redacted]' },
+    ],
+    [
+      'result',
+      'headers',
+      { before: '[redacted]', [REDACTED]: REDACTED, after: '[redacted]' },
+    ],
+  ] as const)('writes a key that safeString refuses as one [redacted] entry in the %s sink\'s %s', (sink, field, expected) => {
+    const spec: Spec = {
+      protocol: 'openai-compatible',
+      baseUrl: 'https://gw.example/v1',
+      model: 'm',
+      contextTokens: 131_072,
+      apiKey: API_KEY,
+      [field]: {
+        before: 'a',
+        [AWS_KEY]: 'b',
+        after: 'c',
+        [API_KEY]: 'd',
+        'dev@example.org': 'e',
+      },
+    }
+    const map = providerView(spec, sink)[field] as Record<string, unknown>
+    expect(map).toEqual(expected)
+    expect(Object.keys(map)).toEqual(['before', REDACTED, 'after'])
+    expect(JSON.stringify(map)).not.toContain(AWS_KEY)
+    expect(JSON.stringify(map)).not.toContain(API_KEY)
+    expect(JSON.stringify(map)).not.toContain('dev@example.org')
+  })
+
+  it.each(['extraBody', 'query', 'headers'] as const)('writes the redacted word as a key of the %s once, whichever sink writes it', (field) => {
+    const spec: Spec = {
+      protocol: 'openai-compatible',
+      baseUrl: 'https://gw.example/v1',
+      model: 'm',
+      contextTokens: 131_072,
+      [field]: { [REDACTED]: 'x', 'x-team': 'y' },
+    }
+    for (const sink of ['print-config', 'result'] as const) {
+      expect(Object.keys(providerView(spec, sink)[field] as object)).toEqual([REDACTED, 'x-team'])
+      expect((providerView(spec, sink)[field] as Record<string, unknown>)[REDACTED]).toBe(REDACTED)
+    }
+  })
+
+  it('keeps a key that names a secret as a key, in both sinks, since only its value is withheld', () => {
+    const spec: Spec = {
+      protocol: 'openai-compatible',
+      baseUrl: 'https://gw.example/v1',
+      model: 'm',
+      contextTokens: 131_072,
+      headers: { Authorization: 'Bearer abc', 'X-Api-Key': 'abc' },
+    }
+    for (const sink of ['print-config', 'result'] as const) {
+      expect(providerView(spec, sink).headers).toEqual({ Authorization: '[redacted]', 'X-Api-Key': '[redacted]' })
+    }
+  })
+
+  it('reads own fields only, so a polluted prototype fills none, in both sinks', () => {
+    const proto = Object.prototype as Record<string, unknown>
+    proto.extraBody = { reasoning_effort: 'low' }
+    proto.headers = { 'x-polluted': 'SECRET' }
+    proto.apiKey = 'SECRET'
+    try {
+      const spec: Spec = {
+        protocol: 'openai-compatible',
+        baseUrl: 'https://gw.example/v1',
+        model: 'm',
+        contextTokens: 131_072,
+      }
+      expect(Object.keys(providerView(spec, 'print-config'))).toEqual([
+        'protocol',
+        'origin',
+        'model',
+        'contextTokens',
+      ])
+      expect(Object.keys(providerView(spec, 'result'))).toEqual(['protocol', 'model', 'contextTokens'])
+    } finally {
+      delete proto.extraBody
+      delete proto.headers
+      delete proto.apiKey
+    }
+  })
+
+  // The rule's output, under each row's key, as a record holds it: whatever the rule writes, the schema of a result reads.
+  it('records every extraBody row of the rule as the schema of a result reads it, the deepest and the largest it writes included', () => {
+    for (const [label, _expected, key, value] of [
+      ...SAFE,
+      ...REDACTED_ROWS,
+    ]) {
+      const view = providerView({
+        protocol: 'openai-compatible',
+        baseUrl: 'https://gw.example/v1',
+        model: 'm',
+        contextTokens: 131_072,
+        apiKey: API_KEY,
+        extraBody: { [key]: value },
+      }, 'result')
+      expect(settingsSchema.safeParse({
+        ...SETTINGS,
+        providers: { p: view },
+      }).success, label).toBe(true)
+    }
+  })
+
+  it('records an extraBody whose refused keys collapse into one entry as the schema of a result reads it', () => {
+    const view = providerView({
+      ...GATEWAY,
+      extraBody: {
+        before: 1,
+        [AWS_KEY]: 'x',
+        [API_KEY]: 2,
+        after: 3,
+      },
+    }, 'result')
+    expect(view.extraBody).toEqual({ before: 1, [REDACTED]: REDACTED, after: 3 })
+    expect(settingsSchema.safeParse({
+      ...SETTINGS,
+      providers: { p: view },
+    }).success).toBe(true)
+  })
+})
+
+describe('providerOrigin', () => {
+  it('names the origin of a provider\'s own base URL, else of its preset\'s, never a path or a query', () => {
+    expect(providerOrigin({ preset: 'mistral', model: 'm', contextTokens: 131_072 })).toBe('https://api.mistral.ai')
+    expect(providerOrigin(GATEWAY)).toBe('https://gw.example')
+    expect(providerOrigin({ ...GATEWAY, baseUrl: 'http://localhost:11434/v1?key=SECRET' })).toBe('http://localhost:11434')
+  })
+
+  it('reads a base URL as an own field, never the one a polluted prototype holds', () => {
+    const proto = Object.prototype as Record<string, unknown>
+    proto.baseUrl = 'https://attacker.example/v1'
+    try {
+      expect(providerOrigin({ preset: 'mistral', model: 'mistral-small-latest', contextTokens: 131_072 })).toBe('https://api.mistral.ai')
+    } finally {
+      delete proto.baseUrl
+    }
+  })
+})
+
+describe('objectView', () => {
+  it('records a provider object as print-config prints one', () => {
+    const complete: Provider['complete'] = async () => ({ text: '', model: 'm' })
+    const stated = {
+      id: 'mine',
+      model: 'm',
+      complete,
+      timeoutMs: 60_000,
+      stallTimeoutMs: 120_000,
+      retries: 2,
+    }
+    expect(objectView(stated)).toEqual({
+      implements: 'Provider',
+      model: 'm',
+      timeoutMs: 60_000,
+      stallTimeoutMs: 120_000,
+      retries: 2,
+    })
+    expect(Object.keys(objectView(stated))).toEqual([
+      'implements',
+      'model',
+      'timeoutMs',
+      'stallTimeoutMs',
+      'retries',
+    ])
+    // A model that is no string, and the timeouts it states not, leave their fields out, and the function is never written.
+    expect(objectView({ id: 'mine', model: 7 as never, complete })).toEqual({ implements: 'Provider' })
+    expect(JSON.stringify(objectView(stated))).not.toContain('complete')
+  })
+})
+
+describe('reviewSettings', () => {
+  const provider = {
+    protocol: 'openai-compatible',
+    baseUrl: 'http://127.0.0.1:11434/v1',
+    model: 'qwen',
+    contextTokens: 131_072,
+    headers: { 'x-team': 't' },
+    extraBody: { reasoning_effort: 'low', api_token: 'abc' },
+  } as const
+
+  /** The config of these rows: one provider on the loopback, the security profile, and the profile `naming` beside it with its own prompts and one lens. */
+  function configOf(more: Record<string, unknown> = {}): ResolvedConfig {
+    return resolvedConfig({
+      providers: { local: provider },
+      profiles: {
+        security: {},
+        naming: {
+          prompts: { research: 'Review this diff for names that mislead.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
+          lenses: [
+            { id: 'clarity', question: 'Does the name mislead?' },
+          ],
+        },
+      },
+      ...more,
+    })
+  }
+
+  /** The record a review of `config` is given when nothing is derived: the quorum's budgets are the config's own. */
+  async function recorded(config: ResolvedConfig, bounds?: Parameters<typeof reviewSettings>[1]['bounds']): Promise<ReviewSettings> {
+    const quorum = await fromConfig(config, { env: {} })
+    return reviewSettings(config, {
+      budgets: quorum.budgets,
+      runtime: RUNTIME,
+      ...bounds === undefined
+        ? {}
+        : { bounds },
+    })
+  }
+
+  it('records every profile of the config, security and naming alike, each provider as the result sink writes it, and the runtime', async () => {
+    const config = configOf()
+    const settings = await recorded(config)
+    expect(Object.keys(settings)).toEqual([
+      'runtime',
+      'strict',
+      'concurrency',
+      'exclude',
+      'partTokens',
+      'maxFindings',
+      'findingsCap',
+      'maxReviewTokens',
+      'reviewTimeoutMs',
+      'providers',
+      'profiles',
+    ])
+    expect(settings.runtime).toEqual(RUNTIME)
+    expect(Object.keys(settings.profiles)).toEqual(['security', 'naming'])
+    expect(settings.providers).toEqual({
+      local: {
+        protocol: 'openai-compatible',
+        model: 'qwen',
+        contextTokens: 131_072,
+        headers: { 'x-team': '[redacted]' },
+        extraBody: { reasoning_effort: 'low', api_token: '[redacted]' },
+      },
+    })
+    expect(settingsSchema.safeParse(settings).success).toBe(true)
+    expect(JSON.parse(JSON.stringify(settings))).toEqual(settings)
+    // No origin, no base URL, no key, whatever the config holds.
+    expect(JSON.stringify(settings)).not.toMatch(/127\.0\.0\.1|11434|http/)
+  })
+
+  it('records each profile\'s prompts and lens questions by the hashes print-config prints, and its budgets', async () => {
+    const config = configOf()
+    const quorum = await fromConfig(config, { env: {} })
+    const settings = reviewSettings(config, { budgets: quorum.budgets, runtime: RUNTIME })
+    const printed = parse(printConfig(config, undefined)) as { profiles: Record<string, { prompts: { research: string, vote: string } }> }
+    for (const id of ['security', 'naming']) expect(settings.profiles[id].prompts).toEqual(printed.profiles[id].prompts)
+    expect(settings.profiles.naming.prompts.research).toBe(`sha256:${documentSha256('Review this diff for names that mislead.')}`)
+    expect(settings.profiles.naming).toEqual({
+      research: 'local',
+      lenses: {
+        clarity: { provider: 'local', question: `sha256:${documentSha256('Does the name mislead?')}` },
+      },
+      prompts: printed.profiles.naming.prompts,
+      findings: quorum.budgets.naming.research.findings,
+      replyTokens: {
+        research: quorum.budgets.naming.research.replyTokens,
+        votes: { clarity: quorum.budgets.naming.lenses.clarity.replyTokens },
+      },
+    })
+    expect(Object.keys(settings.profiles.security.lenses)).toEqual(['reachability', 'impact', 'defenses'])
+    expect(settings.profiles.security.findings).toBe(quorum.budgets.security.research.findings)
+    expect(Object.keys(settings.profiles.security.replyTokens.votes)).toEqual(['reachability', 'impact', 'defenses'])
+    // A prompt's text and a lens's question never reach the record.
+    expect(JSON.stringify(settings)).not.toContain('names that mislead')
+    expect(JSON.stringify(settings)).not.toContain('Does the name')
+  })
+
+  it('records a reply budget as null where nothing is stated to size it by, and a research one as absent', async () => {
+    // A provider object states no window and no reply limit, so nothing sizes a reply by.
+    const complete: Provider['complete'] = async () => ({ text: '{"findings":[]}', model: 'm' })
+    const config = resolvedConfig({
+      providers: {
+        mine: { model: 'm', complete },
+      },
+    })
+    const quorum = await fromConfig(config, { env: {} })
+    const settings = reviewSettings(config, { budgets: quorum.budgets, runtime: RUNTIME })
+    expect(settings.profiles.security.replyTokens).toEqual({
+      votes: { reachability: null, impact: null, defenses: null },
+    })
+    expect(settingsSchema.safeParse(settings).success).toBe(true)
+  })
+
+  // The rows are [what, config, setting, expected]: the origin says where the value came from.
+  it.each([
+    [
+      'maxReviewTokens set by the config',
+      { maxReviewTokens: 500_000 },
+      'maxReviewTokens',
+      { value: 500_000, origin: 'config' },
+    ],
+    [
+      'maxReviewTokens unset',
+      {},
+      'maxReviewTokens',
+      { value: 2_000_000, origin: 'default' },
+    ],
+    [
+      'reviewTimeoutMs set by the config',
+      { reviewTimeoutMs: 60_000 },
+      'reviewTimeoutMs',
+      { value: 60_000, origin: 'config' },
+    ],
+    [
+      'reviewTimeoutMs unset',
+      {},
+      'reviewTimeoutMs',
+      { value: 1_800_000, origin: 'default' },
+    ],
+    [
+      'partTokens set by the config',
+      { partTokens: 4096 },
+      'partTokens',
+      { value: 4096, origin: 'config' },
+    ],
+    [
+      'partTokens unset',
+      {},
+      'partTokens',
+      { value: 32_768, origin: 'default' },
+    ],
+    [
+      'maxFindings set by the config',
+      { maxFindings: 30 },
+      'maxFindings',
+      { value: 30, origin: 'config' },
+    ],
+    [
+      'maxFindings unset',
+      {},
+      'maxFindings',
+      { value: 50, origin: 'default' },
+    ],
+    [
+      'findingsCap set by the config',
+      { findingsCap: 7 },
+      'findingsCap',
+      { value: 7, origin: 'config' },
+    ],
+    [
+      'findingsCap from the config\'s findingsCap over its maxFindings',
+      { findingsCap: 7, maxFindings: 30 },
+      'findingsCap',
+      { value: 7, origin: 'config' },
+    ],
+    [
+      'findingsCap from the config\'s maxFindings',
+      { maxFindings: 30 },
+      'findingsCap',
+      { value: 30, origin: 'config' },
+    ],
+    [
+      'findingsCap with neither set',
+      {},
+      'findingsCap',
+      { value: 50, origin: 'default' },
+    ],
+  ] as const)('records %s as %j with its origin', async (_what, more, setting, expected) => {
+    const settings = await recorded(configOf(more))
+    expect(settings[setting]).toEqual(expected)
+  })
+
+  it('records the bounds a path review derived, with their origins, over the config\'s and the defaults', async () => {
+    const bounds = {
+      maxReviewTokens: { value: 6_500_000, origin: 'derived' },
+      reviewTimeoutMs: { value: 86_400_000, origin: 'default' },
+      findingsCap: { value: 436, origin: 'derived' },
+    } as const
+    const settings = await recorded(configOf({ partTokens: 4096, maxFindings: 30 }), bounds)
+    expect(settings.maxReviewTokens).toEqual({ value: 6_500_000, origin: 'derived' })
+    expect(settings.reviewTimeoutMs).toEqual({ value: 86_400_000, origin: 'default' })
+    expect(settings.findingsCap).toEqual({ value: 436, origin: 'derived' })
+    // What a path review does not derive stays the config's.
+    expect(settings.partTokens).toEqual({ value: 4096, origin: 'config' })
+    expect(settings.maxFindings).toEqual({ value: 30, origin: 'config' })
+    expect(settingsSchema.safeParse(settings).success).toBe(true)
+  })
+
+  it('records the config\'s strict, concurrency and exclude, and their defaults when it sets none', async () => {
+    const set = await recorded(configOf({
+      strict: true,
+      concurrency: 2,
+      exclude: ['dist/**', '*.min.js'],
+    }))
+    expect(set).toMatchObject({
+      strict: true,
+      concurrency: 2,
+      exclude: ['dist/**', '*.min.js'],
+    })
+    const unset = await recorded(configOf())
+    expect(unset).toMatchObject({ strict: false, concurrency: 'auto', exclude: [] })
+  })
+
+  it('records a copy: the record shares no list with the config', async () => {
+    const config = configOf({
+      exclude: ['dist/**'],
+    })
+    const settings = await recorded(config)
+    settings.exclude.push('src/**')
+    expect(config.exclude).toEqual(['dist/**'])
+  })
+
+  it('records a provider object as print-config prints one, beside a provider defined as data', async () => {
+    const complete: Provider['complete'] = async () => ({ text: '{"findings":[]}', model: 'm' })
+    const config = resolvedConfig({
+      providers: {
+        local: provider,
+        mine: { model: 'm', complete, timeoutMs: 60_000 },
+      },
+      roles: { research: 'local', voter: 'mine' },
+    })
+    const settings = await recorded(config)
+    expect(settings.providers.mine).toEqual({ implements: 'Provider', model: 'm', timeoutMs: 60_000 })
+    expect(Object.keys(settings.providers)).toEqual(['local', 'mine'])
+    expect(settings.profiles.security.lenses.impact.provider).toBe('mine')
+    expect(settingsSchema.safeParse(settings).success).toBe(true)
   })
 })
