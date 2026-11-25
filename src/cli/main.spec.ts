@@ -17,9 +17,29 @@ import { fakeGit, treeReply } from '../testing/git.ts'
 import { fakeTerminal } from '../testing/terminal.ts'
 import type { GitCall, GitReply, TreeFile } from '../testing/git.ts'
 import { chatReply, jsonReply, sent, stubChat, stubFetch, stubOllamaChat, textReply } from '../testing/http.ts'
+import type { ViewFacts } from './view/model.ts'
 import { CSI, CURSOR_SHOW } from './view/terminal.ts'
 import { EXIT, interruptSignal, runCli } from './main.ts'
 import type { CliIO } from './main.ts'
+
+/** The facts each review's view was begun with, in order: read through a `viewWriter` that calls through to the real one. */
+const began = vi.hoisted(() => [] as ViewFacts[])
+vi.mock('./view/progress.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./view/progress.ts')>()
+  return {
+    ...actual,
+    viewWriter: (...given: Parameters<typeof actual.viewWriter>) => {
+      const writer = actual.viewWriter(...given)
+      return {
+        ...writer,
+        begin: (facts: ViewFacts) => {
+          began.push(facts)
+          writer.begin(facts)
+        },
+      }
+    },
+  }
+})
 
 /** A directory of its own for the config files and the working directories of these tests. */
 let dir = ''
@@ -1297,6 +1317,33 @@ describe('--state', () => {
     const plain = harness({ env: DEFAULT, stdin: '  \n' })
     await runCli(plain.io)
     expect(JSON.parse(plain.stdout()).meta).not.toHaveProperty('reused')
+  })
+
+  it('tells the view whether the review keeps its answered calls', async () => {
+    for (const [argv, keeps] of [
+      [
+        ['--no-state'],
+        false,
+      ],
+      [[], false],
+      [
+        [
+          '--state',
+          join(state, 'calls'),
+        ],
+        true,
+      ],
+    ] as const) {
+      began.length = 0
+      stubChat('{"findings":[]}')
+      const { io, stderr } = harness({
+        env: MODEL,
+        stdin: DIFF,
+        argv: [...argv],
+      })
+      expect(await runCli(io), stderr()).toBe(EXIT.ok)
+      expect(began.map(facts => facts.keeps)).toEqual([keeps])
+    }
   })
 
   it('refuses --state twice, empty, or with --print-config', async () => {

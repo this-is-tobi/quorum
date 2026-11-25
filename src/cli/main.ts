@@ -368,7 +368,12 @@ export async function runCli(io: CliIO): Promise<number> {
           : undefined)
       : undefined
     if (read.diff.trim() === '') view.line('notice', 'empty diff: nothing to review')
-    view.begin(viewFacts(config, { estimate: bounded?.estimate, bounds: bounded?.facts, budgets: quorum.budgets }))
+    view.begin(viewFacts(config, {
+      estimate: bounded?.estimate,
+      bounds: bounded?.facts,
+      budgets: quorum.budgets,
+      keeps: kept !== undefined,
+    }))
     // The setup's last await is behind: a signal that came before the review is called starts none, and leaves no result.
     if (io.signal?.aborted) {
       await view.close()

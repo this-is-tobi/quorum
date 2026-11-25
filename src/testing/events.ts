@@ -702,6 +702,37 @@ export function twoProfiles(): Timed[] {
 }
 
 /**
+ * The research of two profiles, `naming` and `security`, of 15 parts each, one call at once, the two taking the parts in turn: each part is
+ * answered `every` ms after the one before it and plans 60 000 tokens. The first estimate, at the third part, puts research's end at 30 times
+ * `every` from the start, at the low and the high bound alike. The list stops with the last part, before the review ends.
+ */
+export function slowResearch(every: number): Timed[] {
+  const profiles = ['naming', 'security']
+  const parts = 15
+  const entries: Entry[] = [
+    {
+      ...started(profiles),
+      rank: ENDS,
+      seq: 0,
+    },
+    ...profiles.map((profile, at): Entry => ({
+      at: 0,
+      rank: ENDS,
+      seq: at + 1,
+      event: {
+        type: 'stage:start',
+        profile,
+        stage: 'research',
+        parts,
+      },
+    })),
+  ]
+  const jobs = Array.from({ length: profiles.length * parts }, (_, at) => answered(profiles[at % profiles.length], Math.floor(at / profiles.length) + 1, parts, every))
+  runParts(jobs, 1, 0, entries, 1)
+  return ordered(entries)
+}
+
+/**
  * A provider that fails: three calls in a row end with an `http 503` after their retries, the provider is found down,
  * and the parts left are not sent. Six parts, three calls at once.
  */

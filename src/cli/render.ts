@@ -242,20 +242,29 @@ export interface BoundFacts {
 
 /**
  * What the view knows of a review before it runs, from its resolved config: the calls at once, the token cap and
- * where it came from, the deadline, the panel's finding cap (`maxFindings` in the facts, which sizes the votes to come: the config's
+ * where it came from, the deadline and where it came from (`deadline`: the config's, else the longest allowed for a path review's bounds, else the default),
+ * whether the review keeps its answered calls (`keeps`, which only a caller that offers `--state` knows: left out when unsaid, and the view then writes no state notice), the panel's finding cap (`maxFindings` in the facts, which sizes the votes to come: the config's
  * `findingsCap`, else its `maxFindings`, else the default), what each research request asks for (`asks`, from the quorum's `budgets`
  * and the config's `maxFindings`, which sizes the requests), and for a path review its estimate. A path review's bounds are
  * derived, so it gives them as `bounds`, and they win over the config's. The view reads the config's numbers only
  * through these facts.
  */
-export function viewFacts(config: ResolvedConfig, extra: { readonly estimate?: Estimate, readonly bounds?: BoundFacts, readonly budgets?: Readonly<Record<string, ProfileBudgets>> } = {}): ViewFacts {
-  const { estimate, bounds, budgets = {} } = extra
+export function viewFacts(config: ResolvedConfig, extra: { readonly estimate?: Estimate, readonly bounds?: BoundFacts, readonly budgets?: Readonly<Record<string, ProfileBudgets>>, readonly keeps?: boolean } = {}): ViewFacts {
+  const { estimate, bounds, budgets = {}, keeps } = extra
   return {
     concurrency: config.concurrency ?? 'auto',
     cap: bounds?.cap ?? (config.maxReviewTokens === undefined
       ? { tokens: DEFAULT_MAX_REVIEW_TOKENS, origin: 'default' }
       : { tokens: config.maxReviewTokens, origin: 'config' }),
     deadlineMs: bounds?.deadlineMs ?? config.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
+    deadline: config.reviewTimeoutMs !== undefined
+      ? 'config'
+      : bounds === undefined
+        ? 'default'
+        : 'longest',
+    ...keeps === undefined
+      ? {}
+      : { keeps },
     maxFindings: bounds?.findingsCap ?? config.findingsCap ?? config.maxFindings ?? DEFAULT_MAX_FINDINGS,
     asks: {
       maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,

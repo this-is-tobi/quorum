@@ -7,6 +7,7 @@
 import { elapsedWords } from '../../core/duration.ts'
 import { CUT_ADVICE, downWords, lackWords } from '../../core/errors.ts'
 import type { PartOutcome } from '../../core/parts.ts'
+import { MAX_TIMEOUT_MS } from '../../core/ports.ts'
 import { inertLine } from '../../core/sanitize.ts'
 import type { Adaptation, CallFailure, LeftOutFile, QuorumEvent, UnusableReply } from '../../core/types.ts'
 import { documentLine, durationText, flagWhere, leftOutEntry, ruleCountWords, tokenWords } from '../../report/lines.ts'
@@ -367,12 +368,56 @@ function retryLines(event: Extract<QuorumEvent, { type: 'call:retry' }>, state: 
   ]
 }
 
+/** How far from a review's start its research ends, at the estimate's low bound, for the state notice: a review that keeps no answered call and runs this long costs a full rerun for one failed part. */
+export const STATE_NOTICE_MS = 3_600_000
+
+/**
+ * What the first time estimate tells that the plan could not, as the text of up to two lines, the warning then the notice, and none
+ * before the estimate is made: no rate is known before a part has answered. Research's end is put at the estimate's bounds from the review's
+ * start, and named as the heartbeat names a time left. The warning comes when the low bound passes a deadline that has a fix to name,
+ * the config's or a diff review's default, never the longest allowed: the review stops at the deadline, and `raise reviewTimeoutMs` says
+ * what to do, for a path review (whose facts hold an estimate) with the longest allowed as the unset deadline. The notice comes when the low
+ * bound is `STATE_NOTICE_MS` or more and the caller says the review keeps no answered call (`keeps` is false, not absent: a caller that offers no
+ * `--state` says nothing), and names `--state`.
+ */
+export function estimateNotes(state: ViewState): string[] {
+  const { firstEstimate: first, startedAt } = state
+  if (first === undefined || startedAt === undefined) return []
+  const { deadline, deadlineMs, keeps, estimate } = state.facts
+  const waited = first.at - startedAt
+  const lowMs = waited + first.lowMs
+  const range = rangeWords(lowMs, waited + first.highMs, '-')
+  const notes: string[] = []
+  if (deadline !== 'longest' && deadlineMs < MAX_TIMEOUT_MS && lowMs > deadlineMs) {
+    const named = deadline === 'config'
+      ? `${durationText(deadlineMs)} (reviewTimeoutMs)`
+      : `${durationText(deadlineMs)}, the default`
+    const fix = estimate === undefined
+      ? `raise reviewTimeoutMs, up to ${durationText(MAX_TIMEOUT_MS)}`
+      : `raise reviewTimeoutMs, or unset it to let a path review run up to ${durationText(MAX_TIMEOUT_MS)}`
+    notes.push(`warning: the deadline of ${named} comes before research ends, which this review's first estimate puts at ${range} from its start: the review stops at the deadline, and what is left is a review-deadline gap; ${fix}`)
+  }
+  if (keeps === false && lowMs >= STATE_NOTICE_MS) {
+    notes.push(`notice: this review's first estimate puts research's end at ${range} from its start, and it keeps no answered call, so a part that fails costs a full rerun: pass --state <dir> to keep them`)
+  }
+  return notes
+}
+
+/** The notes of the first estimate, as lines, for the `part` event that made it, which `fold` keyed in `firstEstimate.by`: none for any other event. */
+function estimateNoteLines(event: QuorumEvent, state: ViewState): Line[] {
+  if (event.type !== 'part' || state.firstEstimate?.by !== `${event.profile}|${event.part.index}`) return []
+  return estimateNotes(state).map(note => ({
+    text: inertLine(note),
+  }))
+}
+
 /**
  * The lines of `event`, read against the state that folded it: `renderEvent`'s line with its glyph, a research
  * retry's line, with its position from the call the state holds, the stopping line of the deadline or of the
  * interrupt, which has no glyph, and a line for each document of a `context` event, in its order, then one for each profile
  * that lists or requires a rule, the same under the public view and with no prefix, since each names its profile itself.
- * Each text is inert, and starts with `[<profile>] ` when several profiles run, but for those of a `context` event.
+ * The `part` event that made the review's first time estimate is followed by its notes (`estimateNotes`), once, with no glyph and no prefix.
+ * Each text is inert, and starts with `[<profile>] ` when several profiles run, but for those of a `context` event and the notes.
  */
 export function logLines(event: QuorumEvent, state: ViewState, view: ReportView): Line[] {
   if (event.type === 'call:retry') return retryLines(event, state)
@@ -396,13 +441,12 @@ export function logLines(event: QuorumEvent, state: ViewState, view: ReportView)
   const text = renderEvent(event, state.prefixed, view)
   if (text === undefined) return []
   const glyph = glyphOf(event)
-  return glyph === undefined
-    ? [
-        { text },
-      ]
-    : [
-        { glyph, text },
-      ]
+  return [
+    glyph === undefined
+      ? { text }
+      : { glyph, text },
+    ...estimateNoteLines(event, state),
+  ]
 }
 
 /**

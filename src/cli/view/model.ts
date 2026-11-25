@@ -27,6 +27,13 @@ export interface ViewFacts {
   readonly concurrency: number | 'auto'
   readonly cap: { readonly tokens: number, readonly origin: CapOrigin }
   readonly deadlineMs: number
+  /** Where the deadline came from: the config's `reviewTimeoutMs`, the default of a review that has none, or, in a path review whose config sets none, the longest allowed. */
+  readonly deadline: 'config' | 'default' | 'longest'
+  /**
+   * Whether the review keeps its answered calls, in a state directory a rerun can reuse. Only a caller that offers `--state` says it: absent,
+   * the view writes no state notice, since its fix could not be followed.
+   */
+  readonly keeps?: boolean
   /** The findings of the research each panel reads at most (a review's `findingsCap`), which sizes the votes to come. */
   readonly maxFindings: number
   /**
@@ -43,6 +50,7 @@ export const DEFAULT_FACTS: ViewFacts = {
   concurrency: 'auto',
   cap: { tokens: DEFAULT_MAX_REVIEW_TOKENS, origin: 'default' },
   deadlineMs: DEFAULT_REVIEW_TIMEOUT_MS,
+  deadline: 'default',
   maxFindings: DEFAULT_MAX_FINDINGS,
   asks: { maxFindings: DEFAULT_MAX_FINDINGS, findings: {} },
 }
@@ -171,8 +179,8 @@ export interface ViewState {
   readonly timings: ReadonlyMap<string, { readonly firstTokenMs: number, readonly longestSilenceMs: number, readonly ceilingMs?: number }>
   /** The review began to stop: why, when, how many calls were in flight, and for an interrupt the grace they were given. */
   readonly stopping?: { readonly cause: 'interrupt' | 'review-deadline', readonly at: number, readonly inFlight: number, readonly graceMs?: number }
-  /** The time left as it first read, at the answered part that passed the threshold. */
-  readonly firstEstimate?: { readonly at: number, readonly lowMs: number, readonly highMs: number }
+  /** The time left as it first read, at the answered part that passed the threshold: `by` is that part's key in `partsEnded`. */
+  readonly firstEstimate?: { readonly at: number, readonly lowMs: number, readonly highMs: number, readonly by: string }
 }
 
 const NO_BUCKETS: readonly number[] = Array.from<number>({ length: BUCKETS }).fill(0)
@@ -639,7 +647,12 @@ function partEnded(state: ViewState, event: Extract<QuorumEvent, { type: 'part' 
     if (left.kind === 'range') {
       next = {
         ...next,
-        firstEstimate: { at: now, lowMs: left.lowMs, highMs: left.highMs },
+        firstEstimate: {
+          at: now,
+          lowMs: left.lowMs,
+          highMs: left.highMs,
+          by: key,
+        },
       }
     }
   }

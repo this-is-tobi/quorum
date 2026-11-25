@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { HIDDEN_CLASS } from '../../core/sanitize.ts'
-import type { ContextDocument, LeftOutFile, Position, QuorumEvent } from '../../core/types.ts'
+import { HIDDEN_CLASS, inertLine } from '../../core/sanitize.ts'
+import type { ContextDocument, Estimate, LeftOutFile, Position, QuorumEvent } from '../../core/types.ts'
 import { durationText } from '../../report/lines.ts'
-import { longReview, replay } from '../../testing/events.ts'
+import { resolvedConfig } from '../../testing/bench.ts'
+import { longReview, replay, slowResearch } from '../../testing/events.ts'
 import { contextDocument } from '../../testing/report.ts'
-import { elapsedWords, heartbeatLine, logLines, renderEvent } from './lines.ts'
+import { viewFacts } from '../render.ts'
+import { elapsedWords, heartbeatLine, logLines, renderEvent, STATE_NOTICE_MS } from './lines.ts'
 import { DEFAULT_FACTS, fold, startState } from './model.ts'
-import type { ViewState } from './model.ts'
+import type { ViewFacts, ViewState } from './model.ts'
 
 /** A right-to-left override, which the sanitizer writes as text. */
 const RLO = String.fromCharCode(0x202E)
@@ -1528,6 +1530,161 @@ describe('logLines', () => {
       contextDocument(),
     ]))).toEqual(['context: security guidelines of the profile, 1830 bytes'])
     expect(textsOf(rulesEvent({}))).toEqual([])
+  })
+})
+
+/** What `logLines` writes after each of the 30 `part` events' own line of `slowResearch(every)`, one call at once, under `facts`. The first estimate, at the third part, puts research's end at 30 times `every` from the start. */
+function notesAtParts(facts: Partial<ViewFacts>, every = 300_000): string[][] {
+  let state = startState({
+    ...DEFAULT_FACTS,
+    concurrency: 1,
+    ...facts,
+  })
+  const notes: string[][] = []
+  for (const { at, event } of slowResearch(every)) {
+    state = fold(state, event, at)
+    if (event.type === 'part') notes.push(logLines(event, state, 'full').slice(1).map(line => line.text))
+  }
+  return notes
+}
+
+describe('the notes of the first estimate', () => {
+  const DEADLINE_WARNING = /^warning: the deadline of 30m00s \(reviewTimeoutMs\) comes before research ends, which this review's first estimate puts at \S+ from its start: the review stops at the deadline, and what is left is a review-deadline gap; raise reviewTimeoutMs, up to 24h00m00s$/
+  const STATE_NOTICE = /^notice: this review's first estimate puts research's end at .+ from its start, and it keeps no answered call, so a part that fails costs a full rerun: pass --state <dir> to keep them$/
+  // A path review's estimate: only its presence matters to the line.
+  const ESTIMATE = {
+    profiles: {},
+    expected: 0,
+    worst: 0,
+    inFlight: 0,
+    maxFindings: 50,
+    findingsCap: 50,
+    maxReviewTokens: 2_000_000,
+    reviewTimeoutMs: 1_800_000,
+    fits: true,
+    held: 0,
+  } satisfies Estimate
+
+  it('warns once, at the first estimate, of a deadline the config sets before research ends', () => {
+    const notes = notesAtParts({ deadlineMs: 1_800_000, deadline: 'config', keeps: true })
+    expect(notes).toHaveLength(30)
+    expect(notes.slice(0, 2)).toEqual([[], []])
+    expect(notes[2]).toHaveLength(1)
+    expect(notes[2][0]).toMatch(DEADLINE_WARNING)
+    // Three parts of 5 minutes, then 27 more: research ends 150 minutes from the start.
+    expect(notes[2][0]).toContain('first estimate puts at 150m from its start')
+    expect(notes.slice(3).flat()).toEqual([])
+  })
+
+  it('names the default deadline of a diff review as the default', () => {
+    const [warning] = notesAtParts({ deadlineMs: 1_800_000, deadline: 'default', keeps: true })[2]
+    expect(warning).toMatch(/^warning: the deadline of 30m00s, the default comes before research ends, which this review's first estimate puts at 150m from its start: /)
+    expect(warning).toMatch(/; raise reviewTimeoutMs, up to 24h00m00s$/)
+  })
+
+  it.each<[string, Partial<ViewFacts>, number | undefined]>([
+    [
+      'the deadline is the longest allowed',
+      { deadlineMs: 1_800_000, deadline: 'longest' },
+      undefined,
+    ],
+    [
+      'research ends before it',
+      { deadlineMs: 86_400_000, deadline: 'config' },
+      undefined,
+    ],
+    [
+      'research ends at it, not past it',
+      { deadlineMs: 9_000_000, deadline: 'config' },
+      undefined,
+    ],
+    [
+      'the config sets the longest allowed, and research ends after it',
+      { deadlineMs: 86_400_000, deadline: 'config' },
+      3_600_000,
+    ],
+  ])('writes no deadline warning when %s', (_name, facts, every) => {
+    expect(notesAtParts({ ...facts, keeps: true }, every).flat()).toEqual([])
+  })
+
+  it('names unsetting the deadline for a path review', () => {
+    const [warning] = notesAtParts({
+      deadlineMs: 1_800_000,
+      deadline: 'config',
+      keeps: true,
+      estimate: ESTIMATE,
+    })[2]
+    expect(warning).toMatch(/^warning: the deadline of 30m00s \(reviewTimeoutMs\) comes before research ends, /)
+    expect(warning).toMatch(/; raise reviewTimeoutMs, or unset it to let a path review run up to 24h00m00s$/)
+  })
+
+  it('notes once, at the first estimate, that a review past an hour keeps no answered call, and not when it keeps them', () => {
+    const notes = notesAtParts({ deadlineMs: 86_400_000, deadline: 'config', keeps: false })
+    expect(notes.slice(0, 2)).toEqual([[], []])
+    expect(notes[2]).toHaveLength(1)
+    expect(notes[2][0]).toMatch(STATE_NOTICE)
+    expect(notes[2][0]).toContain('puts research\'s end at 150m from its start')
+    expect(notes.slice(3).flat()).toEqual([])
+    expect(notesAtParts({ deadlineMs: 86_400_000, deadline: 'config', keeps: true }).flat()).toEqual([])
+  })
+
+  it('notes a review that ends an hour from its start, and not one that ends sooner', () => {
+    expect(STATE_NOTICE_MS).toBe(3_600_000)
+    // 30 parts of 2 minutes end at the 60th minute, 30 of 1 minute at the 30th.
+    expect(notesAtParts({ deadlineMs: 86_400_000, deadline: 'config', keeps: false }, 120_000)[2]).toEqual([
+      expect.stringMatching(STATE_NOTICE),
+    ])
+    expect(notesAtParts({ deadlineMs: 86_400_000, deadline: 'config', keeps: false }, 119_000).flat()).toEqual([])
+  })
+
+  it('writes no notice where the caller offers no --state: the facts of viewFacts(config) say nothing of keeping calls', () => {
+    const config = resolvedConfig({
+      providers: {
+        fake: {
+          model: 'm',
+          complete: async () => ({ text: '{}', model: 'm' }),
+        },
+      },
+      concurrency: 1,
+      reviewTimeoutMs: 86_400_000,
+    })
+    // The first estimate puts research's end 150 minutes from the start: only a caller that says the review keeps no call has the notice.
+    expect(notesAtParts(viewFacts(config)).flat()).toEqual([])
+    expect(notesAtParts(viewFacts(config, { keeps: false }))[2]).toEqual([
+      expect.stringMatching(STATE_NOTICE),
+    ])
+    expect(notesAtParts(viewFacts(config, { keeps: true })).flat()).toEqual([])
+  })
+
+  it('writes the warning, then the notice, after the part\'s own line, each inert and with no profile prefix', () => {
+    const state = (facts: Partial<ViewFacts>): ViewState => replay(slowResearch(300_000), 900_000, {
+      ...DEFAULT_FACTS,
+      concurrency: 1,
+      ...facts,
+    })
+    const event = slowResearch(300_000).find(({ at, event: made }) => at === 900_000 && made.type === 'part')!.event
+    const lines = logLines(event, state({ deadlineMs: 1_800_000, deadline: 'config', keeps: false }), 'full')
+    expect(lines.map(line => line.text)).toEqual([
+      expect.stringMatching(/^\[naming\] part 2 of 15: answered in 5m00s/),
+      expect.stringMatching(/^warning: the deadline of 30m00s /),
+      expect.stringMatching(/^notice: this review's first estimate /),
+    ])
+    expect(lines[0].glyph).toBe('answered')
+    expect(lines.slice(1).map(line => line.glyph)).toEqual([undefined, undefined])
+    for (const { text } of lines) expect(inertLine(text)).toBe(text)
+  })
+
+  it('writes nothing for a part event before the first estimate, or when no estimate was made', () => {
+    // Under 3 answered parts there is no estimate; with the parts all pooled at one call at once, the third gives one.
+    const before = replay(slowResearch(300_000), 600_000, {
+      ...DEFAULT_FACTS,
+      concurrency: 1,
+      deadlineMs: 1_800_000,
+      deadline: 'config',
+    })
+    expect(before.firstEstimate).toBeUndefined()
+    const second = slowResearch(300_000).find(({ at, event }) => at === 600_000 && event.type === 'part')!.event
+    expect(logLines(second, before, 'full')).toHaveLength(1)
   })
 })
 
