@@ -5,7 +5,7 @@
  * 2. the findings, kept and unreviewed together, grouped by file and then by line, each with its claim, its
  *    evidence rows and how its lenses voted, its head ending with the review rule it cites, and, under its head, the
  *    line its finder cited when the harness moved it to its quote; the discarded ones are only counted;
- * 3. each profile's level, counts, rules sent and citations refused, and coverage;
+ * 3. each profile's level, counts, rules sent and citations refused, coverage and, in a full result, research counts;
  * 4. the documents the review read, one line each, as the log writes them, its tail wrapped as a flag's detail is;
  * 5. the files left out;
  * 6. the gaps;
@@ -13,8 +13,9 @@
  * 8. the time and the tokens;
  * 9. the verdict, which says what the exit code says.
  *
- * The report of a public view (`publicView`) is the same but for two lines: a gap is written in the fixed words of
- * its reason, as it has no detail, and the time has no token count, as the view has no usage.
+ * The report of a public view (`publicView`) is the same but for three kinds of line: a gap is written in the fixed words of
+ * its reason, as it has no detail, the time has no token count, as the view has no usage, and a profile has no research line, as
+ * the view withholds the counts.
  *
  * The verdict is last because the end of the output is what stays on a terminal's screen, and it is the line
  * a person acts on.
@@ -29,7 +30,7 @@ import { profileFailOn } from '../core/outcome.ts'
 import type { Outcome } from '../core/outcome.ts'
 import { inertLine, showHidden } from '../core/sanitize.ts'
 import type { ContextDocument, IncompleteEntry, LeftOutFile, PublicGap, PublicMeta, PublicVerdict, QuorumMeta, Verdict } from '../core/types.ts'
-import { byLocation, coverageWords, documentLineParts, durationText, evidenceRows, flagWhere, GAP_WORDS, leftOutEntry, levelWord, plural, rowParts, ruleCountWords, ruleWords, sourcePhrase, tokenWords, verdictWhy, votesWords } from './lines.ts'
+import { byLocation, coverageWords, documentLineParts, durationText, evidenceRows, flagWhere, GAP_WORDS, leftOutEntry, levelWord, plural, researchWords, rowParts, ruleCountWords, ruleWords, sourcePhrase, tokenWords, verdictWhy, votesWords } from './lines.ts'
 import type { Reporter, ReportInput } from './reporter.ts'
 import { discardedOf, isPublicView } from './view.ts'
 
@@ -227,8 +228,11 @@ function rulesClause({ rules, invalidRules, asksNothing }: QuorumMeta['profiles'
   return `; rules: ${ruleCountWords(rules, asksNothing === true)}${refused}`
 }
 
-/** Each profile in run order: its fail-on level and its counts, with the findings it dropped for citing code outside the diff and the rules it sent and the citations refused, wrapped at 80 columns after its head, then its coverage. A public view's discarded count is the one it records. */
+/** Each profile in run order: its fail-on level and its counts, with the findings it dropped for citing code outside the diff and the rules it sent and the citations refused, wrapped at 80 columns after its head, then its coverage and, in a full result, its research counts, wrapped at 80 columns too. A public view's discarded count is the one it records, and it has no research counts. */
 function profileLines(result: ReportInput): string[] {
+  const full = isPublicView(result)
+    ? undefined
+    : result
   return Object.entries(result.meta.profiles).flatMap(([id, profile]) => {
     const count = (verdicts: ReadonlyArray<Verdict | PublicVerdict>): number => verdicts.filter(verdict => verdict.profile === id).length
     const outside = profile.invalidFindings > 0
@@ -237,6 +241,9 @@ function profileLines(result: ReportInput): string[] {
     return [
       ...wrap(`${id} (fail-on ${profileFailOn(result, id)}):`, `${count(result.kept as ReadonlyArray<Verdict | PublicVerdict>)} kept, ${count(result.unreviewed as ReadonlyArray<Verdict | PublicVerdict>)} unreviewed, ${discardedOf(result, id)} discarded${outside}${rulesClause(profile)}`).map(inertLine),
       inertLine(`  ${coverageWords(profile.coverage)}`),
+      ...full === undefined
+        ? []
+        : wrap('  ', researchWords(full.meta.profiles[id].research)).map(inertLine),
     ]
   })
 }

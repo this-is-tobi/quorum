@@ -93,6 +93,13 @@ export function reportMeta(): QuorumMeta {
         invalidFindings: 0,
         rules: { listed: 0, sent: 0 },
         invalidRules: 0,
+        research: {
+          parts: 1,
+          listed: 3,
+          panel: 3,
+          capped: 0,
+          saturated: 0,
+        },
         coverage: [
           { file: 'src/auth/login.ts', status: 'reviewed' },
           {
@@ -164,7 +171,17 @@ export function blankResult(meta: Partial<QuorumMeta> = {}): QuorumResult {
       durationMs: 3,
       source: { kind: 'diff' },
       profiles: {
-        security: { ...base.profiles.security, coverage: [] },
+        security: {
+          ...base.profiles.security,
+          research: {
+            parts: 0,
+            listed: 0,
+            panel: 0,
+            capped: 0,
+            saturated: 0,
+          },
+          coverage: [],
+        },
       },
       incomplete: [],
       leftOut: [],

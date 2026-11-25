@@ -394,6 +394,7 @@ export function resultWith(parts: {
 }): QuorumResult {
   const { kept = [], discarded = [], unreviewed = [], incomplete = [] } = parts
   const provider = { id: 'fake', model: 'm' }
+  const found = kept.length + discarded.length + unreviewed.length
   return {
     kept: [...kept],
     discarded: [...discarded],
@@ -415,6 +416,13 @@ export function resultWith(parts: {
           invalidFindings: 0,
           rules: { listed: 0, sent: 0 },
           invalidRules: 0,
+          research: {
+            parts: 1,
+            listed: found,
+            panel: found,
+            capped: 0,
+            saturated: 0,
+          },
           coverage: [],
         },
       },
@@ -513,6 +521,18 @@ export const RESULT: QuorumResult = (() => {
     ...base,
     meta: {
       ...base.meta,
+      profiles: {
+        security: {
+          ...base.meta.profiles.security,
+          research: {
+            parts: 2,
+            listed: 5,
+            panel: 3,
+            capped: 2,
+            saturated: 1,
+          },
+        },
+      },
       usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.001 },
       leftOut: [
         { file: 'package-lock.json', reason: 'excluded' },

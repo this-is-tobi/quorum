@@ -12,7 +12,7 @@ import { elapsedWords } from '../core/duration.ts'
 import { ownData } from '../core/facts.ts'
 import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
 import { failsItsProfile } from '../core/outcome.ts'
-import type { ContextDocument, ContextRecord, CoverageEntry, CoverageStatus, DocumentKind, Flag, IncompleteReason, LeftOutFile, ProfileMeta, PublicVerdict, PublicView, ReviewSource, Verdict, VoteFailure } from '../core/types.ts'
+import type { ContextDocument, ContextRecord, CoverageEntry, CoverageStatus, DocumentKind, Flag, IncompleteReason, LeftOutFile, ProfileMeta, PublicVerdict, PublicView, ResearchRecord, ReviewSource, Verdict, VoteFailure } from '../core/types.ts'
 import { voteFailed } from './view.ts'
 
 /** A token count told in three significant digits at most, floored: `999`, `1.23k`, `12.3k`, `812k`, `9.86M`. */
@@ -338,6 +338,23 @@ export function commitOf(source: ReviewSource): string | null {
     default:
       return null
   }
+}
+
+/**
+ * What a profile's research came to, as the text report's line under its coverage (after its two leading spaces):
+ * `research: <p> part(s), <l> finding(s) listed, <k> to the panel`, then `, <c> past the cap` when the cap left
+ * some unread and `, <s> reply(ies) listed all they were asked for` when some replies did, so a count of 0 for either is left out.
+ */
+export function researchWords({ parts, listed, panel, capped, saturated }: ResearchRecord): string {
+  return [
+    `research: ${parts} part(s), ${listed} finding(s) listed, ${panel} to the panel`,
+    ...capped > 0
+      ? [`${capped} past the cap`]
+      : [],
+    ...saturated > 0
+      ? [`${saturated} reply(ies) listed all they were asked for`]
+      : [],
+  ].join(', ')
 }
 
 /** How many of the files a profile's coverage lists are reviewed, in part, not, or excluded, as `2 of 3 files reviewed, 1 not`, or `the diff holds no file`. */

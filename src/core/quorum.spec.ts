@@ -1305,6 +1305,13 @@ describe('meta and events', () => {
           invalidFindings: 1,
           rules: { listed: 0, sent: 0 },
           invalidRules: 0,
+          research: {
+            parts: 1,
+            listed: 2,
+            panel: 1,
+            capped: 0,
+            saturated: 0,
+          },
           coverage: [
             { file: 'a.js', status: 'reviewed' },
             { file: 'other.js', status: 'reviewed' },
@@ -1371,6 +1378,7 @@ describe('meta and events', () => {
       'invalidFindings',
       'rules',
       'invalidRules',
+      'research',
       'coverage',
     ])
   })
@@ -2929,6 +2937,14 @@ describe('an advisory profile\'s failed research', () => {
     expect(result.meta.incomplete).toEqual([gap])
     expect(events).toContainEqual({ type: 'incomplete', entry: gap })
     expect(JSON.stringify(result.meta)).not.toContain('busy')
+    // A research that read no reply lists nothing, though it had its part.
+    expect(result.meta.profiles.style.research).toEqual({
+      parts: 1,
+      listed: 0,
+      panel: 0,
+      capped: 0,
+      saturated: 0,
+    })
   })
 
   it('records an advisory profile\'s reply that is no findings envelope as research-failed, naming the parser\'s reason', async () => {
@@ -6079,6 +6095,46 @@ describe('adaptations', () => {
     expect(resultSchema.parse(JSON.parse(JSON.stringify(result)))).toEqual(JSON.parse(JSON.stringify(result)))
   })
 
+  it('records each profile\'s research counts, of a profile of its own in three parts', async () => {
+    const local = localOf(file => file === 'a.js'
+      ? ['n0', 'n1', 'n2'].map(category => ({
+          ...named(file) as object,
+          category,
+        }))
+      : [
+          named(file),
+        ])
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [naming],
+      partTokens: 1024,
+    }, {
+      ...portsFor(naming, local),
+      events: event => events.push(event),
+    }).review({ diff: bigDiff }, { findingsCap: 3 })
+    expect(result.meta.profiles.naming.research).toEqual({
+      parts: 3,
+      listed: 5,
+      panel: 3,
+      capped: 2,
+      saturated: 0,
+    })
+    const listed = events.flatMap(event => event.type === 'part' && event.listed !== undefined
+      ? [event.listed]
+      : [])
+    expect(result.meta.profiles.naming.research.listed).toBe(listed.reduce((sum, count) => sum + count, 0))
+    const blank = await createQuorum({
+      profiles: [naming],
+    }, portsFor(naming, local)).review({ diff: '  \n' })
+    expect(blank.meta.profiles.naming.research).toEqual({
+      parts: 0,
+      listed: 0,
+      panel: 0,
+      capped: 0,
+      saturated: 0,
+    })
+  })
+
   it('sends a vote in flight at the old setting once more at the settled one, so no vote fails for it', async () => {
     let release = (): void => {}
     const gate = new Promise<void>((resolve) => {
@@ -7008,6 +7064,7 @@ describe('recovery', () => {
       'invalidFindings',
       'rules',
       'invalidRules',
+      'research',
       'coverage',
     ])
   })
@@ -9479,15 +9536,23 @@ describe('documents', () => {
       }, docs)
       expect(none.meta).toMatchObject({
         rules: { listed: 1, sent: 0 },
+        research: {
+          parts: 0,
+          listed: 0,
+          panel: 0,
+          capped: 0,
+          saturated: 0,
+        },
         asksNothing: true,
       })
       expect(none.parts).toBe(0)
       expect(none.entry).toEqual({ listed: 1, sent: 0, asksNothing: true })
       // The flag sits after the counts of rules and before the coverage, where the schema keeps it.
-      expect(Object.keys(none.meta as object).slice(4, 9)).toEqual([
+      expect(Object.keys(none.meta as object).slice(4, 10)).toEqual([
         'invalidFindings',
         'rules',
         'invalidRules',
+        'research',
         'asksNothing',
         'coverage',
       ])

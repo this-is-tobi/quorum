@@ -122,6 +122,7 @@ describe('checkReply', () => {
       invalidRules: [],
       incomplete: [],
       unread: [],
+      counts: { listed: 0, capped: 0, saturated: 0 },
     })
   })
 
@@ -461,6 +462,36 @@ describe('checkReplies', () => {
     expect(outcome.findings).toHaveLength(1)
   })
 
+  it('counts what the replies listed, what the cap left unread and the replies that listed all they were asked for', () => {
+    const outcome = checkReplies([
+      {
+        text: reply(named('A', 3)),
+        asked: 3,
+      },
+      {
+        text: reply(named('B', 1)),
+        asked: 3,
+      },
+    ], sections, 'security', 2)
+    expect(outcome.counts).toEqual({ listed: 4, capped: 2, saturated: 1 })
+    expect(checkReplies([
+      {
+        text: reply(named('A', 2)),
+        asked: 3,
+      },
+    ], sections, 'security').counts).toEqual({ listed: 2, capped: 0, saturated: 0 })
+    expect(checkReplies([], sections, 'security').counts).toEqual({ listed: 0, capped: 0, saturated: 0 })
+  })
+
+  it('counts an unreadable entry among what the reply listed', () => {
+    const outcome = checkReplies([
+      {
+        text: reply([1, reported, reported]),
+      },
+    ], sections, 'security', 2)
+    expect(outcome.counts).toEqual({ listed: 3, capped: 1, saturated: 0 })
+  })
+
   it('names the part of each unreadable entry', () => {
     const outcome = checkReplies([
       {
@@ -551,6 +582,7 @@ describe('checkReplies', () => {
       invalidRules: [],
       incomplete: [],
       unread: [],
+      counts: { listed: 0, capped: 0, saturated: 0 },
     })
   })
 

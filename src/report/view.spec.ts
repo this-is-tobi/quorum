@@ -161,6 +161,41 @@ describe('publicView', () => {
     expect(Object.keys(view.kept[0])).toEqual(Object.keys(SQL))
   })
 
+  it('withholds each profile\'s research counts from the public view', () => {
+    const base = reportMeta()
+    const research = {
+      parts: 226,
+      listed: 429,
+      panel: 226,
+      capped: 203,
+      saturated: 7,
+    }
+    const result = reportResult({
+      meta: {
+        ...base,
+        profiles: {
+          security: { ...base.profiles.security, research },
+        },
+      },
+    })
+    const view = publicView(result)
+    expect(view.meta.profiles.security).not.toHaveProperty('research')
+    expect(inertJson(view)).not.toContain('research')
+    // The view is the one a result with other counts makes, and the result's own are left as they were.
+    expect(view).toStrictEqual(publicView(reportResult()))
+    expect(result.meta.profiles.security.research).toEqual(research)
+    // A view that holds them is no view quorum writes.
+    expect(() => publicView({
+      ...view,
+      meta: {
+        ...view.meta,
+        profiles: {
+          security: { ...view.meta.profiles.security, research },
+        },
+      },
+    } as unknown as PublicView)).toThrow('the public view is not one quorum writes, at meta.profiles.security')
+  })
+
   it('keeps meta.profiles.<id>.recovery in the public view, as a copy, and leaves it out of a profile that has none', () => {
     const recovery = {
       parts: 2,

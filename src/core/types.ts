@@ -444,6 +444,23 @@ export interface ProfileProviders {
   lenses: Record<string, ProviderRef>
 }
 
+/**
+ * What one profile's research came to, as `meta.profiles.<id>.research` records it, so a review that read fewer findings than its
+ * research listed says so in numbers and not only in a gap's words. Every field is a count of the profile alone.
+ */
+export interface ResearchRecord {
+  /** The research parts of the plan, whether or not each was read: 0 for a profile whose research asks nothing and for a blank diff, 1 for a research of one request. */
+  parts: number
+  /** The findings the research replies that were read listed, the unreadable ones and those the cap left unread included: the sum of the `part` events' `listed`. */
+  listed: number
+  /** The findings the panel was asked about: the dedup stage's output, the findings research read and checked less the repeats dedup dropped. */
+  panel: number
+  /** The findings the replies listed that the cap left unread: `listed` less the entries the cap read, 0 when nothing was capped. */
+  capped: number
+  /** The research replies that listed at least the findings they were asked for at most, so each may have left some out. */
+  saturated: number
+}
+
 /** What a review records about one of its profiles. */
 export interface ProfileMeta {
   providers: ProfileProviders
@@ -462,6 +479,8 @@ export interface ProfileMeta {
   rules: { listed: number, sent: number }
   /** How many citations failed their check: a finding's `rule` that names no rule the review sent whose `paths` match its file, and, in a profile that requires a rule, a finding that cites none. Counted apart from `invalidFindings`. */
   invalidRules: number
+  /** What its research came to: the parts, the findings its replies listed, those the panel was asked about, those the cap left unread and the replies that listed all they were asked for. */
+  research: ResearchRecord
   /**
    * `true` for a profile whose research asked nothing: it requires a rule (`Profile.requireRule`) and the review sent none, so its
    * finder was never called, its files read as reviewed and it reports nothing, which no count of findings can tell from a review
@@ -574,8 +593,8 @@ export interface PublicVote {
 /** A verdict of the public view: the verdict with its votes reduced to `PublicVote`s. */
 export type PublicVerdict = Omit<Verdict, 'votes'> & { votes: PublicVote[] }
 
-/** What the public view records about a profile: no providers, and the count of its discarded findings, which the view does not list. */
-export interface PublicProfileMeta extends Omit<ProfileMeta, 'providers'> {
+/** What the public view records about a profile: no providers, no research counts, which measure how near research came to the finding cap, and the count of its discarded findings, which the view does not list. */
+export interface PublicProfileMeta extends Omit<ProfileMeta, 'providers' | 'research'> {
   /** How many findings of the profile the panel discarded. */
   discarded: number
 }

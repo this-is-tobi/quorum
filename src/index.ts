@@ -79,6 +79,7 @@ export type {
   QuorumMeta,
   QuorumOptions,
   QuorumResult,
+  ResearchRecord,
   ReviewContext,
   ReviewDocument,
   ReviewInput,
