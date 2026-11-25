@@ -9,12 +9,12 @@
 import { CUT_ADVICE, failureFix, QUOTA_FIX, STALL_FIX } from '../../core/errors.ts'
 import { inertLine } from '../../core/sanitize.ts'
 import type { ConcurrencyRecord } from '../../core/lanes.ts'
-import type { IncompleteReason, QuorumMeta, QuorumResult, StageName } from '../../core/types.ts'
+import type { IncompleteReason, ProfileMeta, QuorumMeta, QuorumResult, StageName } from '../../core/types.ts'
 import { contextSummary, durationText, listed, tokenWords } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords } from './eta.ts'
 import { stageStart, stageTime } from './model.ts'
-import type { CapOrigin, Cause, GapCount, ViewState } from './model.ts'
+import type { CapOrigin, Cause, GapCount, ViewFacts, ViewState } from './model.ts'
 import type { SummaryFacts } from './writer.ts'
 
 /** The fix of a gap with no better advice: the report holds its detail. */
@@ -38,7 +38,6 @@ const FIXES: Readonly<Partial<Record<IncompleteReason, string>>> = {
   'token-cap': 'raise maxReviewTokens',
   'review-deadline': 'raise reviewTimeoutMs',
   'reply-cut-off': 'raise maxTokens, set thinking: low, or lower partTokens',
-  'findings-capped': 'raise maxFindings',
   'request-too-large': 'raise contextTokens, or lower partTokens',
   'too-large': 'raise contextTokens, or lower partTokens',
   'research-unusable': SEE_REPORT,
@@ -99,6 +98,42 @@ export function gapFix(reason: IncompleteReason, causes: readonly Cause[], provi
       : undefined
   }
   return [...fixes].join(', or ')
+}
+
+/** `levers` as a fix: `raise <a>`, `raise <a>, and <b>`, `raise <a>, <b>, and <c>`. */
+function raiseWords(levers: readonly string[]): string {
+  const last = levers.at(-1)
+  return levers.length === 1
+    ? `raise ${last}`
+    : `raise ${levers.slice(0, -1).join(', ')}, and ${last}`
+}
+
+/**
+ * The fix of the `findings-capped` gap, read from what each profile's research counted (`meta.profiles.<id>.research`) and what its
+ * requests asked for (`asks`), never from the gap's detail: `findingsCap` when a profile left findings unread under the cap,
+ * `maxTokens` when a profile whose replies listed all they were asked for asked for fewer than `maxFindings`, since its reply budget
+ * held no more, and `maxFindings` when one asked for `maxFindings`, in that order, as `raiseWords` joins them. A profile that
+ * `asks` names none asked for `maxFindings`. The report holds the gap when no profile counts either.
+ */
+export function cappedFix(profiles: Readonly<Record<string, ProfileMeta>>, asks: ViewFacts['asks']): string {
+  const counts = Object.entries(profiles)
+  const asked = counts.filter(([, { research }]) => research.saturated > 0).map(([id]) => Object.hasOwn(asks.findings, id)
+    ? asks.findings[id]
+    : asks.maxFindings)
+  const levers = [
+    ...counts.some(([, { research }]) => research.capped > 0)
+      ? ['findingsCap']
+      : [],
+    ...asked.some(findings => findings < asks.maxFindings)
+      ? ['maxTokens']
+      : [],
+    ...asked.some(findings => findings >= asks.maxFindings)
+      ? ['maxFindings']
+      : [],
+  ]
+  return levers.length === 0
+    ? SEE_REPORT
+    : raiseWords(levers)
 }
 
 /** Whether the text report is above the summary: stdout and stderr are both terminals, and the format is `text`. */
@@ -251,7 +286,7 @@ function quantityWords({ parts, votes, other }: GapCount): string {
   ].join(' and ')
 }
 
-function gapsLine(state: ViewState, view: ReportView): string | undefined {
+function gapsLine(state: ViewState, view: ReportView, profiles: Readonly<Record<string, ProfileMeta>>): string | undefined {
   if (state.gaps.size === 0) return undefined
   const entries = [...state.gaps].map(([reason, count]) => {
     const known = reason === 'research-failed' || reason === 'provider-down'
@@ -262,12 +297,14 @@ function gapsLine(state: ViewState, view: ReportView): string | undefined {
     const fixed = quota
       ? known.filter(cause => cause.exhausted !== true)
       : known
-    const fix = quota && fixed.length === 0
-      ? undefined
-      : gapFix(reason, fixed, [...state.cutOffBy].map(id => ({
-          id,
-          cut: state.cutSeen.has(id),
-        })))
+    const fix = reason === 'findings-capped'
+      ? cappedFix(profiles, state.facts.asks)
+      : quota && fixed.length === 0
+        ? undefined
+        : gapFix(reason, fixed, [...state.cutOffBy].map(id => ({
+            id,
+            cut: state.cutSeen.has(id),
+          })))
     // A plain timeout is written only when no stalled one is beside it, whose cause covers it.
     const shown = known.some(cause => cause.stalledMs !== undefined)
       ? known.filter(cause => cause.kind !== 'timeout' || cause.stalledMs !== undefined)
@@ -334,7 +371,7 @@ export function summaryLines(state: ViewState, facts: SummaryFacts, view: Report
       : tokensLine(state),
     callsLine(state, facts.result.meta.concurrency),
     ...contextSummary(facts.result.meta.context, facts.result.meta.profiles),
-    gapsLine(state, view),
+    gapsLine(state, view, facts.result.meta.profiles),
     resultLine(facts, view),
     resumeLine(facts),
   ]

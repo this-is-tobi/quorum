@@ -60,7 +60,7 @@ An argument of another name is refused, `large`, `send` and `diff` included. The
 
 `--large`, `--trust-repo-config` and `--send` are the operator's, set when the server starts, and no argument of a call lifts one:
 
-- `--large` lets a review of paths run that may pass the token cap: the review then reviews what the cap allows and ends incomplete, as it does on the command line. Without it the call is refused. `quorum mcp` keeps the quorum's own bounds, the config's `maxReviewTokens`, `reviewTimeoutMs` and `maxFindings`, whatever the paths: the CLI's derived cap, 24-hour deadline and finding cap for a `--path` review are the CLI's alone, and the `LARGE` refusal stays here, since an agent's call must never run to a cap it derived itself. The CLI's `--large` is deprecated and does nothing, and this one is not.
+- `--large` lets a review of paths run that may pass the token cap: the review then reviews what the cap allows and ends incomplete, as it does on the command line. Without it the call is refused. `quorum mcp` keeps the quorum's own bounds, the config's `maxReviewTokens`, `reviewTimeoutMs`, `findingsCap` and `maxFindings`, whatever the paths: the CLI's derived cap, 24-hour deadline and finding cap for a `--path` review are the CLI's alone, and the `LARGE` refusal stays here, since an agent's call must never run to a cap it derived itself. The CLI's `--large` is deprecated and does nothing, and this one is not.
 - `--trust-repo-config` lets `local` and `staged` run where the repository's own config names a filter program, which git then runs: [Trust](./15-sources.md#trust).
 - `--send` names files held as secrets that are sent to the models all the same, added to the config's `send` list.
 

@@ -171,9 +171,9 @@ export interface RunContext {
   readonly store?: ReplyStore
   /** What this review moved by itself, and the probes that find out whether a move helps: one per review, so nothing carries to the next. */
   readonly adapt: Adaptations
-  /** How many findings of a research reply each profile sends to the panel. */
+  /** How many findings each research request asks for at most: it sizes every request, and the saturation and the splitting of a reply read it. */
   readonly maxFindings: number
-  /** How many findings of the research each profile sends to its panel in this review: `maxFindings`, unless the review's own limit says more. Only the checked replies read it. */
+  /** How many findings of the research each profile sends to its panel in this review: the review's own `findingsCap`, else the quorum's, which is `maxFindings` unless set. Only the checked replies read it; `maxFindings` sizes the requests. */
   readonly findingsCap: number
   /** The reply budgets of each profile, by profile id: what its research and vote requests carry and ask for. */
   readonly budgets: Readonly<Record<string, ProfileBudgets>>

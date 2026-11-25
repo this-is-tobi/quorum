@@ -224,6 +224,16 @@ describe('createQuorum', () => {
     ])
   })
 
+  it.each([0, 1.5])('refuses a findingsCap of %j, which is no positive integer, as it refuses a maxFindings', (findingsCap) => {
+    const model = fake('m', () => '')
+    expect(issuesOf(() => createQuorum({
+      profiles: [securityProfile],
+      findingsCap,
+    }, portsFor(securityProfile, model)))).toEqual([
+      `findingsCap: must be a positive integer, got ${findingsCap}`,
+    ])
+  })
+
   it('requires a research provider and a voter for every lens', () => {
     const model = fake('m', () => '')
     const research = { id: 'r', model: 'x' } as unknown as Provider
@@ -1251,7 +1261,7 @@ describe('review', () => {
     const result = await run(securityProfile, { maxFindings: 1 }).review({ diff })
     expect(complete).toHaveBeenCalledTimes(4)
     expect(result.meta.incomplete).toEqual([
-      { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 1 findings they were asked for at most, so they may have left some out: 1 of 2 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 1)' },
+      { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 1 findings they were asked for at most, so they may have left some out: raise maxFindings; 1 of 2 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 1): raise findingsCap' },
     ])
   })
 
@@ -3468,6 +3478,26 @@ describe('a review\'s own limits', () => {
     expect(complete).not.toHaveBeenCalled()
   })
 
+  it('counts the quorum\'s findingsCap in each lens\'s votes, and an estimate\'s own limit in its place', () => {
+    const quorum = createQuorum({
+      profiles: [naming],
+      findingsCap: 3,
+    }, portsFor(naming, provider))
+    const counted = quorum.estimate({ diff })
+    expect(counted.findingsCap).toBe(3)
+    expect(counted.profiles.naming.votes).toBe(3)
+    expect(counted.maxFindings).toBe(50)
+    const own = quorum.estimate({ diff }, { findingsCap: 5 })
+    expect(own.findingsCap).toBe(5)
+    expect(own.profiles.naming.votes).toBe(5)
+    const unset = createQuorum({
+      profiles: [naming],
+      maxFindings: 7,
+    }, portsFor(naming, provider)).estimate({ diff })
+    expect(unset.findingsCap).toBe(7)
+    expect(unset.profiles.naming.votes).toBe(7)
+  })
+
   it('refuses a review\'s maxReviewTokens or reviewTimeoutMs out of range, and an estimate\'s', async () => {
     const quorum = createQuorum({
       profiles: [securityProfile],
@@ -3744,7 +3774,7 @@ describe('a large change in parts', () => {
       expect(voter.requests).toHaveLength(9)
       expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js', 'b.js', 'c.js'])
       expect(result.meta.incomplete).toEqual([
-        { profile: 'security', reason: 'findings-capped', detail: '2 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: 1 of 4 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 3)' },
+        { profile: 'security', reason: 'findings-capped', detail: '2 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: raise maxFindings; 1 of 4 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 3): raise findingsCap' },
       ])
     })
 
@@ -3760,7 +3790,7 @@ describe('a large change in parts', () => {
       expect(voter.requests).toHaveLength(6)
       expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js', 'b.js'])
       expect(result.meta.incomplete).toEqual([
-        { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out' },
+        { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: raise maxFindings' },
       ])
     })
   })
@@ -6062,8 +6092,59 @@ describe('adaptations', () => {
       ['c.js', 'misleading-name'],
     ])
     expect(result.meta.incomplete).toEqual([
-      { profile: 'naming', reason: 'findings-capped', detail: '2 of 5 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 3)' },
+      { profile: 'naming', reason: 'findings-capped', detail: '2 of 5 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 3): raise findingsCap' },
     ])
+  })
+
+  it('sends the panel at most the quorum\'s findingsCap, and sizes no request by it, of a profile of its own', async () => {
+    const local = localOf(file => file === 'a.js'
+      ? ['n0', 'n1', 'n2'].map(category => ({
+          ...named(file) as object,
+          category,
+        }))
+      : [
+          named(file),
+        ])
+    const result = await createQuorum({
+      profiles: [naming],
+      partTokens: 1024,
+      findingsCap: 3,
+    }, portsFor(naming, local)).review({ diff: bigDiff })
+    expect(local.requests.filter(isVote)).toHaveLength(3)
+    expect(result.kept.map(verdict => [verdict.file, verdict.category])).toEqual([
+      ['a.js', 'n0'],
+      ['b.js', 'misleading-name'],
+      ['c.js', 'misleading-name'],
+    ])
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'naming', reason: 'findings-capped', detail: '2 of 5 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 3): raise findingsCap' },
+    ])
+    // No request moves: the pin's six keys at a cap of 3, and at a cap of 2, which asks two votes and not three, its three research keys.
+    const keysAsked = async (findingsCap: number): Promise<string[]> => {
+      const looked: string[] = []
+      const store: ReplyStore = {
+        get: async (entry) => {
+          looked.push(entry.key)
+          return undefined
+        },
+        put: async () => {},
+      }
+      await createQuorum({
+        profiles: [naming],
+        partTokens: 1024,
+        findingsCap,
+      }, portsFor(naming, localOf(file => [
+        named(file),
+      ]))).review({ diff: bigDiff }, { store })
+      return looked
+    }
+    const digest = (keys: readonly string[]): string => createHash('sha256').update(JSON.stringify([...keys].toSorted())).digest('hex')
+    const [three, two] = [await keysAsked(3), await keysAsked(2)]
+    expect(digest(three)).toBe('583fba4f7cd862765dc115b2b2ce0a7bcc74788ef14934b5e3978b5364256114')
+    expect(two).toHaveLength(5)
+    // Research ends before the panel starts, so the first three keys a review asks the store are its research requests'.
+    expect(digest(two.slice(0, 3))).toBe(digest(three.slice(0, 3)))
+    expect(digest(three.slice(0, 3))).toBe('54b623d6cb53ea44a75ad10c583e6328c541975ada4a4fc1ecc13bc33a728046')
   })
 
   it('reads a file whose findings the cap left unread as partial, of a profile of its own, and the coverage line counts it', async () => {
@@ -6813,7 +6894,7 @@ describe('recovery', () => {
       expect(finder.requests).toHaveLength(1)
       expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js'])
       expect(result.meta.incomplete.map(entry => [entry.reason, entry.detail])).toEqual([
-        ['findings-capped', '1 research reply(ies) listed the 7 findings they were asked for at most, so they may have left some out'],
+        ['findings-capped', '1 research reply(ies) listed the 7 findings they were asked for at most, so they may have left some out: raise maxTokens, since the reply budget holds 7 of maxFindings 50'],
       ])
       expect(recovered(events)).toEqual([])
       expect(result.meta.profiles.security).not.toHaveProperty('recovery')
@@ -6825,10 +6906,10 @@ describe('recovery', () => {
       const exact = await reviewing(finderOf(() => findings(first, second)), { maxFindings: 2 }).quorum.review({ diff })
       // One gap, the saturation words first and, when the reply lists more than the cap, the cap's count after them.
       expect(over.meta.incomplete).toEqual([
-        { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: 1 of 3 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2)' },
+        { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: raise maxFindings; 1 of 3 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2): raise findingsCap' },
       ])
       expect(exact.meta.incomplete).toEqual([
-        { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out' },
+        { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: raise maxFindings' },
       ])
     })
   })

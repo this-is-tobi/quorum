@@ -337,6 +337,21 @@ describe('configFileSchema', () => {
     ])
   })
 
+  it('takes findingsCap, a whole number of at least 1', () => {
+    for (const findingsCap of [1, 300, 9_007_199_254_740_991]) {
+      expect(issuesOf({ findingsCap })).toEqual([])
+    }
+    expect(issuesOf({ findingsCap: 0 })).toEqual([
+      at('findingsCap', 'must be at least 1'),
+    ])
+    expect(issuesOf({ findingsCap: 1.5 })).toEqual([
+      at('findingsCap', 'must be an integer'),
+    ])
+    expect(issuesOf({ findingsCap: '300' })).toEqual([
+      at('findingsCap', 'must be a number'),
+    ])
+  })
+
   it('takes a partTokens from 1024', () => {
     for (const partTokens of [1024, 9_007_199_254_740_991]) {
       expect(issuesOf({ partTokens })).toEqual([])

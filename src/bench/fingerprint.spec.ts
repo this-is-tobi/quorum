@@ -304,6 +304,19 @@ describe('fingerprint', () => {
     expect(same(resolvedConfig({ providers, maxReviewTokens: 2000000, reviewTimeoutMs: 1800000 }), plain)).toBe(true)
   })
 
+  it('holds findingsCap only when the config sets it, so a configuration that sets none keeps its fingerprint', () => {
+    const providers = { p: PROVIDER }
+    const plain = resolvedConfig({ providers })
+    expect(canonicalSettings(plain)).not.toContain('findingsCap')
+    expect(canonicalSettings(resolvedConfig({ providers, maxFindings: 50 }))).toBe(canonicalSettings(plain))
+    const capped = resolvedConfig({ providers, findingsCap: 300 })
+    expect((JSON.parse(canonicalSettings(capped)) as { findingsCap: unknown }).findingsCap).toBe(300)
+    expect(same(capped, plain)).toBe(false)
+    expect(same(capped, resolvedConfig({ providers, findingsCap: 301 }))).toBe(false)
+    // Equal to the default is still a setting: the form names it, as a set concurrency of 4 is another configuration.
+    expect(same(resolvedConfig({ providers, findingsCap: 50 }), plain)).toBe(false)
+  })
+
   it('changes with partTokens, and holds its default when unset', () => {
     const providers = { p: PROVIDER }
     const plain = resolvedConfig({ providers })

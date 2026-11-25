@@ -768,6 +768,7 @@ describe('resolveConfig', () => {
       profiles: ['planted'],
       concurrency: 99,
       maxFindings: 99,
+      findingsCap: 99,
       maxReviewTokens: 99,
       reviewTimeoutMs: 99,
       partTokens: 99,
@@ -786,6 +787,7 @@ describe('resolveConfig', () => {
       expect([
         'concurrency',
         'maxFindings',
+        'findingsCap',
         'maxReviewTokens',
         'reviewTimeoutMs',
         'partTokens',
@@ -799,6 +801,20 @@ describe('resolveConfig', () => {
 
   it('passes concurrency and maxFindings through', () => {
     expect(resolve({ concurrency: 2, maxFindings: 10 }, { QUORUM_RESEARCH_MODEL: 'q', ...SIZE })).toMatchObject({ concurrency: 2, maxFindings: 10 })
+  })
+
+  it('resolves findingsCap as the config sets it, and leaves it out when none does', () => {
+    const env = { QUORUM_RESEARCH_MODEL: 'q', ...SIZE }
+    expect(resolve({ findingsCap: 300 }, env)).toMatchObject({ findingsCap: 300 })
+    expect(resolve({ findingsCap: 300, maxFindings: 10 }, env)).toMatchObject({ findingsCap: 300, maxFindings: 10 })
+    expect(Object.hasOwn(resolve({ maxFindings: 10 }, env), 'findingsCap')).toBe(false)
+  })
+
+  it('lets QUORUM_FINDINGS_CAP win over the config\'s findingsCap', () => {
+    const env = { QUORUM_RESEARCH_MODEL: 'q', ...SIZE }
+    expect(resolve({ findingsCap: 300 }, { ...env, QUORUM_FINDINGS_CAP: '40' })).toMatchObject({ findingsCap: 40 })
+    expect(resolve({}, { ...env, QUORUM_FINDINGS_CAP: '40' })).toMatchObject({ findingsCap: 40 })
+    expect(() => resolve({ findingsCap: 300 }, { ...env, QUORUM_FINDINGS_CAP: '0' })).toThrow('QUORUM_FINDINGS_CAP: must be a whole number of findings, from 1 to 999999999')
   })
 
   it('keeps the config\'s partTokens, which no variable sets', () => {

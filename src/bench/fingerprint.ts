@@ -14,7 +14,7 @@
  * a provider object as its config key, its model and the `timeoutMs` and `retries` it states, so one that
  * states none keeps the form it had, and never the `worstCase` or the `room` it states, which are code like its
  * `complete`; `concurrency` (`auto` when unset), `maxFindings`, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs` as the review applies
- * them, defaults filled in, `exclude` when the config lists a pattern, and `send` when it lists a file. It
+ * them, defaults filled in, `findingsCap` when the config sets one, so a configuration that sets none keeps the form it had, `exclude` when the config lists a pattern, and `send` when it lists a file. It
  * holds no config-file path, no warning and no provider name, so the same settings under other names are one
  * configuration, and a rotated key keeps a run. A `claude-code` provider's resolved command path is one of its
  * settings, so it is in the form.
@@ -111,6 +111,9 @@ export function canonicalSettings(config: ResolvedConfig): string {
   return JSON.stringify({
     concurrency: config.concurrency ?? 'auto',
     maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,
+    ...config.findingsCap === undefined
+      ? {}
+      : { findingsCap: config.findingsCap },
     partTokens: config.partTokens ?? DEFAULT_PART_TOKENS,
     maxReviewTokens: config.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS,
     reviewTimeoutMs: config.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,

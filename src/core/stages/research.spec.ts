@@ -135,7 +135,7 @@ describe('checkReply', () => {
     expect(outcome.findings.map(finding => finding.line)).toEqual([1, 2])
     expect(outcome.invalid).toEqual([])
     expect(outcome.incomplete).toEqual([
-      { profile: 'security', reason: 'findings-capped', detail: '1 of 3 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2)' },
+      { profile: 'security', reason: 'findings-capped', detail: '1 of 3 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2): raise findingsCap' },
     ])
   })
 
@@ -144,7 +144,7 @@ describe('checkReply', () => {
     const outcome = checkReply(reply(Array.from({ length: 51 }).fill(reported)), sections, 'security')
     expect(outcome.findings).toHaveLength(50)
     expect(outcome.incomplete).toEqual([
-      { profile: 'security', reason: 'findings-capped', detail: '1 of 51 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 50)' },
+      { profile: 'security', reason: 'findings-capped', detail: '1 of 51 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 50): raise findingsCap' },
     ])
   })
 
@@ -196,7 +196,7 @@ describe('checkReply', () => {
     expect(outcome.incomplete).toHaveLength(52)
     expect(outcome.incomplete.filter(entry => entry.reason === 'finding-unreadable')).toHaveLength(50)
     expect(outcome.incomplete.slice(50)).toEqual([
-      { profile: 'security', reason: 'findings-capped', detail: '4950 of 5000 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 50)' },
+      { profile: 'security', reason: 'findings-capped', detail: '4950 of 5000 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 50): raise findingsCap' },
       { profile: 'security', reason: 'research-unusable', detail: '5000 finding(s) reported, 50 of them read under the cap, none usable' },
     ])
   })
@@ -280,7 +280,7 @@ describe('checkReplies', () => {
     expect(outcome.findings).toHaveLength(50)
     expect(outcome.invalid).toEqual([])
     expect(outcome.incomplete).toEqual([
-      { profile: 'security', reason: 'findings-capped', detail: '10 of 60 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 50)' },
+      { profile: 'security', reason: 'findings-capped', detail: '10 of 60 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 50): raise findingsCap' },
     ])
   })
 
@@ -295,7 +295,7 @@ describe('checkReplies', () => {
     ], sections, 'security', 2)
     expect(outcome.findings.map(found => found.category)).toEqual(['A0', 'B0'])
     expect(outcome.incomplete).toEqual([
-      { profile: 'security', reason: 'findings-capped', detail: '3 of 5 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2)' },
+      { profile: 'security', reason: 'findings-capped', detail: '3 of 5 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2): raise findingsCap' },
     ])
   })
 
@@ -438,7 +438,7 @@ describe('checkReplies', () => {
       ], sections, 'security', 1)
       expect(outcome.unread).toEqual([])
       expect(outcome.incomplete).toEqual([
-        { profile: 'security', reason: 'findings-capped', detail: '1 of 2 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 1)' },
+        { profile: 'security', reason: 'findings-capped', detail: '1 of 2 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 1): raise findingsCap' },
       ])
     })
   })
@@ -457,7 +457,7 @@ describe('checkReplies', () => {
         'finding-unreadable',
         expect.stringMatching(/^findings\[0\]: /),
       ],
-      ['findings-capped', '1 of 3 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2)'],
+      ['findings-capped', '1 of 3 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2): raise findingsCap'],
     ])
     expect(outcome.findings).toHaveLength(1)
   })
@@ -481,6 +481,79 @@ describe('checkReplies', () => {
       },
     ], sections, 'security').counts).toEqual({ listed: 2, capped: 0, saturated: 0 })
     expect(checkReplies([], sections, 'security').counts).toEqual({ listed: 0, capped: 0, saturated: 0 })
+  })
+
+  it.each([
+    [
+      'the cap\'s lever',
+      [
+        {
+          text: reply(named('A', 5)),
+        },
+      ],
+      3,
+      3,
+      '2 of 5 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 3): raise findingsCap',
+    ],
+    [
+      'maxFindings, for a reply that asked for maxFindings',
+      [
+        {
+          text: reply(named('A', 2)),
+          asked: 2,
+        },
+      ],
+      2,
+      2,
+      '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: raise maxFindings',
+    ],
+    [
+      'maxTokens, for a reply whose budget asked for fewer',
+      [
+        {
+          text: reply(named('A', 2)),
+          asked: 2,
+        },
+      ],
+      50,
+      50,
+      '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: raise maxTokens, since the reply budget holds 2 of maxFindings 50',
+    ],
+    [
+      'both, joined',
+      [
+        {
+          text: reply(named('A', 3)),
+          asked: 3,
+        },
+        {
+          text: reply(named('B', 1)),
+          asked: 3,
+        },
+      ],
+      2,
+      3,
+      '1 research reply(ies) listed the 3 findings they were asked for at most, so they may have left some out: raise maxFindings; 2 of 4 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2): raise findingsCap',
+    ],
+  ])('ends the findings-capped detail with %s', (_name, replies, cap, requestFindings, detail) => {
+    const outcome = checkReplies(replies, sections, 'security', cap, undefined, requestFindings)
+    expect(outcome.incomplete).toEqual([
+      { profile: 'security', reason: 'findings-capped', detail },
+    ])
+  })
+
+  it('reads the saturation lever from the request\'s maxFindings, which is the cap unless given, and the cap does not move it', () => {
+    const replies = [
+      {
+        text: reply(named('A', 50)),
+        asked: 50,
+      },
+    ]
+    const asks = '1 research reply(ies) listed the 50 findings they were asked for at most, so they may have left some out: raise maxFindings'
+    const cap = '30 of 50 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 20): raise findingsCap'
+    expect(checkReplies(replies, sections, 'security', 20, undefined, 50).incomplete[0].detail).toBe(`${asks}; ${cap}`)
+    expect(checkReplies(replies, sections, 'security', 20).incomplete[0].detail).toBe(`${asks}; ${cap}`)
+    expect(checkReplies(replies, sections, 'security', 20, undefined, 80).incomplete[0].detail).toContain('raise maxTokens, since the reply budget holds 50 of maxFindings 80; ')
   })
 
   it('counts an unreadable entry among what the reply listed', () => {

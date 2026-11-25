@@ -33,11 +33,10 @@ import { checkOutputs, colorFor, reportPlan, writeOutputs } from './outputs.ts'
 import type { ColorWhen, ReportPlan } from './outputs.ts'
 import { printConfig } from './print-config.ts'
 import { bannerLines, boundWarnings, estimateLines, EXACT_WORDS, findingsCapOf, viewFacts } from './render.ts'
-import type { Bounds, NumberWords } from './render.ts'
+import type { BoundFacts, Bounds, NumberWords } from './render.ts'
 import { runReport } from './report.ts'
 import { rerunCouldFill } from './view/summary.ts'
 import { progressMode, viewWriter } from './view/progress.ts'
-import type { CapOrigin } from './view/model.ts'
 import type { ProgressMode } from './view/progress.ts'
 import type { ViewWriter } from './view/writer.ts'
 
@@ -139,7 +138,7 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * A path review is a codebase and not a change, so its size is the tree's, and its bounds follow it (see `pathBounds`). After
  * the banner and before any call it prints its estimate on stderr (see `Quorum.estimate`), ending with the review's token cap and
  * deadline and finding cap: with `maxReviewTokens` unset the cap is the estimate's worst case, never below 2000000, with `reviewTimeoutMs`
- * unset the deadline is 24 hours, the longest allowed, and with `maxFindings` unset the panel reads one finding per research part, at least 50, which the
+ * unset the deadline is 24 hours, the longest allowed, and with neither `findingsCap` nor `maxFindings` set the panel reads one finding per research part, at least 50, which the
  * estimate's votes count; a set one is kept. A large review, whose expected research spend and calls in flight pass 2000000 under a cap that follows the
  * estimate, is warned of, and so is a cap the config sets below what the estimate expects, which the review runs to, the rest a `token-cap`
  * gap, exit 4. A path review is never held for its size, and `--large` warns that it does nothing. A diff, a range and the
@@ -369,7 +368,7 @@ export async function runCli(io: CliIO): Promise<number> {
           : undefined)
       : undefined
     if (read.diff.trim() === '') view.line('notice', 'empty diff: nothing to review')
-    view.begin(viewFacts(config, bounded?.estimate, bounded?.facts))
+    view.begin(viewFacts(config, { estimate: bounded?.estimate, bounds: bounded?.facts, budgets: quorum.budgets }))
     // The setup's last await is behind: a signal that came before the review is called starts none, and leaves no result.
     if (io.signal?.aborted) {
       await view.close()
@@ -431,10 +430,10 @@ export async function runCli(io: CliIO): Promise<number> {
 interface PathBounds {
   /** The estimate made under the bounds, which the view weighs the parts not yet started with. */
   readonly estimate: Estimate
-  /** The cap and the deadline the review is given, in place of the quorum's, and its finding cap when the config sets no `maxFindings`. */
+  /** The cap and the deadline the review is given, in place of the quorum's, and its finding cap when the config sets neither `findingsCap` nor `maxFindings`. */
   readonly limits: { readonly maxReviewTokens: number, readonly reviewTimeoutMs: number, readonly findingsCap?: number }
   /** The same, as the view's facts name them, the cap with where it came from. */
-  readonly facts: { readonly cap: { readonly tokens: number, readonly origin: CapOrigin }, readonly deadlineMs: number, readonly findingsCap: number }
+  readonly facts: BoundFacts
 }
 
 /**
@@ -442,7 +441,7 @@ interface PathBounds {
  * codebase, so its size is the tree's: the first estimate is made under the quorum's own limits, and the cap is the
  * config's `maxReviewTokens` when it sets one, else the worst case of an estimate that counts the panel's votes at the
  * finding cap, never below `DEFAULT_MAX_REVIEW_TOKENS`, the deadline the config's `reviewTimeoutMs`, else the longest a
- * review may run, and the finding cap the config's `maxFindings`, else one finding per research part, at least 50 (`findingsCapOf`). The estimate printed is a second
+ * review may run, and the finding cap the config's `findingsCap`, else its `maxFindings`, else one finding per research part, at least 50 (`findingsCapOf`). The estimate printed is a second
  * one, made under those bounds, with the warnings they call for: a large review, or a cap below what the estimate
  * expects. The review is never held for its size: it runs to its cap or its deadline, and what they stop is a gap.
  * `--large` warns and does nothing. The estimate's counts and durations are scaled for a person, and exact (`words`) under `--progress json`,
@@ -450,7 +449,8 @@ interface PathBounds {
  */
 function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: string, readonly send: readonly string[], readonly context: ReviewContext }, config: ResolvedConfig, large: boolean, words?: NumberWords): PathBounds {
   const first = quorum.estimate(input)
-  const findingsCap = config.maxFindings ?? findingsCapOf(first)
+  const findingsCap = config.findingsCap ?? config.maxFindings ?? findingsCapOf(first)
+  const derived = config.findingsCap === undefined && config.maxFindings === undefined
   // The first estimate counts the votes at the quorum's own cap: it serves when that is the review's too.
   const { worst } = findingsCap === first.findingsCap
     ? first
@@ -467,7 +467,7 @@ function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: st
   const limits = {
     maxReviewTokens: cap.tokens,
     reviewTimeoutMs: deadlineMs,
-    ...config.maxFindings === undefined
+    ...derived
       ? { findingsCap }
       : {},
   }
@@ -477,11 +477,13 @@ function pathBounds(view: ViewWriter, quorum: Quorum, input: { readonly diff: st
     deadline: config.reviewTimeoutMs === undefined
       ? 'longest'
       : 'config',
-    findings: config.maxFindings !== undefined
-      ? 'config'
-      : findingsCap > DEFAULT_MAX_FINDINGS
-        ? 'parts'
-        : 'floor',
+    findings: config.findingsCap !== undefined
+      ? 'findingsCap'
+      : config.maxFindings !== undefined
+        ? 'maxFindings'
+        : findingsCap > DEFAULT_MAX_FINDINGS
+          ? 'parts'
+          : 'floor',
   }
   for (const line of estimateLines(estimate, bounds, words)) view.line('estimate', line)
   for (const line of boundWarnings(estimate, bounds, words)) view.line('warning', line)

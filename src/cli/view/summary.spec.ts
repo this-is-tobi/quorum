@@ -3,10 +3,10 @@ import type { ConcurrencyRecord } from '../../core/lanes.ts'
 import type { IncompleteReason, QuorumEvent, StageName } from '../../core/types.ts'
 import type { ReportView } from '../../report/view.ts'
 import { longReview, replay } from '../../testing/events.ts'
-import { contextDocument, reportResult, SQL, TOKEN } from '../../testing/report.ts'
+import { contextDocument, reportMeta, reportResult, SQL, TOKEN } from '../../testing/report.ts'
 import { DEFAULT_FACTS, fold, startState } from './model.ts'
-import type { ViewState } from './model.ts'
-import { rerunCouldFill, summaryLines } from './summary.ts'
+import type { ViewFacts, ViewState } from './model.ts'
+import { cappedFix, rerunCouldFill, summaryLines } from './summary.ts'
 import type { SummaryFacts } from './writer.ts'
 
 const ESC = String.fromCharCode(0x1B)
@@ -35,6 +35,11 @@ function lines(state: ViewState, facts: SummaryFacts = factsOf(), view: ReportVi
 
 /** A review whose research started, which folded `events` after. */
 function reviewed(...events: QuorumEvent[]): ViewState {
+  return reviewedUnder(DEFAULT_FACTS, ...events)
+}
+
+/** A review of the facts `facts`, whose research started, which folded `events` after. */
+function reviewedUnder(facts: ViewFacts, ...events: QuorumEvent[]): ViewState {
   const first: QuorumEvent[] = [
     {
       type: 'run:start',
@@ -56,7 +61,7 @@ function reviewed(...events: QuorumEvent[]): ViewState {
   return [
     ...first,
     ...events,
-  ].reduce((state, event) => fold(state, event, 1000), startState(DEFAULT_FACTS))
+  ].reduce((state, event) => fold(state, event, 1000), startState(facts))
 }
 
 /** The detail the core writes for a gap of `reason`, counting `count` research parts for the three reasons that count them. */
@@ -1036,13 +1041,6 @@ describe('summaryLines', () => {
       '1 gap(s) reply-cut-off: make replies shorter, with a lower maxTokens or partTokens',
     ],
     [
-      'findings-capped',
-      [
-        incomplete('findings-capped'),
-      ],
-      '1 gap(s) findings-capped: raise maxFindings',
-    ],
-    [
       'request-too-large',
       [
         incomplete('request-too-large'),
@@ -1058,6 +1056,132 @@ describe('summaryLines', () => {
     ],
   ])('writes a %s gap with its fix', (_name, events, entry) => {
     expect(lines(reviewed(...events))).toContain(`gaps: ${entry}`)
+  })
+
+  describe('a findings-capped gap\'s fix', () => {
+    interface Counts { readonly capped: number, readonly saturated: number }
+    const counted = (profiles: Readonly<Record<string, Counts>>, asks: ViewFacts['asks']): string[] => {
+      const base = reportMeta().profiles.security
+      const state = reviewedUnder({ ...DEFAULT_FACTS, asks }, ...Object.keys(profiles).map(profile => incomplete('findings-capped', 1, profile)))
+      return lines(state, factsOf({
+        result: reportResult({
+          meta: {
+            profiles: Object.fromEntries(Object.entries(profiles).map(([id, own]) => [
+              id,
+              {
+                ...base,
+                research: {
+                  parts: 3,
+                  listed: 9,
+                  panel: 5,
+                  ...own,
+                },
+              },
+            ])),
+          },
+        }),
+      }))
+    }
+
+    it.each([
+      [
+        'findingsCap, for the findings the cap left unread',
+        {
+          security: { capped: 2, saturated: 0 },
+        },
+        {
+          maxFindings: 50,
+          findings: { security: 50 },
+        },
+        'gaps: 1 gap(s) findings-capped: raise findingsCap',
+      ],
+      [
+        'maxFindings, for replies that listed all they were asked and asked for maxFindings',
+        {
+          security: { capped: 0, saturated: 1 },
+        },
+        {
+          maxFindings: 50,
+          findings: { security: 50 },
+        },
+        'gaps: 1 gap(s) findings-capped: raise maxFindings',
+      ],
+      [
+        'maxTokens, for replies that listed all they were asked and asked for fewer',
+        {
+          security: { capped: 0, saturated: 1 },
+        },
+        {
+          maxFindings: 50,
+          findings: { security: 47 },
+        },
+        'gaps: 1 gap(s) findings-capped: raise maxTokens',
+      ],
+      [
+        'findingsCap and maxTokens, joined',
+        {
+          security: { capped: 2, saturated: 1 },
+        },
+        {
+          maxFindings: 50,
+          findings: { security: 47 },
+        },
+        'gaps: 1 gap(s) findings-capped: raise findingsCap, and maxTokens',
+      ],
+      [
+        'the three, one profile capped and saturated at 47 and one saturated at 50',
+        {
+          security: { capped: 2, saturated: 1 },
+          style: { capped: 0, saturated: 1 },
+        },
+        {
+          maxFindings: 50,
+          findings: { security: 47, style: 50 },
+        },
+        'gaps: 2 gap(s) findings-capped: raise findingsCap, maxTokens, and maxFindings',
+      ],
+    ] as const)('fixes a findings-capped gap with %s', (_name, profiles, asks, line) => {
+      expect(counted(profiles, asks)).toContain(line)
+    })
+
+    it('reads the fix from the counts, never from the gap\'s detail, and leaves it to the report when no profile counts either', () => {
+      const asks = { maxFindings: 50, findings: {} }
+      expect(counted({
+        security: { capped: 0, saturated: 0 },
+      }, asks)).toContain('gaps: 1 gap(s) findings-capped: see the gap in the report')
+    })
+
+    it('takes a profile the asks name none of as asking maxFindings, even one named like an object\'s own property', () => {
+      const base = reportMeta().profiles.security
+      const research = (saturated: number): typeof base.research => ({
+        parts: 1,
+        listed: 1,
+        panel: 1,
+        capped: 0,
+        saturated,
+      })
+      expect(cappedFix({
+        constructor: {
+          ...base,
+          research: research(1),
+        },
+      }, { maxFindings: 50, findings: {} })).toBe('raise maxFindings')
+      expect(cappedFix({
+        security: {
+          ...base,
+          research: research(1),
+        },
+      }, {
+        maxFindings: 50,
+        findings: { security: 12 },
+      })).toBe('raise maxTokens')
+      expect(cappedFix({
+        security: {
+          ...base,
+          research: research(0),
+        },
+      }, { maxFindings: 50, findings: {} })).toBe('see the gap in the report')
+    })
   })
 
   it('names the cut\'s advice for a reply-cut-off gap of a provider that learned its cut, and the limit\'s fix for one that did not', () => {
