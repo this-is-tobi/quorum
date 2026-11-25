@@ -506,6 +506,131 @@ describe('the schemas of a result', () => {
     }).success).toBe(false)
   })
 
+  it('reads meta.calls, and refuses nine served models or a result without it', () => {
+    const served = (count: number): Array<{ model: string, calls: number }> => Array.from({ length: count }, (_, index) => ({ model: `local-model-${index + 1}`, calls: 1 }))
+    const calls = {
+      p: {
+        model: 'm',
+        served: served(8),
+        servedOthers: 2,
+      },
+      q: { model: 'n', served: [] },
+    }
+    const result = reportResult({
+      meta: { calls },
+    })
+    const full = saved(result)
+    const view = saved(publicView(result))
+    expect(resultSchema.parse(full)).toEqual(full)
+    expect(JSON.stringify(resultSchema.parse(full))).toBe(JSON.stringify(full))
+    // The record sits after the usage and before the gaps, its keys in the order the core writes them.
+    expect(Object.keys(full.meta).slice(4, 7)).toEqual(['profiles', 'usage', 'calls'])
+    expect(Object.keys(full.meta.calls.p)).toEqual(['model', 'served', 'servedOthers'])
+    expect(Object.keys(full.meta.calls.p.served[0])).toEqual(['model', 'calls'])
+    const withCalls = (changes: unknown): Forged => ({
+      ...full,
+      meta: {
+        ...full.meta,
+        calls: changes,
+      },
+    })
+    // A result of 0.13.0 has none, and a meta without it is no result.
+    const { calls: _calls, ...older } = full.meta
+    expect(resultSchema.safeParse({ ...full, meta: older }).success).toBe(false)
+    expect(resultSchema.safeParse(withCalls({})).success).toBe(true)
+    // Eight served models and a model of 100 characters are the most, and nine, or 101 characters, are refused.
+    expect(resultSchema.safeParse(withCalls({
+      p: {
+        model: 'm',
+        served: served(8),
+      },
+    })).success).toBe(true)
+    expect(resultSchema.safeParse(withCalls({
+      p: {
+        model: 'm',
+        served: served(9),
+      },
+    })).success).toBe(false)
+    expect(resultSchema.safeParse(withCalls({
+      p: {
+        model: 'm',
+        served: [
+          {
+            model: 'x'.repeat(100),
+            calls: 1,
+          },
+        ],
+      },
+    })).success).toBe(true)
+    expect(resultSchema.safeParse(withCalls({
+      p: {
+        model: 'm',
+        served: [
+          {
+            model: 'x'.repeat(101),
+            calls: 1,
+          },
+        ],
+      },
+    })).success).toBe(false)
+    // Each count is a whole number, `servedOthers` is absent when there is none, and no record holds a field but its own.
+    for (const forged of [
+      {
+        model: 'm',
+        served: [
+          { model: 'a', calls: -1 },
+        ],
+      },
+      {
+        model: 'm',
+        served: [
+          { model: 'a', calls: 1.5 },
+        ],
+      },
+      {
+        model: 'm',
+        served: [
+          { model: 'a', calls: '1' },
+        ],
+      },
+      {
+        model: 'm',
+        served: [
+          { model: 'a', calls: 1, extra: 1 },
+        ],
+      },
+      {
+        model: 'm',
+        served: [
+          { model: 3, calls: 1 },
+        ],
+      },
+      { model: 'm', served: [], servedOthers: 0 },
+      { model: 'm', served: [], servedOthers: 1.5 },
+      { model: 'm', served: [], extra: 1 },
+      { model: 'm' },
+      { served: [] },
+      {
+        model: 'm',
+        served: { a: 1 },
+      },
+    ]) {
+      expect(resultSchema.safeParse(withCalls({ p: forged })).success, JSON.stringify(forged)).toBe(false)
+    }
+    expect(resultSchema.safeParse(withCalls([])).success).toBe(false)
+    expect(resultSchema.safeParse(withCalls(null)).success).toBe(false)
+    // The public view holds none: the view withholds it, and a view that holds it is no view quorum writes.
+    expect(view.meta).not.toHaveProperty('calls')
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(publicViewSchema.safeParse({
+      ...view,
+      meta: {
+        ...view.meta,
+        calls,
+      },
+    }).success).toBe(false)
+  })
+
   it('reads a profile\'s asksNothing as true alone, after its invalidRules, in the public view too, and does not require it', () => {
     const base = reportResult().meta
     // The profile as the core writes it: the flag after the counts of rules, before the coverage.

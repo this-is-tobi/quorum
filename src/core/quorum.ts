@@ -23,6 +23,7 @@ import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, INT
 import { isRecord } from './output.ts'
 import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap, withCapped } from './parts.ts'
 import type { Packing, PartResult, UnreadPlace } from './parts.ts'
+import { MAX_SERVED } from './result-schema.ts'
 import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, slotsProblem, streamsProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts, ReplyStore } from './ports.ts'
 import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
@@ -35,7 +36,7 @@ import { panel } from './stages/panel.ts'
 import type { PanelOutcome } from './stages/panel.ts'
 import { planResearch, research } from './stages/research.ts'
 import type { ResearchPlan } from './stages/research.ts'
-import type { ContextRecord, CoverageEntry, Estimate, Profile, ProfileMeta, ProfileProviders, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ResearchRecord, ReviewContext, ReviewDocument, ReviewInput, ReviewSource, Usage } from './types.ts'
+import type { ContextRecord, CoverageEntry, Estimate, Profile, ProfileMeta, ProfileProviders, ProviderCalls, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ResearchRecord, ReviewContext, ReviewDocument, ReviewInput, ReviewSource, Usage } from './types.ts'
 
 const PROVIDER_SHAPE = 'must be a provider: an object with a string id, a string model and a complete function'
 
@@ -94,6 +95,36 @@ interface Tally {
   readonly invalidRules: Map<string, number>
   /** The research calls and the votes a store answered, counted from the `call` events that say `reused`. */
   readonly reused: { research: number, votes: number }
+  /** What each provider's answered calls' replies named as the model that answered, by provider id in the order its first call ended, counted from the `call` events that name one (`countCall`). */
+  readonly calls: Map<string, ProviderCalls>
+}
+
+/**
+ * Counts a `call` event into its provider's record, which the provider's first event makes, with the `model` its `ProviderRef`
+ * holds and no served model: an answered call adds one to the model its reply named, one that names a ninth model or a later one
+ * adds one to `servedOthers`, and a call that named none (a failed one, one the store answered) adds none.
+ */
+function countCall(calls: Map<string, ProviderCalls>, event: Extract<QuorumEvent, { type: 'call' }>): void {
+  const { provider, model } = event
+  const record = calls.get(provider.id) ?? { model: provider.model, served: [] }
+  calls.set(provider.id, record)
+  if (model === undefined) return
+  const named = record.served.find(served => served.model === model)
+  if (named !== undefined) {
+    named.calls += 1
+  } else if (record.served.length < MAX_SERVED) {
+    record.served.push({ model, calls: 1 })
+  } else {
+    record.servedOthers = (record.servedOthers ?? 0) + 1
+  }
+}
+
+/** The providers' records as `meta.calls` holds them: copies, so the tally and the result share nothing. */
+function callsRecord(calls: ReadonlyMap<string, ProviderCalls>): QuorumMeta['calls'] {
+  return Object.fromEntries([...calls].map(([id, record]) => [
+    id,
+    structuredClone(record),
+  ]))
 }
 
 /**
@@ -508,9 +539,11 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
     invalidFindings: new Map(),
     invalidRules: new Map(),
     reused: { research: 0, votes: 0 },
+    calls: new Map(),
   }
   const emit = (event: QuorumEvent): void => {
     if (signal.aborted) return
+    if (event.type === 'call') countCall(tally.calls, event)
     if (event.type === 'call' && event.usage !== undefined) tally.usage = addUsage(tally.usage, event.usage)
     if (event.type === 'call' && event.reused === true) {
       tally.reused[event.role === 'research'
@@ -641,6 +674,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
     ...(tally.usage === undefined
       ? {}
       : { usage: tally.usage }),
+    calls: callsRecord(tally.calls),
     incomplete,
     leftOut,
     flags,

@@ -1328,6 +1328,20 @@ describe('meta and events', () => {
           ],
         },
       },
+      calls: {
+        finder: {
+          model: 'finder-model',
+          served: [
+            { model: 'finder-model', calls: 1 },
+          ],
+        },
+        voter: {
+          model: 'voter-model',
+          served: [
+            { model: 'voter-model', calls: 3 },
+          ],
+        },
+      },
       incomplete: [],
       leftOut: [],
       flags: [],
@@ -1418,6 +1432,7 @@ describe('meta and events', () => {
       'durationMs',
       'source',
       'profiles',
+      'calls',
       'incomplete',
       'leftOut',
       'flags',
@@ -1452,6 +1467,7 @@ describe('meta and events', () => {
       'durationMs',
       'source',
       'profiles',
+      'calls',
       'incomplete',
       'leftOut',
       'flags',
@@ -1526,6 +1542,7 @@ describe('meta and events', () => {
       'source',
       'profiles',
       'usage',
+      'calls',
       'incomplete',
       'leftOut',
       'flags',
@@ -6213,6 +6230,122 @@ describe('adaptations', () => {
       panel: 0,
       capped: 0,
       saturated: 0,
+    })
+  })
+
+  it('records the models each provider\'s replies named, with their counts, of a profile of its own', async () => {
+    const local = providerOf('local', undefined, () => '', {
+      async complete(request) {
+        return {
+          text: isVote(request)
+            ? vote(true)
+            : findings(named(fileOf(request))),
+          model: isVote(request)
+            ? 'local-model-b'
+            : 'local-model-a',
+        }
+      },
+    })
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [naming],
+      partTokens: 1024,
+    }, {
+      ...portsFor(naming, local),
+      events: event => events.push(event),
+    }).review({ diff: bigDiff })
+    // Three research calls named one model and three votes another, the provider's own being `local-model`.
+    expect(result.meta.calls).toEqual({
+      local: {
+        model: 'local-model',
+        served: [
+          { model: 'local-model-a', calls: 3 },
+          { model: 'local-model-b', calls: 3 },
+        ],
+      },
+    })
+    expect(events.flatMap(event => event.type === 'call'
+      ? [event.model]
+      : [])).toEqual(expect.arrayContaining(['local-model-a', 'local-model-b']))
+    // The record sits after the usage and before the gaps, and a result read back is written as it was.
+    expect(Object.keys(result.meta).slice(4, 7)).toEqual(['profiles', 'calls', 'incomplete'])
+    const saved = JSON.parse(JSON.stringify(result)) as unknown
+    expect(resultSchema.parse(saved)).toEqual(saved)
+  })
+
+  it('keeps at most 8 served models and counts the calls of the rest', async () => {
+    const files = ['a.js', 'b.js', 'c.js', 'd.js', 'e.js']
+    let answered = 0
+    const local = providerOf('local', undefined, () => '', {
+      async complete(request) {
+        answered += 1
+        return {
+          text: isVote(request)
+            ? vote(true)
+            : findings(named(fileOf(request))),
+          model: `local-model-${answered}`,
+        }
+      },
+    })
+    const result = await createQuorum({
+      profiles: [naming],
+      partTokens: 1024,
+      concurrency: 1,
+    }, portsFor(naming, local)).review({
+      diff: files.map(bigSection).join('\n'),
+    })
+    // Five research calls and five votes, each named by a model of its own: the first eight in the order seen, then the rest counted.
+    expect(answered).toBe(10)
+    expect(result.meta.calls).toEqual({
+      local: {
+        model: 'local-model',
+        served: Array.from({ length: 8 }, (_, index) => ({ model: `local-model-${index + 1}`, calls: 1 })),
+        servedOthers: 2,
+      },
+    })
+    const saved = JSON.parse(JSON.stringify(result)) as unknown
+    expect(resultSchema.parse(saved)).toEqual(saved)
+  })
+
+  it('records no provider for a review that made no call', async () => {
+    const local = localOf(file => [
+      named(file),
+    ])
+    const result = await createQuorum({
+      profiles: [naming],
+    }, portsFor(naming, local)).review({ diff: '  \n' })
+    expect(local.requests).toEqual([])
+    expect(result.meta.calls).toEqual({})
+  })
+
+  it('sends a call event with no model for a provider object whose reply holds none, and completes the review', async () => {
+    const unnamed: Provider = {
+      id: 'local',
+      model: 'local-model',
+      room: () => 100_000,
+      async complete(request) {
+        return {
+          text: isVote(request)
+            ? vote(true)
+            : findings(named(fileOf(request))),
+        } as unknown as CompletionResponse
+      },
+    }
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [naming],
+      partTokens: 1024,
+    }, {
+      ...portsFor(naming, unnamed),
+      events: event => events.push(event),
+    }).review({ diff: bigDiff })
+    expect(result.kept).toHaveLength(3)
+    const calls = events.filter(event => event.type === 'call')
+    expect(calls).toHaveLength(6)
+    for (const call of calls) expect(call).not.toHaveProperty('model')
+    // The provider made its calls and no reply named a model: its record says so.
+    expect(result.meta.calls).toEqual({
+      local: { model: 'local-model', served: [] },
     })
   })
 

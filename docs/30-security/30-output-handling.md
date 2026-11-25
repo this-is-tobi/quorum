@@ -9,6 +9,7 @@ A result carries text that models wrote while reading a change an attacker may h
 | Field | Written by | Before it reaches the result |
 | --- | --- | --- |
 | `summary`, `category` | The finder | Stripped of control, format and other invisible characters, then capped |
+| `meta.calls.<id>.served[].model`, and the `model` of an answered `call` event | The server, in the reply it sent | Stripped of control, format and other invisible characters, white space collapsed, then capped at 100 characters, as a category is. No other text of a server reaches a line of the summary or of the text report |
 | `votes[].vote.reasoning` | A voter | Nothing is done to it |
 | `votes[].error`, the CLI's `Error:` line, and a failed review's progress line in `quorum bench` | The provider, or the core when a reply is unusable | The server text or reply they quote is a JSON string, cut short; a provider of your own writes its messages as it likes. A bench's failed review quotes the error of an endpoint's failure, never a model's reply: a review whose reply could not be used is recorded with a `research-failed` gap, and its line holds only words the bench wrote |
 | `file`, and the `file` of each entry of `meta.leftOut` and of each profile's coverage | The pull request, which named the file | The diff's own path, which can hold any character a file name can; for a diff without per-file headers, the finder's name for it, cleaned |
@@ -97,7 +98,7 @@ A pull request comment, a code scanning alert and the job summary of a public re
 | --- | --- |
 | Each vote's `reasoning` and `error` | The reasoning is a model's answer to the author's text, so it tells the author which wording moved a voter: an oracle to tune the next push by. The error quotes a server. A vote keeps its lens (`angle`), whether it kept the finding (`keep`, `null` when it failed) and what it failed with (`failure`), which are words and numbers quorum wrote |
 | The discarded findings | A finding the panel cleared tells the author that the finder saw it, and each is the finder's text. `discarded` is empty, and `meta.profiles.<id>.discarded` counts them |
-| The providers and models | A model's name lets an attacker rehearse on the same open pipeline, and a provider's id can name an internal host |
+| The providers and models, and `meta.calls` | A model's name lets an attacker rehearse on the same open pipeline, and a provider's id can name an internal host. `meta.calls` holds the models the replies named, which are that name too, and a sharper one behind a gateway's alias, since it is the model that read the author's text, so the view withholds it with the rest. The summary, the text report and `quorum report` show it to the operator, and the Markdown report, its line comments and SARIF, which are made to be posted, write none |
 | `meta.usage` | The tokens measure how close a review came to its cap, which is what a denial-of-wallet attempt aims at |
 | Each profile's `research` counts | The findings its research listed, the panel was asked about and the finding cap left unread measure how close research came to the finding cap, which is what a flood of findings aims at. The view keeps the coverage, where a file the cap left in part reads `partial`, and a report describes the gap in fixed words |
 | Each gap's `detail` | A detail can quote a server's text or a file name. A gap keeps its `profile`, `reason` and `file`, and a report describes it in fixed words |
@@ -120,7 +121,7 @@ Under `--view public` a CI log, which a stranger may read, carries less than the
 - **A `warning:` line** is as the full view writes it, and none names a URL, a host, a model or a key: each names a config path, a provider key, a profile id, a variable name or a preset.
 - **Every other line** is as the full view writes it: the `left out:` line, the `flag:` lines and the totals.
 
-The text report of a public view is the report of the result but for three kinds of line: a gap is written in the fixed words of its reason, the time has no token count, and a profile has no research line.
+The text report of a public view is the report of the result but for four kinds of line: a gap is written in the fixed words of its reason, the time has no token count, a profile has no research line, and no line names the models that answered.
 
 ### Public-only formats
 

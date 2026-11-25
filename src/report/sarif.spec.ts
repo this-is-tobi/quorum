@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
 import type { FailOn, LeftOutFile, PublicView, QuorumResult, Verdict } from '../core/types.ts'
 import { HOSTILE, RLO } from '../testing/markdown.ts'
-import { blankResult, FINDINGS, LIFTED, reportMeta, reportResult, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
+import { blankResult, FINDINGS, LIFTED, reportMeta, reportResult, SERVED_AS_TWO, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
 import { githubSarif } from '../testing/sarif.ts'
 import { artifactUri, DOCS_URL, FINGERPRINT_KEY, MAX_LOCATIONS, sarif, SARIF_SCHEMA } from './sarif.ts'
 import { publicView } from './view.ts'
@@ -186,6 +186,18 @@ describe('sarif', () => {
     expect(MAIN.runs[0].tool.driver.informationUri).toBe(DOCS_URL)
     expect(Object.keys(MAIN.runs[0].results[0].partialFingerprints)).toEqual([FINGERPRINT_KEY])
     expect(render(reportResult()).endsWith('\n')).toBe(true)
+  })
+
+  it('writes no served model and nothing of meta.calls, from a result whose provider answered as two models', () => {
+    // The document is made to be uploaded, so the models only the operator reads stay out of it, as of the public view it is written from.
+    const answered = reportResult({
+      meta: { calls: SERVED_AS_TWO },
+    })
+    expect(JSON.parse(render(answered))).toEqual(MAIN)
+    expect(render(answered)).not.toContain('local-model-2026')
+    expect(render(answered)).not.toContain('local-model-2027')
+    expect(render(answered)).not.toContain('answered as')
+    expect(render(publicView(answered))).toBe(render(reportResult()))
   })
 
   it('writes a finding\'s rule in its message, after the category, and none for a finding that cites none', () => {

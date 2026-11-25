@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
 import type { Flag, LeftOutFile, PublicView, QuorumResult, Verdict } from '../core/types.ts'
 import { expectCodeWritten as expectWritten, HOSTILE, RLO } from '../testing/markdown.ts'
-import { blankResult, cast, contextDocument, FINDINGS, INCOMPLETE, INTERRUPTED, PASS, reportResult, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
+import { blankResult, cast, contextDocument, FINDINGS, INCOMPLETE, INTERRUPTED, PASS, reportResult, SERVED_AS_TWO, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
 import { LISTED, markdown, SUMMARY_BUDGET, summaryMarkdown } from './markdown.ts'
 import { renderReport } from './registry.ts'
 import { publicView } from './view.ts'
@@ -122,6 +122,19 @@ function listUnder(lines: readonly string[], heading: string): string[] {
 describe('markdown', () => {
   it('renders a review for a pull request: the verdict, the profiles, each finding with its evidence, the gaps, what was left out, the flags and the source', () => {
     expect(render(reportResult())).toEqual(MAIN)
+  })
+
+  it('writes no served model and nothing of meta.calls, from a result whose provider answered as two models', () => {
+    // The summary is made to be posted, so the models only the operator reads stay out of it, as of the public view it is written from.
+    const answered = reportResult({
+      meta: { calls: SERVED_AS_TWO },
+    })
+    const lines = render(answered)
+    expect(lines).toEqual(MAIN)
+    expect(lines.join('\n')).not.toContain('local-model-2026')
+    expect(lines.join('\n')).not.toContain('local-model-2027')
+    expect(lines.join('\n')).not.toContain('answered as')
+    expect(render(publicView(answered))).toEqual(MAIN)
   })
 
   it('writes a finding\'s rule in a code span in the summary, after its category, and none for a finding that cites none', () => {

@@ -59,6 +59,7 @@ A failed vote counts as a reject. Its `failure` holds only what the code read, n
 | `source` | object | Where the diff came from: [The source](#the-source) |
 | `profiles` | object | One entry per profile, keyed by profile id, in the order of the review's profiles |
 | `usage` | object | Only when at least one call reported valid counts: `inputTokens` and `outputTokens` summed over those calls, then `costUsd`, summed over the calls that reported one, when any did |
+| `calls` | object | What each provider's replies named as the model that answered, one entry per provider id that made a call, keyed by it, in the order its first call ended: [The calls](#the-calls). `{}` when the review made no call. Required in every result of this release: a result of 0.13.0 has none, and `readResult` refuses it. The public view withholds it |
 | `incomplete` | entry[] | The gaps of the review, profile by profile, each profile's gaps for the files left out first, then its `too-large` gap, then its research gaps, then its panel's, then its limits'. A review is complete when this list and `unreviewed` are both empty |
 | `leftOut` | entry[] | Every file the review left out, once per file, reason and rule: the files its source left out before it made the diff first, then the diff's own in its order: [A file left out](#a-file-left-out). Empty when it left none out, a blank diff included |
 | `flags` | flag[] | The advisory flags, the `secret-file` flags of the files left out first, in the order `leftOut` lists them, then those read from the diff, file by file in its order, then the `guideline-edited` flags, in the order of the review's documents: [A flag](#a-flag). Empty when nothing was flagged, a blank diff included |
@@ -67,7 +68,7 @@ A failed vote counts as a reject. Its `failure` holds only what the code read, n
 | `concurrency` | object | Only when the review made a call: what each provider's lane did, one entry per provider id, keyed by it: [The lanes](#the-lanes) |
 | `reused` | object | Only when the review was given a state directory (`--state`, or a `store` in the library), even when nothing was reused: `research`, the research calls, and `votes`, the votes, that the store answered instead of a provider, whole numbers of at least 0, counted from the `call` events that say `reused`: [Saved state](../20-using/20-configuration.md#saved-state). A call the store answered spends nothing and adds nothing to `usage` |
 
-A usage count is valid when it is a finite number of at least 0. A failed call's usage counts too, when its reply reported valid counts, as a reply refused or cut off at its token limit does. `meta.usage` and each `invalidFindings` and `invalidRules` are counted from the review's own events, so `meta` and the events cannot disagree.
+A usage count is valid when it is a finite number of at least 0. A failed call's usage counts too, when its reply reported valid counts, as a reply refused or cut off at its token limit does. `meta.usage`, `meta.calls` and each `invalidFindings` and `invalidRules` are counted from the review's own events, so `meta` and the events cannot disagree.
 
 ### Per profile
 
@@ -299,6 +300,36 @@ This fragment shows only the part of `meta` that holds the lanes. `meta.concurre
 
 Each change of a limit is a `concurrency` event ([Events](./30-library-api.md#events)); the record keeps the range and the count, and a review with `concurrency` set records the number as `limit`, `start`, `lowest` and `highest`, and 0 cuts: [Lanes](../20-using/30-providers.md#lanes).
 
+### The calls
+
+`meta.calls` has one entry for each provider id that made a call, keyed by it, in the order the first call of each ended, and is `{}` for a review that made none, a blank diff included. It counts the `call` events of the review, every profile's, so a provider that serves two profiles holds both, and two provider objects of one id are merged, the first one's `model` kept. It says which model answered when the config names a gateway's alias, and whether the gateway switched models in the middle of a review.
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `model` | string | The model the provider's config names, as the review's events hold it |
+| `served` | entry[] | The models the replies of the provider's answered calls named, in the order they were first named, at most 8: each `{ model, calls }`, `model` the name as the `call` event carries it, `calls` the answered calls whose reply named it, at least 1. The array is empty when no reply named a model |
+| `servedOthers` | number | The answered calls whose reply named a ninth model or a later one, at least 1. Absent when there are none |
+
+A served `model` is the server's own text, so quorum cleans it as it does a finding's category: its hidden characters are removed, its white space is collapsed to single spaces, and it is cut at 100 characters with `…`. An adapter whose server names no model reports the configured one, so `served` then holds the configured model. A call that failed, a call that `--state` answered, which no provider answered in this review, and a reply whose model is nothing but white space and hidden characters are in no count, so the counts of `served` and `servedOthers` can add up to less than the calls the review made. The summary and the text report say when a provider answered as another model than its config names, and warn when it answered as two or more: [The summary](../20-using/10-cli.md#the-summary).
+
+```json
+{
+  "meta": {
+    "calls": {
+      "default": {
+        "model": "gateway-alias",
+        "served": [
+          { "model": "local-model-a", "calls": 41 },
+          { "model": "local-model-b", "calls": 3 }
+        ]
+      }
+    }
+  }
+}
+```
+
+`readResult` refuses a `served` of nine entries, a served `model` of more than 100 characters, a `calls` or a `servedOthers` that is no whole number of at least 1, and a field that is none of these.
+
 ## Incomplete reasons
 
 | Reason | Recorded when | `detail` |
@@ -333,6 +364,7 @@ Each gap makes the review incomplete, as an unreviewed finding does: the CLI exi
 | `meta.profiles.<id>.discarded` | The number of findings of the profile that were discarded, after `gating` |
 | `meta.profiles.<id>.providers` | Absent: no provider and no model is named |
 | `meta.usage` | Absent |
+| `meta.calls` | Absent: a served model is a model's name, which lets an attacker rehearse on the same open pipeline, and a sharper one behind a gateway's alias |
 | `meta.profiles.<id>.research` | Absent: the counts measure how near research came to the finding cap, which a pull request's author can aim a flood of findings at |
 | `meta.context` | Kept whole, as it is: each document's hash, path, commit and counts, never a text |
 | `meta.adaptations` | Kept as it is: a provider's id and code words, nothing a server or a model wrote |
@@ -602,6 +634,17 @@ A review of a diff that touches three files, run on the one provider, named `def
     "usage": {
       "inputTokens": 9080,
       "outputTokens": 1180
+    },
+    "calls": {
+      "default": {
+        "model": "qwen3.6:27b",
+        "served": [
+          {
+            "model": "qwen3.6:27b",
+            "calls": 9
+          }
+        ]
+      }
     },
     "incomplete": [
       {

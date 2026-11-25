@@ -11,6 +11,8 @@ export type VerifiedFinding = Omit<Finding, 'id' | 'fingerprint' | 'profile'>
 export const MAX_SUMMARY = 500
 /** The most characters of a finding's category, which the finder writes, as the harness caps it. */
 export const MAX_CATEGORY = 80
+/** The most characters of the model a reply names as the one that answered, which the server writes, as the harness caps it. */
+export const MAX_MODEL = 100
 /** What a finding whose category is empty once cleaned is named: the finder gave none, and the panel judges it all the same. */
 export const UNCATEGORIZED = 'uncategorized'
 const MAX_FILE = 260
@@ -341,7 +343,7 @@ function quoteAppearsIn(evidence: string, quote: string): boolean {
 }
 
 /** One line of plain text: the head of the value, whitespace collapsed, hidden characters removed, capped. */
-function plainText(value: string, max: number): string {
+export function plainText(value: string, max: number): string {
   return cap(collapse(stripHidden(collapse(value.slice(0, max * SCAN_FACTOR)))), max)
 }
 

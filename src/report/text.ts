@@ -10,12 +10,12 @@
  * 5. the files left out;
  * 6. the gaps;
  * 7. the flags;
- * 8. the time and the tokens;
+ * 8. the time and the tokens, then, in a full result, the models that answered when one is worth saying;
  * 9. the verdict, which says what the exit code says.
  *
- * The report of a public view (`publicView`) is the same but for three kinds of line: a gap is written in the fixed words of
- * its reason, as it has no detail, the time has no token count, as the view has no usage, and a profile has no research line, as
- * the view withholds the counts.
+ * The report of a public view (`publicView`) is the same but for four kinds of line: a gap is written in the fixed words of
+ * its reason, as it has no detail, the time has no token count, as the view has no usage, a profile has no research line, as
+ * the view withholds the counts, and no line names the models that answered, as the view withholds them.
  *
  * The verdict is last because the end of the output is what stays on a terminal's screen, and it is the line
  * a person acts on.
@@ -30,7 +30,7 @@ import { profileFailOn } from '../core/outcome.ts'
 import type { Outcome } from '../core/outcome.ts'
 import { inertLine, showHidden } from '../core/sanitize.ts'
 import type { ContextDocument, IncompleteEntry, LeftOutFile, PublicGap, PublicMeta, PublicVerdict, QuorumMeta, Verdict } from '../core/types.ts'
-import { byLocation, coverageWords, documentLineParts, durationText, evidenceRows, flagWhere, GAP_WORDS, leftOutEntry, levelWord, plural, researchWords, rowParts, ruleCountWords, ruleWords, sourcePhrase, tokenWords, verdictWhy, votesWords } from './lines.ts'
+import { byLocation, coverageWords, documentLineParts, durationText, evidenceRows, flagWhere, GAP_WORDS, leftOutEntry, levelWord, modelLines, plural, researchWords, rowParts, ruleCountWords, ruleWords, sourcePhrase, tokenWords, verdictWhy, votesWords } from './lines.ts'
 import type { Reporter, ReportInput } from './reporter.ts'
 import { discardedOf, isPublicView } from './view.ts'
 
@@ -281,6 +281,13 @@ function timeLine(input: ReportInput): string {
   return inertLine(`took ${durationText(meta.durationMs)}, ${used}`)
 }
 
+/** The models that answered, wrapped at 80 columns as a profile's research counts are: a full result's, and none for a public view, which names none. */
+function modelsLines(input: ReportInput): string[] {
+  return isPublicView(input)
+    ? []
+    : modelLines(input.meta.calls).flatMap(words => wrap('', words)).map(inertLine)
+}
+
 /** A gap's lines: `gap: <profile> <reason>` and its detail wrapped after a comma, or the head alone, with no comma, when the detail is empty or only white space. */
 function gapLines(gap: IncompleteEntry): string[] {
   return gap.detail.trim() === ''
@@ -310,7 +317,7 @@ function verdictLine(outcome: Outcome, color: boolean): string {
  * counts and coverage, the documents read, what was left out, the gaps, the flags, the time and the tokens, and last the verdict. See
  * the module's comment for the order. With `color`, only the words quorum wrote are colored: the level, the
  * location, the marker of the cited row, a row's `+` or `-`, and the status word of the verdict. It reads a public
- * view as the result it came from, but for the two lines the module's comment names.
+ * view as the result it came from, but for the lines the module's comment names.
  */
 export const text: Reporter = {
   render: (result, { color, outcome }) => {
@@ -328,6 +335,7 @@ export const text: Reporter = {
       ...gaps.map(inertLine),
       ...meta.flags.flatMap(flag => wrap(`flag: ${flag.code}${flagWhere(flag)},`, flag.detail)).map(inertLine),
       timeLine(result),
+      ...modelsLines(result),
       verdictLine(outcome, color),
     ]
     return `${lines.join('\n')}\n`

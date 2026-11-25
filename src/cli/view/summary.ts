@@ -1,16 +1,16 @@
 /**
  * The summary every view ends with: once the report and the `--output` files are written, the lines that say how
- * the review went (the time of each stage, the tokens against the cap, the calls, each gap with its fix, and where
- * the report went), a fold of the review's events (`model.ts`) and the facts of the run. It names formats, never
- * paths, shows counts, durations, provider ids and code words only, repeats nothing the report says, and passes
- * `inertLine` whole.
+ * the review went (the time of each stage, the tokens against the cap, the calls, the models that answered, each gap with
+ * its fix, and where the report went), a fold of the review's events (`model.ts`) and the facts of the run. It names formats,
+ * never paths, shows counts, durations, provider ids, the cleaned models that answered and code words only, repeats nothing
+ * the report says, and passes `inertLine` whole.
  */
 
 import { CUT_ADVICE, failureFix, QUOTA_FIX, STALL_FIX } from '../../core/errors.ts'
 import { inertLine } from '../../core/sanitize.ts'
 import type { ConcurrencyRecord } from '../../core/lanes.ts'
 import type { IncompleteReason, ProfileMeta, QuorumMeta, QuorumResult, StageName } from '../../core/types.ts'
-import { contextSummary, durationText, listed, tokenWords } from '../../report/lines.ts'
+import { contextSummary, durationText, listed, modelLines, tokenWords } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords } from './eta.ts'
 import { stageStart, stageTime } from './model.ts'
@@ -359,8 +359,9 @@ function resultLine(facts: SummaryFacts, view: ReportView): string {
 
 /**
  * The summary's lines for a review whose events were folded into `state`, in this order, each left out when it has
- * nothing to say: the time, the tokens (not under the public view), the calls, a line for each profile that has a document or a rule,
- * the gaps with their fixes, where the report went and, when a rerun could fill what is missing, how to resume it. A review whose stages never started has no summary. `dash` is the glyph set's.
+ * nothing to say: the time, the tokens (not under the public view), the calls, the models that answered (not under the public view,
+ * which names none), a line for each profile that has a document or a rule, the gaps with their fixes, where the report went and,
+ * when a rerun could fill what is missing, how to resume it. A review whose stages never started has no summary. `dash` is the glyph set's.
  */
 export function summaryLines(state: ViewState, facts: SummaryFacts, view: ReportView, dash: string): string[] {
   if (state.stages.size === 0) return []
@@ -370,6 +371,9 @@ export function summaryLines(state: ViewState, facts: SummaryFacts, view: Report
       ? undefined
       : tokensLine(state),
     callsLine(state, facts.result.meta.concurrency),
+    ...view === 'public'
+      ? []
+      : modelLines(facts.result.meta.calls),
     ...contextSummary(facts.result.meta.context, facts.result.meta.profiles),
     gapsLine(state, view, facts.result.meta.profiles),
     resultLine(facts, view),

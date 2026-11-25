@@ -10,8 +10,9 @@
  *   words and numbers quorum wrote;
  * - **the discarded findings:** a finding the panel rejected is a probe the author can read back, and the text
  *   of each is the finder's. The view lists none and counts them per profile, in `discarded`;
- * - **the providers and models:** which model reviewed names what to craft a prompt injection for, and a
- *   provider's id can name an internal host. The view keeps the profile's policy, level and coverage;
+ * - **the providers and models, and `meta.calls`:** which model reviewed names what to craft a prompt injection for, and a
+ *   provider's id can name an internal host. The models the replies named are that name too, and a sharper one behind a
+ *   gateway's alias, since it is the model that read the author's text. The view keeps the profile's policy, level and coverage;
  * - **the usage:** the tokens say how a review ran, and how near it came to its cap, which tells an author
  *   how much text it takes to push the review into a gap;
  * - **each profile's research counts:** the findings its research listed, the panel was asked about and
@@ -152,7 +153,7 @@ function publicMeta(result: QuorumResult): PublicMeta {
 /**
  * The public view of a result, or of a public view, which is returned as it is: the result less each vote's
  * reasoning and error, the discarded findings (counted in `meta.profiles.<id>.discarded`), the providers, the
- * usage, each profile's research counts and each gap's detail. See the module's comment for why each goes. The result is never changed, and
+ * usage, the models the replies named (`meta.calls`), each profile's research counts and each gap's detail. See the module's comment for why each goes. The result is never changed, and
  * the view shares no array or object with it.
  *
  * This is the check every public sink goes through, for a library caller too: the view, made here or given,

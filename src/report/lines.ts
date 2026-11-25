@@ -12,7 +12,7 @@ import { elapsedWords } from '../core/duration.ts'
 import { ownData } from '../core/facts.ts'
 import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
 import { failsItsProfile } from '../core/outcome.ts'
-import type { ContextDocument, ContextRecord, CoverageEntry, CoverageStatus, DocumentKind, Flag, IncompleteReason, LeftOutFile, ProfileMeta, PublicVerdict, PublicView, ResearchRecord, ReviewSource, Verdict, VoteFailure } from '../core/types.ts'
+import type { ContextDocument, ContextRecord, CoverageEntry, CoverageStatus, DocumentKind, Flag, IncompleteReason, LeftOutFile, ProfileMeta, PublicVerdict, PublicView, QuorumMeta, ResearchRecord, ReviewSource, Verdict, VoteFailure } from '../core/types.ts'
 import { voteFailed } from './view.ts'
 
 /** A token count told in three significant digits at most, floored: `999`, `1.23k`, `12.3k`, `812k`, `9.86M`. */
@@ -355,6 +355,40 @@ export function researchWords({ parts, listed, panel, capped, saturated }: Resea
       ? [`${saturated} reply(ies) listed all they were asked for`]
       : [],
   ].join(', ')
+}
+
+/**
+ * The lines that say which models answered, from a result's `meta.calls`, for the summary and the text report, which pass each through
+ * `inertLine`: the served models are the server's words, cleaned and cut by the core, and a result read from a file holds whatever
+ * it holds. First the models line, when any provider answered as one model other than the one its config names, one clause each joined
+ * by `; `: `models: local answered as local-model-2026, its config names local-model`. Then a warning for each provider that answered
+ * as two models or more, every model in the order first seen with its calls, the calls of any further model counted last:
+ * `warning: local answered as 2 models in this review: local-model-a in 3 call(s), local-model-b in 3`. A provider that answered as
+ * its own model, or whose replies named none, has neither, so a review with nothing to say writes no line.
+ */
+export function modelLines(calls: QuorumMeta['calls']): string[] {
+  const records = Object.entries(calls)
+  const another = records.flatMap(([id, { model, served, servedOthers }]) => served.length === 1 && servedOthers === undefined && served[0].model !== model
+    ? [`${id} answered as ${served[0].model}, its config names ${model}`]
+    : [])
+  const warnings = records.flatMap(([id, { served, servedOthers = 0 }]) => served.length < 2 && servedOthers === 0
+    ? []
+    : [
+        `warning: ${id} answered as ${served.length} models in this review: ${[
+          ...served.map(({ model, calls: count }, index) => `${model} in ${count}${index === 0
+            ? ' call(s)'
+            : ''}`),
+          ...servedOthers > 0
+            ? [`and ${servedOthers} call(s) by other models`]
+            : [],
+        ].join(', ')}`,
+      ])
+  return [
+    ...another.length === 0
+      ? []
+      : [`models: ${another.join('; ')}`],
+    ...warnings,
+  ]
 }
 
 /** How many of the files a profile's coverage lists are reviewed, in part, not, or excluded, as `2 of 3 files reviewed, 1 not`, or `the diff holds no file`. */

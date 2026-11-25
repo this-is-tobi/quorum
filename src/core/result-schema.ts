@@ -29,7 +29,10 @@ import { FAIL_ON_LEVELS, PROFILE_ID_PATTERN } from './profile.ts'
 import { RULE_ID } from './rules.ts'
 import { SECRET_RULES } from './secrets.ts'
 import { FINGERPRINT_PATTERN } from './stages/research.ts'
-import { MAX_CATEGORY, MAX_EVIDENCE, MAX_SUMMARY } from './verify.ts'
+import { MAX_CATEGORY, MAX_EVIDENCE, MAX_MODEL, MAX_SUMMARY } from './verify.ts'
+
+/** The most models a provider's record lists in `served`: the calls of any further model are counted in `servedOthers`. */
+export const MAX_SERVED = 8
 
 const count = z.int().min(0)
 const amount = z.number().min(0)
@@ -110,6 +113,15 @@ export const usageSchema = z.strictObject({
   inputTokens: amount,
   outputTokens: amount,
   costUsd: amount.optional(),
+})
+/** What a provider's replies named as the model that answered (`ProviderCalls`): the served models, at most `MAX_SERVED` of them, each cut at `MAX_MODEL` characters, and the calls of the rest. */
+const providerCalls = z.strictObject({
+  model: z.string(),
+  served: z.array(z.strictObject({
+    model: z.string().max(MAX_MODEL),
+    calls: z.int().min(1),
+  })).max(MAX_SERVED),
+  servedOthers: z.int().min(1).optional(),
 })
 /** How many research calls and votes a review reused from its store. */
 const reused = z.strictObject({
@@ -433,6 +445,7 @@ export const resultSchema = z.strictObject({
     source: reviewSource,
     profiles: profilesOf(profileMeta),
     usage: usageSchema.optional(),
+    calls: z.record(z.string(), providerCalls),
     incomplete: z.array(incompleteEntry),
     leftOut: z.array(leftOutFile),
     flags: z.array(flag),
@@ -446,7 +459,7 @@ export const resultSchema = z.strictObject({
 /**
  * The schema of the public view (`publicView`): the same parts, less what the view withholds. `meta.view` is
  * the literal `public`, `discarded` is an empty tuple, and a vote, a profile's meta and a gap hold no field
- * the view drops, so a result forged to look like a view, with a vote's reasoning, a usage, the providers or a
+ * the view drops, so a result forged to look like a view, with a vote's reasoning, a usage, the calls, the providers or a
  * gap's detail, is refused. `result-schema.spec.ts` holds its output type equal to `PublicView`.
  */
 export const publicViewSchema = z.strictObject({
