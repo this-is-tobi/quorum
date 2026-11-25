@@ -4,9 +4,9 @@ import type { DiffSection } from '../diff.ts'
 import { cutOf, OutputError, ProviderDownError } from '../errors.ts'
 import { isLimit, isLimitName } from '../limits.ts'
 import type { LimitName } from '../limits.ts'
-import { parseResearchReply, readEntries, researchEntries } from '../output.ts'
+import { entryPlace, parseResearchReply, readEntries, researchEntries } from '../output.ts'
 import { cutSection, listedFiles, packParts, partText } from '../parts.ts'
-import type { Cut, Packing, PartOutcome, PartResult, Slice } from '../parts.ts'
+import type { Cut, Packing, PartOutcome, PartResult, Slice, UnreadPlace } from '../parts.ts'
 import type { CompletionRequest } from '../ports.ts'
 import { researchRequest } from '../prompts.ts'
 import type { Ask } from '../prompts.ts'
@@ -14,7 +14,7 @@ import { halves, unitsOf } from '../recovery.ts'
 import type { Piece } from '../recovery.ts'
 import { replyLimit, tokenBound } from '../tokens.ts'
 import type { CallFailure, Finding, FindingDetails, IncompleteEntry, Position, ProfileMeta, QuorumEvent, ReviewRule } from '../types.ts'
-import { checkCitations, collapse, verifyFindings } from '../verify.ts'
+import { checkCitations, collapse, placeOf, verifyFindings } from '../verify.ts'
 import type { VerifiedFinding } from '../verify.ts'
 import { isTooLarge, lackOf, ownData, providerFailure, refusalMessage } from '../facts.ts'
 import { asksNothing, callProvider, roomOf } from './context.ts'
@@ -38,6 +38,13 @@ export interface ResearchOutcome {
   invalidRules: string[]
   /** What the run could not review: findings the harness could not read, findings beyond the cap, a reply whose findings were all unusable, research requests refused as too large, research that failed, or research a provider that was down never got. */
   incomplete: IncompleteEntry[]
+  /**
+   * The places the finding cap left unread, in the replies' order: the file (the diff's own path) and line of each finding a reply
+   * listed after the ones read that the diff shows, among the findings each reply was asked for after its last one read. The
+   * entries are located and never checked as findings. An entry past that bound, one that names no file and line, a file outside
+   * the diff or a line no hunk shows places nothing, though the cap's gap counts it. `[]` when nothing was capped.
+   */
+  unread: UnreadPlace[]
   /**
    * What became of each research part, in the parts' order: `reviewed` when its reply was a valid findings
    * envelope, the limit's name when the token cap, the deadline or the interrupt stopped it (its gap is written once the
@@ -255,6 +262,25 @@ export function capDepths(listed: readonly number[], cap: number): number[] {
 }
 
 /**
+ * The places of the entries of a reply that the cap left unread: those from the `from`th, the first it did not read, among the
+ * next `asked`, which a reply's budget bounds (see `checkReplies`), each as `entryPlace` reads it and `placeOf` finds it in the
+ * diff's `sections`, in the reply's order. An entry that names no place the diff shows is left out.
+ */
+function unreadPlaces(entries: readonly unknown[], from: number, asked: number, sections: ReadonlyMap<string, string>): UnreadPlace[] {
+  return entries.slice(from, from + asked).flatMap((entry) => {
+    const place = entryPlace(entry)
+    const file = place === undefined
+      ? undefined
+      : placeOf(sections, place.file, place.line)
+    return place === undefined || file === undefined
+      ? []
+      : [
+          { file, line: place.line },
+        ]
+  })
+}
+
+/**
  * Turn the research replies of a profile, in the parts' order, into what the panel receives. Each reply's envelope is
  * parsed once and strictly (`researchEntries`: a malformed envelope, or one with a key other than `findings`,
  * throws, so it never reads as "no findings"), and `maxFindings` of the entries in all are read and checked, taken in
@@ -266,6 +292,11 @@ export function capDepths(listed: readonly number[], cap: number): number[] {
  * reply budget and `MAX_REPLY_CHARS` characters, each envelope is parsed once, and an entry is checked as a finding
  * (`readEntries`) only when the cap takes it, so at most `maxFindings` in all, none of the entries the cap leaves unread.
  * An unreadable entry the cap takes counts toward the cap.
+ *
+ * An entry the cap leaves unread is located, never checked: `unread` holds the place of each, among the `asked` entries after
+ * its reply's last one read (`maxFindings` for a reply with no `asked`), that names a file and a line the diff shows
+ * (`entryPlace`, then `placeOf`), so locating costs at most the findings each reply was asked for, which its reply budget bounds.
+ * An unread entry past that bound, or one that names no such place, places nothing, and the cap's gap counts it all the same.
  *
  * Nothing the harness read is dropped silently: a finding that does not match the reply schema (what planted text that
  * closes a string early leaves behind), findings beyond the cap, counted over all the replies in one gap, and replies whose
@@ -303,9 +334,11 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
   const details: FindingDetails[] = []
   const unreadable: string[] = []
   const saturated: number[] = []
+  const unread: UnreadPlace[] = []
   for (const [index, { label, asked }] of replies.entries()) {
     if (asked !== undefined && entries[index].length >= asked) saturated.push(asked)
     const read = readEntries(entries[index], depths[index], citation !== undefined)
+    unread.push(...unreadPlaces(entries[index], depths[index], asked ?? maxFindings, sections))
     details.push(...read.findings)
     unreadable.push(...read.invalid.map(reason => label === undefined
       ? reason
@@ -343,6 +376,7 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
     invalid: checked.invalid,
     invalidRules: cited.invalid,
     incomplete,
+    unread,
   }
 }
 
@@ -422,6 +456,7 @@ function nothingRead(parts: PartOutcome[]): ResearchOutcome {
     invalid: [],
     invalidRules: [],
     incomplete: [],
+    unread: [],
     parts,
   }
 }
@@ -1024,6 +1059,7 @@ function gap(ctx: RunContext, entry: IncompleteEntry, outcome: PartOutcome): Res
     invalid: [],
     invalidRules: [],
     incomplete: [entry],
+    unread: [],
     parts: [outcome],
   }
 }

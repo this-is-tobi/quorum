@@ -57,6 +57,16 @@ export const voteReplyJsonSchema = toWireSchema(VoteReplySchema)
 const MAX_REPLY_CHARS = 1_000_000
 const MAX_BRACE_GROUPS = 100
 const DIGITS = /^\d+$/
+
+/** The number a quoted line is, local models often quoting them: a string of digits once trimmed, else undefined. The one reading of a quoted line, which a finding's line (`normalizeFinding`) and an unread entry's place (`entryPlace`) share. */
+function quotedLine(value: unknown): number | undefined {
+  if (typeof value !== 'string') return undefined
+  const digits = value.trim()
+  return DIGITS.test(digits)
+    ? Number(digits)
+    : undefined
+}
+
 /** A quote, brace or bracket: what the model's own continuation holds when planted text closed its object early. */
 const JSON_SYNTAX = /["{}[\]]/
 /** The scans below read character codes: on Bun's engine, indexing a string of non-Latin-1 text allocates a string per character. */
@@ -189,6 +199,24 @@ export function readEntries(entries: readonly unknown[], count: number, withRule
     }
   })
   return { findings, invalid }
+}
+
+/**
+ * Where an entry of a research reply says its finding is: its own `file`, a string that is not blank once trimmed, and its own
+ * `line`, a whole number of at least 1, or a string of digits that reads as one as `readEntries` would read it (a quoted line);
+ * undefined for any other entry, so no finding the cap could have read goes unplaced for its line's spelling. The entry is located and never checked as a
+ * finding (`readEntries` does that, for the entries the cap reads), so the place is only what the finder wrote: a caller reads it
+ * against the diff (`placeOf`) before it counts for anything.
+ */
+export function entryPlace(entry: unknown): { readonly file: string, readonly line: number } | undefined {
+  if (!isRecord(entry) || !Object.hasOwn(entry, 'file') || !Object.hasOwn(entry, 'line')) return undefined
+  const { file } = entry
+  const line = typeof entry.line === 'number'
+    ? entry.line
+    : quotedLine(entry.line)
+  return typeof file === 'string' && file.trim() !== '' && line !== undefined && Number.isInteger(line) && line >= 1
+    ? { file, line }
+    : undefined
 }
 
 /**
@@ -397,16 +425,12 @@ function repeatsKey(json: string): boolean {
  */
 function normalizeFinding(item: unknown, withRule: boolean): unknown {
   if (!isRecord(item)) return item
-  const line = typeof item.line === 'string'
-    ? item.line.trim()
-    : ''
+  const line = quotedLine(item.line)
   return {
     ...item,
-    ...DIGITS.test(line)
-      ? {
-          line: Number(line),
-        }
-      : {},
+    ...line === undefined
+      ? {}
+      : { line },
     ...!Object.hasOwn(item, 'category') || item.category === null
       ? { category: '' }
       : {},

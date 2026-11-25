@@ -381,14 +381,16 @@ export type LeftOutFile
  * `submodule`, `secret` or `deleted-secret`, `too-large` for a hunk, or a section with no hunk, that fits in
  * no research part of its model's window, or the `IncompleteReason` of the research part that held it and
  * did not read it: `request-too-large`, `token-cap`, `review-deadline`, `interrupted`, `research-failed`, `provider-down` or, for a
- * hunk still cut off when recovery had split it as far as it goes, `reply-cut-off`.
+ * hunk still cut off when recovery had split it as far as it goes, `reply-cut-off`. A line of a file that a finding the finding cap
+ * left unread names, among the findings its reply was asked for, is `findings-capped`.
  */
-export type CoverageReason = 'binary' | 'submodule' | 'secret' | 'deleted-secret' | 'too-large' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'interrupted' | 'research-failed' | 'provider-down' | 'reply-cut-off'
+export type CoverageReason = 'binary' | 'submodule' | 'secret' | 'deleted-secret' | 'too-large' | 'request-too-large' | 'token-cap' | 'review-deadline' | 'interrupted' | 'research-failed' | 'provider-down' | 'reply-cut-off' | 'findings-capped'
 
 /**
  * How much of a file a profile's research reviewed: `reviewed` when every part that holds it was
- * read, `partial` when some was not, `unreviewed` when none was, and `excluded` when an `exclude`
- * pattern keeps it out of every request.
+ * read and no finding a reply listed on it, within the findings that reply was asked for, was left
+ * unread by the finding cap, `partial` when some was not, `unreviewed` when none was, and `excluded`
+ * when an `exclude` pattern keeps it out of every request.
  */
 export type CoverageStatus = 'reviewed' | 'partial' | 'unreviewed' | 'excluded'
 
@@ -470,7 +472,8 @@ export interface ProfileMeta {
   /**
    * Every file of the input diff once, in its order, with how much of it this profile's research
    * reviewed: `reviewed` when no research part of the file failed or was left unsent, that is when each request that carried
-   * all of its text was answered with a valid envelope, whatever it found, or when the profile asked its research nothing
+   * all of its text was answered with a valid envelope, whatever it found, and no finding a reply listed on the file, within the
+   * findings that reply was asked for, was left unread by the finding cap, or when the profile asked its research nothing
    * (`asksNothing`), whose every file reads `reviewed` though no model read it; the other statuses, and the ranges a
    * `partial` file left, say what was not. Each profile has its own, since each has its own research model.
    */

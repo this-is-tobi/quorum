@@ -21,8 +21,8 @@ import { leftOutIssues, mergeLeftOut, sendIssues, sourceIssues, sourceOf } from 
 import { createLanes, REVIEW_CEILING } from './lanes.ts'
 import { createLedger, DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS, INTERRUPT_GRACE_MS, isLimitName, LimitError, limitGaps, maxReviewTokensProblem } from './limits.ts'
 import { isRecord } from './output.ts'
-import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap } from './parts.ts'
-import type { Packing, PartResult } from './parts.ts'
+import { coverageOf, DEFAULT_PART_TOKENS, partTokensProblem, tooLargeGap, withCapped } from './parts.ts'
+import type { Packing, PartResult, UnreadPlace } from './parts.ts'
 import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, slotsProblem, streamsProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts, ReplyStore } from './ports.ts'
 import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
@@ -331,7 +331,9 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * gating profile. `meta.profiles.<id>.coverage` lists every file of the input diff once, in its order,
  * with how much of it the profile's research reviewed: reviewed, partly (with the ranges left), not
  * (with the reason), or excluded by `exclude`; each profile has its own, since each has its own
- * research model.
+ * research model. A file is reviewed when no research part of it failed or was left unsent and no finding a reply listed on it,
+ * within the findings that reply was asked for, was left unread by the finding cap: a file such a finding names, at a line the diff
+ * shows, is partly reviewed, with ranges of the reason `findings-capped` (see `withCapped`).
  *
  * A review spends at most `maxReviewTokens` tokens. Each review has its own ledger of that cap: every
  * attempt of every call reserves its worst case in it before it is sent and settles at what it spent,
@@ -621,7 +623,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
     source,
     profiles: Object.fromEntries(runs.map((run, index) => [
       run.id,
-      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, tally.invalidRules.get(run.id) ?? 0, coverageOf(scope, filtered, outcomes[index]?.packing ?? plans[index]?.packing, outcomes[index]?.parts ?? []), outcomes[index]?.recovery),
+      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, tally.invalidRules.get(run.id) ?? 0, withCapped(coverageOf(scope, filtered, outcomes[index]?.packing ?? plans[index]?.packing, outcomes[index]?.parts ?? []), outcomes[index]?.unread ?? []), outcomes[index]?.recovery),
     ])),
     ...(tally.usage === undefined
       ? {}
@@ -682,9 +684,10 @@ function limitOf(part: PartResult): string {
   return part.pieces.find(({ outcome }) => isLimitName(outcome))?.outcome ?? 'reviewed'
 }
 
-/** What a profile's review comes to: its panel's outcome, and what became of each part of its research and the packing and recovery counts the coverage and the meta read. */
+/** What a profile's review comes to: its panel's outcome, and what became of each part of its research, the places the cap left unread, and the packing and recovery counts the coverage and the meta read. */
 interface ProfileOutcome extends PanelOutcome {
   readonly parts: readonly PartResult[]
+  readonly unread: readonly UnreadPlace[]
   readonly packing?: Packing
   readonly recovery?: ProfileMeta['recovery']
 }
@@ -721,6 +724,7 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPla
       ...limits,
     ],
     parts: researched.parts,
+    unread: researched.unread,
     ...researched.packing === undefined
       ? {}
       : { packing: researched.packing },

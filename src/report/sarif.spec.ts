@@ -398,6 +398,34 @@ describe('sarif', () => {
     expect(notes[0].locations?.map(({ physicalLocation }) => physicalLocation.artifactLocation.uri)).toEqual(['dist/a.js', 'dist/b.js'])
   })
 
+  it('names the files a findings-capped gap left in part in its notification', () => {
+    const capped = blankResult({
+      profiles: {
+        security: {
+          ...reportMeta().profiles.security,
+          coverage: [
+            { file: 'a.js', status: 'reviewed' },
+            {
+              file: 'b.js',
+              status: 'partial',
+              left: [
+                { start: 4, end: 5, reason: 'findings-capped' },
+              ],
+            },
+            { file: 'c.js', status: 'unreviewed', reason: 'binary' },
+          ],
+        },
+      },
+      incomplete: [
+        { profile: 'security', reason: 'findings-capped', detail: '2 of 5 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 3)' },
+      ],
+    })
+    const [notification] = notificationsOf(capped)
+    expect(notification.message.text).toBe('security, findings-capped: research reported more findings than the panel reviews, or listed every finding it was asked for, so it may have left some out (1 file)')
+    expect(notification.locations?.map(({ physicalLocation }) => physicalLocation.artifactLocation.uri)).toEqual(['b.js'])
+    expect(notification.properties).toEqual({ profile: 'security', reason: 'findings-capped', count: 1 })
+  })
+
   it('locates only the clean relative paths of a notification, and counts every file', () => {
     const unclean = [
       '//host/x',

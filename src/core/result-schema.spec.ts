@@ -121,6 +121,36 @@ describe('the schemas of a result', () => {
     ])
   })
 
+  it('reads a coverage range of reason findings-capped, in the public view too', () => {
+    const result = reportResult({
+      meta: {
+        ...reportResult().meta,
+        incomplete: [
+          { profile: 'security', reason: 'findings-capped', detail: '2 of 5 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 3)' },
+        ],
+        profiles: {
+          security: {
+            ...reportResult().meta.profiles.security,
+            coverage: [
+              { file: 'src/auth/login.ts', status: 'reviewed' },
+              {
+                file: 'src/session.js',
+                status: 'partial',
+                left: [
+                  { start: 30, end: 34, reason: 'findings-capped' },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    })
+    const full = saved(result)
+    expect(resultSchema.parse(full)).toEqual(full)
+    const view = saved(publicView(result))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+  })
+
   it('reads a result holding interrupted as a gap, a coverage reason and a vote failure', () => {
     const stopped = {
       angle: 'b',
