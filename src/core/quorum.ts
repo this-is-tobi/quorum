@@ -325,8 +325,8 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * as it always was; else the filtered diff's sections, in order, are packed into parts of at most
  * `partTokens` whose request fits the room, a section too large for a part split between its hunks and
  * a hunk never cut. Each part is a research call, in order, up to 15 when recovery splits it, that names its position and the change's
- * files; the replies are read in order, up to `maxFindings` findings in all, each checked against the
- * whole diff. A hunk, or a section with no hunk, that fits in no research part of the window is no part's:
+ * files; the replies are read in turn, each one's first findings before any one's second, up to `maxFindings` findings in all, each
+ * checked against the whole diff. A hunk, or a section with no hunk, that fits in no research part of the window is no part's:
  * the profile records one `too-large` gap for them before any call is sent, which no flag lifts for a
  * gating profile. `meta.profiles.<id>.coverage` lists every file of the input diff once, in its order,
  * with how much of it the profile's research reviewed: reviewed, partly (with the ranges left), not

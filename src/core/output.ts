@@ -136,25 +136,16 @@ export interface ResearchReply {
 }
 
 /**
- * Validate a research reply. The envelope must be exactly `{ findings: [...] }`: a missing or
- * non-array `findings` is a failed reply, which is its profile's `research-failed` gap, because a malformed
- * reply must never read as "no findings", and so
- * is any other top-level key, because text planted in an unescaped string could close
- * the findings array early and move the rest of the reply under a key of its own, where it would
- * be dropped without a trace. Only the first `limit` listed findings are read, so a flooded reply
- * costs bounded work; each of those that does not match the schema, or holds a nested object or
- * array under a key the schema does not name (where findings swallowed by planted text would hide,
- * since the schema strips unknown keys), is reported with its index, and the count of listed
- * findings lets the caller record what was not read. `limit` must be a positive integer, or
- * Infinity to read every listed finding.
+ * Check a research reply's envelope and return its entries, unread. The envelope must be exactly
+ * `{ findings: [...] }`: a missing or non-array `findings` is a failed reply, which is its profile's
+ * `research-failed` gap, because a malformed reply must never read as "no findings", and so is any other
+ * top-level key, because text planted in an unescaped string could close the findings array early and
+ * move the rest of the reply under a key of its own, where it would be dropped without a trace. An entry
+ * is checked as a finding only by `readEntries`, so a caller that reads some of them reads each reply once.
  *
- * With `withRule`, the reply is a profile's that lists review rules, and each finding is read with a sixth field, `rule`:
- * a string, `''` when the finding names no rule. An absent or `null` one reads as `''`, as an absent category does, and a
- * `rule` of any other type leaves the finding unreadable. Without it, a finding holds no `rule`, and one a reply
- * carries anyway is dropped as any other key the schema does not name.
+ * @throws OutputError when the reply is no findings envelope
  */
-export function parseResearchReply(text: string, limit = Infinity, withRule = false): ResearchReply {
-  if (limit !== Infinity && (!Number.isInteger(limit) || limit < 1)) throw new RangeError(`limit must be a positive integer or Infinity, got ${limit}`)
+export function researchEntries(text: string): readonly unknown[] {
   const reply = extractJsonObject(text, 'research')
   if (!Array.isArray(reply.findings)) {
     throw new OutputError('research', 'reply has no "findings" array', text)
@@ -163,12 +154,29 @@ export function parseResearchReply(text: string, limit = Infinity, withRule = fa
   if (extraKeys > 0) {
     throw new OutputError('research', `reply has ${extraKeys} top-level key(s) other than "findings"`, text)
   }
+  return reply.findings
+}
+
+/**
+ * Read the first `count` entries of a research reply as findings, so a flooded reply costs bounded work: each one
+ * that does not match the schema, or holds a nested object or array under a key the schema does not name (where
+ * findings swallowed by planted text would hide, since the schema strips unknown keys), is reported with its
+ * index in the reply, `findings[<index>]: ...`, and the entries after the first `count` are not looked at. `count`
+ * must be a non-negative integer, or Infinity to read every entry.
+ *
+ * With `withRule`, the reply is a profile's that lists review rules, and each finding is read with a sixth field, `rule`:
+ * a string, `''` when the finding names no rule. An absent or `null` one reads as `''`, as an absent category does, and a
+ * `rule` of any other type leaves the finding unreadable. Without it, a finding holds no `rule`, and one a reply
+ * carries anyway is dropped as any other key the schema does not name.
+ */
+export function readEntries(entries: readonly unknown[], count: number, withRule = false): { findings: FindingDetails[], invalid: string[] } {
+  if (count !== Infinity && (!Number.isInteger(count) || count < 0)) throw new RangeError(`count must be a non-negative integer or Infinity, got ${count}`)
   const findings: FindingDetails[] = []
   const invalid: string[] = []
   const schema = withRule
     ? FindingWithRuleReplySchema
     : FindingReplySchema
-  reply.findings.slice(0, limit).forEach((item: unknown, index: number) => {
+  entries.slice(0, count).forEach((item: unknown, index: number) => {
     const result = schema.safeParse(normalizeFinding(item, withRule))
     if (!result.success) {
       invalid.push(`findings[${index}]: ${describeIssue(result.error)}`)
@@ -180,7 +188,21 @@ export function parseResearchReply(text: string, limit = Infinity, withRule = fa
       findings.push(result.data)
     }
   })
-  return { findings, invalid, listed: reply.findings.length }
+  return { findings, invalid }
+}
+
+/**
+ * Validate a research reply: its envelope as `researchEntries` checks it, then its first `limit` entries as `readEntries`
+ * reads them, and the count of listed findings lets the caller record what was not read. `limit` must be a positive
+ * integer, or Infinity to read every listed finding. `withRule` is `readEntries`'s.
+ */
+export function parseResearchReply(text: string, limit = Infinity, withRule = false): ResearchReply {
+  if (limit !== Infinity && (!Number.isInteger(limit) || limit < 1)) throw new RangeError(`limit must be a positive integer or Infinity, got ${limit}`)
+  const entries = researchEntries(text)
+  return {
+    ...readEntries(entries, limit, withRule),
+    listed: entries.length,
+  }
 }
 
 /**

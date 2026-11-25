@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { splitDiff } from '../diff.ts'
 import { OutputError } from '../errors.ts'
-import { checkReplies, checkReply, DEFAULT_MAX_FINDINGS, findingFingerprint, findingId, FINGERPRINT_PATTERN } from './research.ts'
+import { capDepths, checkReplies, checkReply, DEFAULT_MAX_FINDINGS, findingFingerprint, findingId, FINGERPRINT_PATTERN } from './research.ts'
 
 const diff = [
   'diff --git a/a.js b/a.js',
@@ -133,7 +133,7 @@ describe('checkReply', () => {
     expect(outcome.findings.map(finding => finding.line)).toEqual([1, 2])
     expect(outcome.invalid).toEqual([])
     expect(outcome.incomplete).toEqual([
-      { profile: 'security', reason: 'findings-capped', detail: '1 of 3 reported findings were not reviewed (the cap is 2)' },
+      { profile: 'security', reason: 'findings-capped', detail: '1 of 3 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2)' },
     ])
   })
 
@@ -142,7 +142,7 @@ describe('checkReply', () => {
     const outcome = checkReply(reply(Array.from({ length: 51 }).fill(reported)), sections, 'security')
     expect(outcome.findings).toHaveLength(50)
     expect(outcome.incomplete).toEqual([
-      { profile: 'security', reason: 'findings-capped', detail: '1 of 51 reported findings were not reviewed (the cap is 50)' },
+      { profile: 'security', reason: 'findings-capped', detail: '1 of 51 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 50)' },
     ])
   })
 
@@ -194,8 +194,8 @@ describe('checkReply', () => {
     expect(outcome.incomplete).toHaveLength(52)
     expect(outcome.incomplete.filter(entry => entry.reason === 'finding-unreadable')).toHaveLength(50)
     expect(outcome.incomplete.slice(50)).toEqual([
-      { profile: 'security', reason: 'findings-capped', detail: '4950 of 5000 reported findings were not reviewed (the cap is 50)' },
-      { profile: 'security', reason: 'research-unusable', detail: '5000 finding(s) reported, the first 50 read, none usable' },
+      { profile: 'security', reason: 'findings-capped', detail: '4950 of 5000 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 50)' },
+      { profile: 'security', reason: 'research-unusable', detail: '5000 finding(s) reported, 50 of them read under the cap, none usable' },
     ])
   })
 })
@@ -221,10 +221,48 @@ describe('findingFingerprint', () => {
   })
 })
 
+describe('capDepths', () => {
+  it.each([
+    [
+      [3, 0, 5, 1],
+      6,
+      [3, 0, 2, 1],
+    ],
+    [
+      [3, 0, 5, 1],
+      4,
+      [2, 0, 1, 1],
+    ],
+    [
+      [3, 0, 5, 1],
+      9,
+      [3, 0, 5, 1],
+    ],
+    [
+      [2, 2],
+      3,
+      [2, 1],
+    ],
+    [
+      [18, 1, 1],
+      4,
+      [2, 1, 1],
+    ],
+    [[], 5, []],
+    [
+      [0, 0],
+      1,
+      [0, 0],
+    ],
+  ])('takes %j at a cap of %i as %j', (listed, cap, depths) => {
+    expect(capDepths(listed, cap)).toEqual(depths)
+  })
+})
+
 describe('checkReplies', () => {
   const named = (prefix: string, count: number): unknown[] => Array.from({ length: count }, (_, index) => ({ ...reported, category: `${prefix}${index}` }))
 
-  it('reads the replies in order, up to maxFindings entries in all, and counts the rest in one findings-capped gap', () => {
+  it('takes each reply\'s first finding before any reply\'s second, and keeps the parts\' order in what it reads', () => {
     const outcome = checkReplies([
       {
         text: reply(named('A', 30)),
@@ -234,17 +272,17 @@ describe('checkReplies', () => {
       },
     ], sections, 'security')
     expect(outcome.findings.map(found => found.category)).toEqual([
-      ...named('A', 30).map(entry => (entry as { category: string }).category),
-      ...named('B', 20).map(entry => (entry as { category: string }).category),
+      ...named('A', 25).map(entry => (entry as { category: string }).category),
+      ...named('B', 25).map(entry => (entry as { category: string }).category),
     ])
     expect(outcome.findings).toHaveLength(50)
     expect(outcome.invalid).toEqual([])
     expect(outcome.incomplete).toEqual([
-      { profile: 'security', reason: 'findings-capped', detail: '10 of 60 reported findings were not reviewed (the cap is 50)' },
+      { profile: 'security', reason: 'findings-capped', detail: '10 of 60 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 50)' },
     ])
   })
 
-  it('still counts the findings of a reply that comes after the cap was reached', () => {
+  it('reads a later reply\'s first finding before an earlier reply\'s second', () => {
     const outcome = checkReplies([
       {
         text: reply(named('A', 2)),
@@ -253,10 +291,50 @@ describe('checkReplies', () => {
         text: reply(named('B', 3)),
       },
     ], sections, 'security', 2)
-    expect(outcome.findings.map(found => found.category)).toEqual(['A0', 'A1'])
+    expect(outcome.findings.map(found => found.category)).toEqual(['A0', 'B0'])
     expect(outcome.incomplete).toEqual([
-      { profile: 'security', reason: 'findings-capped', detail: '3 of 5 reported findings were not reviewed (the cap is 2)' },
+      { profile: 'security', reason: 'findings-capped', detail: '3 of 5 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2)' },
     ])
+  })
+
+  it('checks no entry the cap leaves unread as a finding', () => {
+    const texts = [
+      reply([
+        reported,
+        { ...reported, line: 2 },
+        1,
+      ]),
+      reply([
+        { ...reported, line: 3 },
+      ]),
+    ]
+    const unreadable = (cap: number): string[] => checkReplies(texts.map(text => ({ text })), sections, 'security', cap)
+      .incomplete
+      .filter(entry => entry.reason === 'finding-unreadable')
+      .map(entry => entry.detail)
+    expect(unreadable(2)).toEqual([])
+    expect(unreadable(4)).toEqual([
+      expect.stringMatching(/^findings\[2\]: /),
+    ])
+  })
+
+  it('counts an unreadable entry the cap reads toward the cap', () => {
+    const outcome = checkReplies([
+      {
+        text: reply([1, reported]),
+      },
+      {
+        text: reply([reported]),
+      },
+    ], sections, 'security', 2)
+    expect(outcome.incomplete.map(entry => [entry.reason, entry.detail])).toEqual([
+      [
+        'finding-unreadable',
+        expect.stringMatching(/^findings\[0\]: /),
+      ],
+      ['findings-capped', '1 of 3 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2)'],
+    ])
+    expect(outcome.findings).toHaveLength(1)
   })
 
   it('names the part of each unreadable entry', () => {

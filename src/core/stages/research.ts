@@ -4,7 +4,7 @@ import type { DiffSection } from '../diff.ts'
 import { cutOf, OutputError, ProviderDownError } from '../errors.ts'
 import { isLimit, isLimitName } from '../limits.ts'
 import type { LimitName } from '../limits.ts'
-import { parseResearchReply } from '../output.ts'
+import { parseResearchReply, readEntries, researchEntries } from '../output.ts'
 import { cutSection, listedFiles, packParts, partText } from '../parts.ts'
 import type { Cut, Packing, PartOutcome, PartResult, Slice } from '../parts.ts'
 import type { CompletionRequest } from '../ports.ts'
@@ -228,29 +228,65 @@ export function checkReply(text: string, sections: ReadonlyMap<string, string>, 
 }
 
 /**
- * Turn the research replies of a profile, in the parts' order, into what the panel receives. Each reply is
- * parsed strictly (a malformed envelope, or one with a key other than `findings`, throws, so it never reads
- * as "no findings"), only the first `maxFindings` findings the replies list in all are read and checked
- * against the diff, the earlier replies' first (the work spent on a reply built to flood the run stays
- * bounded, whatever the entries hold), and nothing the harness read is dropped silently: a finding that
- * does not match the reply schema (what planted text that closes a string early leaves behind), findings
- * beyond the cap, counted over all the replies in one gap, and replies whose findings were all unusable,
- * are recorded as incomplete, which fails the run (ADR-0012). A finding that cites code outside the diff,
- * the whole diff of every part, is only dropped with its reason: it was read, and it is wrong. `invalid`
- * holds only the reasons of the findings the check against the diff dropped, so an unreadable finding is
- * reported once, in `incomplete`, with its reply's `label` before the reason when it has one. Every
- * finding it keeps is named by `findingId` and `findingFingerprint` and tagged with `profile`, and every
- * incomplete entry it records is tagged with `profile` too.
+ * How many of each reply's first entries the cap takes, `listed` being the entries each reply lists, in the parts' order: the
+ * replies' first entries, then their second, and so on, until `cap` entries in all (see `checkReplies`). Every reply is
+ * taken to the same depth, and the first replies that still have an entry past it, in order, take one more, so
+ * the result sums to `cap` when the replies list more than that, else it is `listed`.
+ */
+export function capDepths(listed: readonly number[], cap: number): number[] {
+  const taken = (depth: number): number => listed.reduce((sum, count) => sum + Math.min(count, depth), 0)
+  if (taken(Number.POSITIVE_INFINITY) <= cap) return [...listed]
+  // The deepest round every reply can take whole, then one more entry for the first replies, in order, that still have one.
+  let low = 0
+  let high = Math.max(...listed)
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2)
+    if (taken(mid) <= cap) low = mid
+    else high = mid - 1
+  }
+  let left = cap - taken(low)
+  return listed.map((count) => {
+    const extra = count > low && left > 0
+      ? 1
+      : 0
+    left -= extra
+    return Math.min(count, low) + extra
+  })
+}
+
+/**
+ * Turn the research replies of a profile, in the parts' order, into what the panel receives. Each reply's envelope is
+ * parsed once and strictly (`researchEntries`: a malformed envelope, or one with a key other than `findings`,
+ * throws, so it never reads as "no findings"), and `maxFindings` of the entries in all are read and checked, taken in
+ * turn: every reply's first entry, then every reply's second, and so on (`capDepths`). A reply that lists many
+ * findings so never costs the replies after it theirs, and a capped review drops each reply's last findings, the
+ * ones the finder listed after its most serious.
+ *
+ * The work spent on a reply built to flood the run stays bounded, whatever the entries hold: a reply is at most its
+ * reply budget and `MAX_REPLY_CHARS` characters, each envelope is parsed once, and an entry is checked as a finding
+ * (`readEntries`) only when the cap takes it, so at most `maxFindings` in all, none of the entries the cap leaves unread.
+ * An unreadable entry the cap takes counts toward the cap.
+ *
+ * Nothing the harness read is dropped silently: a finding that does not match the reply schema (what planted text that
+ * closes a string early leaves behind), findings beyond the cap, counted over all the replies in one gap, and replies whose
+ * findings were all unusable, are recorded as incomplete, which fails the run (ADR-0012). A finding that cites code
+ * outside the diff, the whole diff of every part, is only dropped with its reason: it was read, and it is wrong.
+ * `invalid` holds only the reasons of the findings the check against the diff dropped, so an unreadable finding is
+ * reported once, in `incomplete`, with its reply's `label` before the reason when it has one. The findings it keeps are in the
+ * parts' order, each reply's in its own, since the cap takes a prefix of each reply. Every finding it keeps is named
+ * by `findingId` and `findingFingerprint` and tagged with `profile`, and every incomplete entry it records is tagged with
+ * `profile` too.
  *
  * A reply that lists at least the `asked` findings its request asked for at most is saturated: it may have stopped
  * at the ask, so the profile records one `findings-capped` gap that counts such replies and names the largest ask
  * (`<k> research reply(ies) listed the <n> findings they were asked for at most, so they may have left some out`).
- * Where the replies list more than `maxFindings` too, the same gap goes on with the cap's count after a colon, so a
+ * Where the replies list more than `maxFindings` too, the same gap goes on with the cap's count after a colon
+ * (`<c> of <l> reported findings were not reviewed, the last ones of the replies that listed the most (the cap is <n>)`), so a
  * profile never has two of one reason. A saturated reply below `maxFindings` is split and never gets here, unless
  * its piece is at the floor.
  *
  * With `citation`, the replies are a profile's that lists review rules: each finding is read with its sixth field, `rule` (see
- * `parseResearchReply`), and, once `verifyFindings` has anchored it, its citation is checked against `citation.rules`, the rules
+ * `readEntries`), and, once `verifyFindings` has anchored it, its citation is checked against `citation.rules`, the rules
  * the review sent, by `checkCitations`, which `invalidRules` reports. A finding dropped for its citation only was read and
  * anchored in the diff: it is no unusable finding, so it does not make a reply's findings all unusable.
  *
@@ -261,19 +297,17 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
   if (!Number.isInteger(maxFindings) || maxFindings < 1) {
     throw new RangeError(`maxFindings must be a positive integer, got ${maxFindings}`)
   }
+  const entries = replies.map(({ text }) => researchEntries(text))
+  const listed = entries.reduce((sum, own) => sum + own.length, 0)
+  const depths = capDepths(entries.map(own => own.length), maxFindings)
   const details: FindingDetails[] = []
   const unreadable: string[] = []
-  let listed = 0
   const saturated: number[] = []
-  for (const { text, label, asked } of replies) {
-    // A reply past the cap is parsed for its envelope and its count alone: its entries are not read.
-    const left = maxFindings - details.length - unreadable.length
-    const parsed = parseResearchReply(text, Math.max(left, 1), citation !== undefined)
-    listed += parsed.listed
-    if (asked !== undefined && parsed.listed >= asked) saturated.push(asked)
-    if (left < 1) continue
-    details.push(...parsed.findings)
-    unreadable.push(...parsed.invalid.map(reason => label === undefined
+  for (const [index, { label, asked }] of replies.entries()) {
+    if (asked !== undefined && entries[index].length >= asked) saturated.push(asked)
+    const read = readEntries(entries[index], depths[index], citation !== undefined)
+    details.push(...read.findings)
+    unreadable.push(...read.invalid.map(reason => label === undefined
       ? reason
       : `${label}: ${reason}`))
   }
@@ -293,14 +327,14 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
     ? undefined
     : `${saturated.length} research reply(ies) listed the ${Math.max(...saturated)} findings they were asked for at most, so they may have left some out`
   const cap = listed > maxFindings
-    ? `${listed - maxFindings} of ${listed} reported findings were not reviewed (the cap is ${maxFindings})`
+    ? `${listed - maxFindings} of ${listed} reported findings were not reviewed, the last ones of the replies that listed the most (the cap is ${maxFindings})`
     : undefined
   const capped = [asks, cap].filter(words => words !== undefined).join(': ')
   if (capped !== '') incomplete.push({ profile, reason: 'findings-capped', detail: capped })
   if (listed > 0 && checked.findings.length === 0) {
     const reported = `${listed} finding(s) reported`
     const detail = listed > maxFindings
-      ? `${reported}, the first ${maxFindings} read, none usable`
+      ? `${reported}, ${maxFindings} of them read under the cap, none usable`
       : `${reported}, none usable`
     incomplete.push({ profile, reason: 'research-unusable', detail })
   }
@@ -342,8 +376,9 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
  * other parts go on, and the replies that were read are kept. Once a part ends with a limit, the profile's parts
  * not yet taken, and the pieces of the part not yet asked, are stopped by the same limit without a call: each
  * would be built and counted only to be refused, and the gap counts them, failing closed. Once every part has
- * answered, the replies are read in the parts' order, up to `maxFindings` findings in all, each checked against
- * the whole diff, and a finding two parts report is dropped by the dedup stage. Only the sending is reordered:
+ * answered, the replies are read in turn up to `maxFindings` findings in all (`capDepths`: each reply's first, then each
+ * reply's second, and so on), each checked against the whole diff, in the parts' order, and a finding two parts report
+ * is dropped by the dedup stage. Only the sending is reordered:
  * a part keeps its position, and the replies are read in the plan's order. The gaps come in this order, each
  * counting parts: the requests refused as too large, then the parts that failed, then the parts a provider
  * that was down never got, then the hunks cut off even alone, then the reading's. The events follow: the
@@ -880,8 +915,8 @@ async function researchInParts(ctx: RunContext, run: ProfileRun, plan: ResearchP
 
 /**
  * The end of a research of parts, or of one request that recovery split: the replies of every piece that was read, in
- * the diff's order, up to `maxFindings` findings in all, the gaps of the pieces that were not, and the packing and
- * counts the coverage and the meta read once a part was recovered.
+ * the diff's order, read in turn up to the findings cap in all (`checkReplies`), the gaps of the pieces that were not,
+ * and the packing and counts the coverage and the meta read once a part was recovered.
  */
 function concluded(ctx: RunContext, run: ProfileRun, scope: Scope, packing: Packing, sections: ReadonlyMap<string, string>, runs: readonly PartRun[], inParts: boolean): ResearchOutcome {
   const split = runs.filter(({ recovered }) => recovered !== undefined)

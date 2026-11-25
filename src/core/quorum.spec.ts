@@ -1250,7 +1250,7 @@ describe('review', () => {
     const result = await run(securityProfile, { maxFindings: 1 }).review({ diff })
     expect(complete).toHaveBeenCalledTimes(4)
     expect(result.meta.incomplete).toEqual([
-      { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 1 findings they were asked for at most, so they may have left some out: 1 of 2 reported findings were not reviewed (the cap is 1)' },
+      { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 1 findings they were asked for at most, so they may have left some out: 1 of 2 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 1)' },
     ])
   })
 
@@ -3727,7 +3727,7 @@ describe('a large change in parts', () => {
       expect(voter.requests).toHaveLength(9)
       expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js', 'b.js', 'c.js'])
       expect(result.meta.incomplete).toEqual([
-        { profile: 'security', reason: 'findings-capped', detail: '2 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: 1 of 4 reported findings were not reviewed (the cap is 3)' },
+        { profile: 'security', reason: 'findings-capped', detail: '2 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: 1 of 4 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 3)' },
       ])
     })
 
@@ -5990,6 +5990,65 @@ describe('adaptations', () => {
   const keeps = (): Fake => fake('voter', () => vote(true))
   const adaptedEvents = (events: QuorumEvent[]): unknown[] => events.filter(event => event.type === 'adapted')
 
+  /** A provider of the id `local` that keeps every vote and lists the findings `own` gives, from the request's file, for a research request. */
+  const localOf = (own: (file: string) => unknown[]): Fake => providerOf('local', undefined, request => isVote(request)
+    ? vote(true)
+    : findings(...own(fileOf(request))))
+  const named = (file: string): unknown => ({
+    file,
+    line: 1,
+    quote: `exec(input) // ${file}`,
+    category: 'misleading-name',
+    summary: 'the name says safe',
+  })
+
+  it('asks the store the keys of 0.13.0 for a review of a profile of its own in three parts, key for key', async () => {
+    const local = localOf(file => [
+      named(file),
+    ])
+    const looked: string[] = []
+    const store: ReplyStore = {
+      get: async (entry) => {
+        looked.push(entry.key)
+        return undefined
+      },
+      put: async () => {},
+    }
+    const result = await createQuorum({
+      profiles: [naming],
+      partTokens: 1024,
+    }, portsFor(naming, local)).review({ diff: bigDiff }, { store })
+    expect(local.requests.filter(request => !isVote(request))).toHaveLength(3)
+    expect(local.requests.filter(isVote)).toHaveLength(3)
+    expect(result.meta.incomplete).toEqual([])
+    expect(looked).toHaveLength(6)
+    expect(createHash('sha256').update(JSON.stringify([...looked].toSorted())).digest('hex')).toBe('583fba4f7cd862765dc115b2b2ce0a7bcc74788ef14934b5e3978b5364256114')
+  })
+
+  it('reviews each part\'s first finding before any part\'s second, of a profile of its own in three parts', async () => {
+    const local = localOf(file => file === 'a.js'
+      ? ['n0', 'n1', 'n2'].map(category => ({
+          ...named(file) as object,
+          category,
+        }))
+      : [
+          named(file),
+        ])
+    const result = await createQuorum({
+      profiles: [naming],
+      partTokens: 1024,
+    }, portsFor(naming, local)).review({ diff: bigDiff }, { findingsCap: 3 })
+    expect(local.requests.filter(isVote)).toHaveLength(3)
+    expect(result.kept.map(verdict => [verdict.file, verdict.category])).toEqual([
+      ['a.js', 'n0'],
+      ['b.js', 'misleading-name'],
+      ['c.js', 'misleading-name'],
+    ])
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'naming', reason: 'findings-capped', detail: '2 of 5 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 3)' },
+    ])
+  })
+
   it('sends a vote in flight at the old setting once more at the settled one, so no vote fails for it', async () => {
     let release = (): void => {}
     const gate = new Promise<void>((resolve) => {
@@ -6680,7 +6739,7 @@ describe('recovery', () => {
       const exact = await reviewing(finderOf(() => findings(first, second)), { maxFindings: 2 }).quorum.review({ diff })
       // One gap, the saturation words first and, when the reply lists more than the cap, the cap's count after them.
       expect(over.meta.incomplete).toEqual([
-        { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: 1 of 3 reported findings were not reviewed (the cap is 2)' },
+        { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: 1 of 3 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2)' },
       ])
       expect(exact.meta.incomplete).toEqual([
         { profile: 'security', reason: 'findings-capped', detail: '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out' },
