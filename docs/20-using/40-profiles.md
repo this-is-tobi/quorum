@@ -131,6 +131,19 @@ Its do-not-report list, 259 bytes, reaches the finder alone:
 
 A program spreads a built-in profile into a new object, as it does `securityProfile`, and sets what it wants over it: `{ ...codeReviewProfile, maxFindings: 40 }` asks the finder for 40 findings a request, over the profile's 20 ([Reply budgets](./20-configuration.md#reply-budgets) says what the ask costs and what limits it), and `{ ...performanceProfile, changedLinesOnly: false }` keeps a finding anywhere in the diff. A config entry named for a built-in profile starts from it and takes what it does not set: an entry named `code-review`, `best-practices` or `performance` keeps the built-in's finding cap, `changedLinesOnly`, do-not-report text and `failOn: none`, and, for `best-practices` and `performance`, its rules and `requireRule`. A profile of your own that took one of these names before they were built in would take all of that without a word, and its `failOn` would read as it was set while most findings that could trip it were dropped. So an entry named after one of the three that has no `extends` and brings both its own research template and its own lenses, the shape of a profile of its own, is refused before any call, `--print-config` included: `profiles.<id>: is named after the built-in <id> profile and brings its own research template and lenses: set extends: <id> to start from the built-in, or rename the profile to keep it your own`. Say `extends` to start from the built-in, or rename the profile to keep it yours. An entry that sets only the template, or only the lenses, starts from the built-in as written. `builtInDoNotReport: false` drops its do-not-report text and `builtInRules: false` its rules, as [Rules and guidelines](./45-rules-and-guidelines.md#builtindonotreport) says. A profile that requires a rule and lists none asks its finder nothing, so drop the rules of `best-practices` or `performance` only to put others in their place.
 
+A config does the same without code. An entry `extends` any built-in profile, not `security` alone, and sets `maxFindings` and `changedLinesOnly` of its own, each the base's when unset; `changedLinesOnly: false` turns off a base that sets it, and `maxFindings` is a positive integer (`profiles.<id>.maxFindings: must be at least 1`, at the entry, exit `2`, for a `0`). A profile that `extends` an advisory built-in (`code-review`, `best-practices` or `performance`) takes its `failOn: none` unless it sets one, so a team that wants it to gate sets `failOn`. An `extends` that names none of the four is refused: `profiles.<id>.extends: must be one of security, code-review, best-practices or performance`.
+
+```yaml
+profiles:
+  code-review: {}
+  team-practices:
+    extends: best-practices
+    maxFindings: 40
+    changedLinesOnly: false
+```
+
+`--print-config` prints both under a profile that holds them and `unmeasured: true` under a profile that is or extends one no labelled set measures, so `team-practices` prints `maxFindings: 40` and `unmeasured: true` (it holds no `changedLinesOnly`), and `code-review` prints `maxFindings: 20`, `changedLinesOnly: true` and `unmeasured: true`: [Printing the resolved config](./10-cli.md#printing-the-resolved-config). A config's top-level `maxFindings` sizes the requests of a profile that holds none, so it never changes the 20 of a built-in profile or of one that extends it.
+
 ## Writing a profile
 
 | Field | Type | Rule |

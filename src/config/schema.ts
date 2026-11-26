@@ -9,7 +9,7 @@ import { adaptsProblem, MAX_RETRIES, MAX_STATED_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_
 import { FAIL_ON_LEVELS } from '../core/profile.ts'
 import { ownData } from '../core/facts.ts'
 import { MAX_RULES, RULE_ID } from '../core/rules.ts'
-import { securityProfile } from '../profiles/security.ts'
+import { BUILT_IN_IDS } from '../profiles/index.ts'
 import type { ProviderProtocol } from '../providers/build.ts'
 import { wordList } from '../providers/options.ts'
 import type { StructuredOutput } from '../providers/options.ts'
@@ -172,7 +172,7 @@ function documentList<D extends z.ZodType>(documentForm: D) {
 /** A profile entry, around the schema of one prompt, of one document and of one rules file: a string or `{ file }`, `{ file }` and `{ file }` in a file, a string, `{ text }` and `{ text, format }` in what a program hands over. */
 function profileSchema<R extends z.ZodType, D extends z.ZodType, F extends z.ZodType>(promptForm: R, documentForm: D, rulesFileForm: F, rulesFileWords: string) {
   return z.strictObject({
-    extends: z.enum([securityProfile.id]).optional().describe('The built-in profile this one starts from'),
+    extends: z.enum(BUILT_IN_IDS).optional().describe('The built-in profile this one starts from'),
     failOn: z.enum(FAIL_ON_LEVELS).optional().describe('The confidence at or above which a kept finding fails the review with exit 1: high, medium or low; none for an advisory profile, whose findings and gaps change no exit code. high when unset'),
     gating: z.boolean().optional().describe('Deprecated: set failOn. true reads as failOn high and false as none, with a warning; setting both is refused'),
     roles: roles.optional().describe('The providers of this profile, over the top-level roles'),
@@ -186,6 +186,8 @@ function profileSchema<R extends z.ZodType, D extends z.ZodType, F extends z.Zod
     rules: ruleList(ruleEntryOf(rulesFileForm, rulesFileWords)).optional().describe('The review rules a finding may cite, at most 100 in all: each a rule written here, a { file } of rules read when the config loads (.yaml, .yml or .json), or a { repository } file of rules read at the commit the review reads its documents from; at most 16 of them name a file. Ids are unique across the profile'),
     builtInRules: z.boolean().optional().describe('false drops the rules of the built-in profile this one starts from; true, the default, keeps them ahead of the entries'),
     requireRule: z.boolean().optional().describe('true makes every finding cite a rule the review sent, and drops one that cites none or whose citation fails its check; false, the default, keeps a finding whose citation fails and drops the citation'),
+    maxFindings: z.int().min(1).optional().describe('The findings each research request of this profile asks for, over the top-level maxFindings; the panel\'s cap is findingsCap'),
+    changedLinesOnly: z.boolean().optional().describe('true keeps a finding only within two rows of a row the change adds or removes'),
     lenses: z.array(z.strictObject({
       id: name.describe('Names the lens'),
       question: z.string().describe('What the voter judging from this lens is asked'),

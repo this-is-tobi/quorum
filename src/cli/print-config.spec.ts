@@ -2,11 +2,13 @@ import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import type { RepositoryEntry } from '../config/profiles.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
+import type { ConfigInput } from '../config/schema.ts'
 import type { ProfileBudgets } from '../core/budgets.ts'
 import { documentSha256 } from '../core/documents.ts'
 import type { Provider } from '../core/ports.ts'
 import type { Profile, ReviewDocument, ReviewRule } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
+import { resolvedConfig } from '../testing/bench.ts'
 import { fakeCredential } from '../testing/credentials.ts'
 import { printConfig } from './print-config.ts'
 
@@ -479,6 +481,66 @@ describe('printConfig', () => {
     })
     expect(alone).toContain('    rules:\n      - repository: RULES.yaml\nconcurrency: auto\n')
     expect(print({ profile: securityProfile })).not.toMatch(/\brules\b|requireRule|builtInRules/)
+  })
+
+  it('prints a built-in profile\'s maxFindings, changedLinesOnly and unmeasured, and a profile that extends one unmeasured too', () => {
+    const text = printConfig(resolvedConfig({
+      providers: { a: SPEC },
+      profiles: {
+        security: {},
+        'code-review': {},
+        team: {
+          extends: 'best-practices',
+          maxFindings: 40,
+          changedLinesOnly: false,
+          requireRule: false,
+          builtInRules: false,
+        },
+        strict: { extends: 'security', maxFindings: 5, changedLinesOnly: true },
+        own: {
+          prompts: { research: 'Find style issues.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
+          lenses: [
+            { id: 'grounded', question: 'Backed by a convention?' },
+          ],
+        },
+      },
+    } as ConfigInput), undefined)
+    // The lines of one profile: from its key to the next key at the profiles' depth or above.
+    const block = (id: string): string => {
+      const lines = text.split('\n')
+      const from = lines.indexOf(`  ${id}:`)
+      const length = lines.slice(from + 1).findIndex(line => /^ {0,2}\S/.test(line))
+      return lines.slice(from, from + 1 + length).join('\n')
+    }
+    expect(block('security')).not.toMatch(/maxFindings|changedLinesOnly|unmeasured/)
+    expect(block('code-review')).toMatch(/\n {4}maxFindings: 20\n {4}changedLinesOnly: true\n {4}unmeasured: true$/)
+    // The entry's own maxFindings over the base's; changedLinesOnly false is no key; unmeasured follows the base.
+    expect(block('team')).toMatch(/\n {4}maxFindings: 40\n {4}unmeasured: true$/)
+    expect(block('team')).not.toMatch(/changedLinesOnly|requireRule/)
+    // A profile that extends security and sets both prints them, and never unmeasured.
+    expect(block('strict')).toMatch(/\n {4}maxFindings: 5\n {4}changedLinesOnly: true$/)
+    expect(block('strict')).not.toContain('unmeasured')
+    expect(block('own')).not.toMatch(/maxFindings|changedLinesOnly|unmeasured/)
+  })
+
+  it('prints unmeasured under a profile whose base is one no labelled set measures, whatever its id', () => {
+    const view = (fields: Partial<ResolvedConfig['profiles'][number]>): string => printConfig(config({ a: SPEC }, {
+      profiles: [
+        {
+          profile: { ...securityProfile, id: 'team' },
+          research: 'a',
+          voters: Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, 'a'])),
+          repository: [],
+          ...fields,
+        },
+      ],
+    }), undefined)
+    expect(view({ base: 'performance' })).toContain('\n    unmeasured: true\nconcurrency: auto\n')
+    expect(view({ base: 'security' })).not.toContain('unmeasured')
+    expect(view({})).not.toContain('unmeasured')
+    expect(view({ base: 'unknown' })).not.toContain('unmeasured')
+    // A profile that sets neither field prints neither, a base notwithstanding.
+    expect(view({ base: 'performance' })).not.toMatch(/ {4}(maxFindings|changedLinesOnly)/)
   })
 
   it('prints a config with no document as 0.12.0 did', () => {

@@ -1346,6 +1346,65 @@ describe('a built-in profile selected alone', () => {
   })
 })
 
+describe('a profile that extends a built-in profile', () => {
+  it('runs a team profile that extends best-practices and drops its rules as asking nothing, and says so', async () => {
+    const config = write('team-best-practices.yaml', [
+      'profiles:',
+      '  team:',
+      '    extends: best-practices',
+      '    builtInRules: false',
+      '',
+    ].join('\n'))
+    const fetchMock = stubChat()
+    const { io, stderr } = harness({
+      argv: [
+        '--progress',
+        'plain',
+        '--format',
+        'text',
+      ],
+      env: { ...MODEL, QUORUM_CONFIG: config },
+      stdin: DIFF,
+    })
+    // The profile requires a rule and lists none, so its research asks nothing: no request goes to the server, and the log says why.
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(stderr()).toContain('context: team rules: 0 of 0 sent, so its research asks nothing')
+    expect(fetchMock).not.toHaveBeenCalled()
+    const printed = harness({
+      argv: ['--print-config'],
+      env: { ...MODEL, QUORUM_CONFIG: config },
+    })
+    expect(await runCli(printed.io)).toBe(EXIT.ok)
+    expect(printed.stdout()).toContain('\n  team:\n    failOn: none\n')
+    expect(printed.stdout()).toContain('\n    requireRule: true\n    maxFindings: 20\n    changedLinesOnly: true\n    unmeasured: true\n')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps code-review\'s own maxFindings under a config\'s maxFindings of 80, and prints both', async () => {
+    const config = write('code-review-print.yaml', [
+      'maxFindings: 80',
+      'profiles:',
+      '  code-review: {}',
+      '',
+    ].join('\n'))
+    const fetchMock = stubChat()
+    const { io, stdout } = harness({
+      argv: ['--print-config'],
+      env: { ...MODEL, QUORUM_CONFIG: config },
+    })
+    expect(await runCli(io)).toBe(EXIT.ok)
+    const lines = stdout().split('\n')
+    // The profile asks for its own 20 findings a request; the top-level 80 stays the limit of every profile without one.
+    expect(lines).toContain('maxFindings: 80')
+    expect(lines).toContain('    maxFindings: 20')
+    expect(lines).toContain('    changedLinesOnly: true')
+    expect(lines).toContain('    unmeasured: true')
+    expect(lines).toContain('      findings: 20')
+    expect(lines).not.toContain('      findings: 80')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
 describe('--state', () => {
   /** A directory of its own for the state a test keeps, which no other test reads. */
   let state = ''

@@ -127,6 +127,40 @@ describe('fingerprint', () => {
     }), of(PROVIDER))).toBe(false)
   })
 
+  it('tells code-review from security, and a code-review that sets maxFindings or changedLinesOnly from the built-in one', () => {
+    const configured = (profiles: Record<string, unknown>): ResolvedConfig => resolvedConfig({
+      providers: { p: PROVIDER },
+      profiles,
+    } as ConfigInput)
+    const review = configured({ 'code-review': {} })
+    expect(same(review, of(PROVIDER))).toBe(false)
+    expect(same(configured({
+      'code-review': { maxFindings: 30 },
+    }), review)).toBe(false)
+    expect(same(configured({
+      'code-review': { changedLinesOnly: false },
+    }), review)).toBe(false)
+    // A value the built-in profile already holds is no change, and the form holds the two fields only when the profile does.
+    expect(same(configured({
+      'code-review': { maxFindings: 20 },
+    }), review)).toBe(true)
+    expect(canonicalSettings(review)).toContain('"maxFindings":20')
+    expect(canonicalSettings(review)).toContain('"changedLinesOnly":true')
+    expect(canonicalSettings(of(PROVIDER))).not.toContain('"changedLinesOnly"')
+    // The base a profile starts from is no part of the form: a profile that extends one is the one it resolves to.
+    expect(canonicalSettings(of(PROVIDER))).not.toContain('"base"')
+    // A configuration of security alone and one of a profile of its own keep the fingerprints they had.
+    expect(fingerprint(of(PROVIDER), SALT)).toBe('f55669a5bb98cb55e4416cdaf20ca6aa12a3154a45df7b0cfea145478a3d81a8')
+    expect(fingerprint(configured({
+      team: {
+        prompts: { research: 'Find style issues.', vote: 'Judge {{lens.id}}: {{lens.question}}' },
+        lenses: [
+          { id: 'grounded', question: 'Backed by a convention?' },
+        ],
+      },
+    }), SALT)).toBe('a420b59732101ceda4e6e9b3645f35183a944adcb7dd11339a4ab85837a874ad')
+  })
+
   it('holds failOn in the form, so gating false and failOn none fingerprint alike', () => {
     const security = (fields: Record<string, unknown>): ResolvedConfig => resolvedConfig({
       providers: { p: PROVIDER },

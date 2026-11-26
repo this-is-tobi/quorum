@@ -45,6 +45,8 @@ export interface ResolvedProfile {
   readonly repository: readonly RepositoryEntry[]
   /** `false` when the entry drops the rules of the built-in profile it starts from (`builtInRules: false`), which the profile no longer lists; absent otherwise. */
   readonly builtInRules?: false
+  /** The built-in profile this one starts from: its `extends`, else its own id when that is a built-in profile's, absent for a profile of its own. */
+  readonly base?: string
 }
 
 /** The profiles a caller selects to run: `QUORUM_PROFILES`, or the flag of the CLI. `path` is what an issue with the ids names. */
@@ -509,7 +511,8 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
         ]
       : [],
   ]
-  const base = builtIn.get(own(entry, 'extends') ?? id)
+  const baseId = own(entry, 'extends') ?? id
+  const base = builtIn.get(baseId)
   const entryPrompts = own(entry, 'prompts')
   const research = own(entryPrompts, 'research') ?? base?.prompts.research
   const vote = own(entryPrompts, 'vote') ?? base?.prompts.vote
@@ -561,6 +564,8 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
     ...ruleRepository,
   ]
   const requireRule = own(entry, 'requireRule') ?? base?.requireRule
+  const maxFindings = own(entry, 'maxFindings') ?? base?.maxFindings
+  const changedLinesOnly = own(entry, 'changedLinesOnly') ?? base?.changedLinesOnly
 
   const profile: Profile = Object.freeze({
     id,
@@ -582,11 +587,11 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
     ...requireRule === true
       ? { requireRule }
       : {},
-    ...base?.maxFindings === undefined
+    ...maxFindings === undefined
       ? {}
-      : { maxFindings: base.maxFindings },
-    ...base?.changedLinesOnly === true
-      ? { changedLinesOnly: true }
+      : { maxFindings },
+    ...changedLinesOnly === true
+      ? { changedLinesOnly }
       : {},
   })
   // `profileIssues` starts its paths at the id given as the fallback root, which is the profile's own id here.
@@ -627,6 +632,9 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
       ...dropsRules
         ? { builtInRules: false as const }
         : {},
+      ...base === undefined
+        ? {}
+        : { base: baseId },
     }),
     issues,
     warnings,
@@ -660,8 +668,10 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
  * profile then says so in `builtInRules`), then the entry's `rules`, each rule written in the config and each rules file a
  * document of kind `rules`, checked together with the base's (`ruleIssues`) and told at the entry that repeats an id or takes a
  * cap over, as `rulesOf` words it; a `{ repository }` rules file joins `repository`, kind `rules`. Its `requireRule` is the
- * entry's, else the base's, and is set only when `true`. A profile takes its base's `maxFindings`, and its `changedLinesOnly` when
- * the base's is `true`. `inputs.builtIn` is the map of the profiles a config can run or extend, the registry's `BUILT_IN` by default
+ * entry's, else the base's, and is set only when `true`. Its `maxFindings` is the entry's, else the base's, and its `changedLinesOnly`
+ * the entry's, else the base's, set only when `true`, so an entry's `false` turns a base's off and a profile that sets neither holds neither key.
+ * A resolved profile's `base` is the built-in profile it starts from (its `extends`, else its own id when built in, none for a profile of its own).
+ * `inputs.builtIn` is the map of the profiles a config can run or extend, the registry's `BUILT_IN` by default
  * (`security`, `code-review`, `best-practices` and `performance`). `research` is bound to
  * `roles.research`, and each lens to its own provider, else the profile's voter, else `roles.voter`; every provider a profile names
  * must be in `providers`. A selection that runs nothing is an issue, and a profile with an issue does not run.
