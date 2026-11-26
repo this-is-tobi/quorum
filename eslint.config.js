@@ -115,7 +115,7 @@ export default antfu(
     },
   },
   {
-    // A profile is data: it imports core types and nothing else.
+    // A profile is data: it imports core types and the other profiles, nothing else.
     files: ['src/profiles/**/*.ts'],
     ignores: ['src/**/*.spec.ts'],
     rules: {
@@ -123,8 +123,8 @@ export default antfu(
         'error',
         {
           patterns: [
-            { regex: '^(?!\\.\\./core/)', message: 'A profile imports only core types.' },
-            { regex: '^\\.\\./core/', allowTypeImports: true, message: 'A profile imports only core types.' },
+            { regex: '^(?!\\.\\./core/|\\./[a-z][a-z-]*\\.ts$)', message: 'A profile imports only core types and the other profiles.' },
+            { regex: '^\\.\\./core/', allowTypeImports: true, message: 'A profile imports only core types and the other profiles.' },
           ],
         },
       ],

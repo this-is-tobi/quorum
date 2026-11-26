@@ -27,7 +27,7 @@ afterEach(() => {
 })
 
 describe('the public API', () => {
-  it('exports createQuorum, defineConfig, fileStore, fromConfig, loadConfig, outcome, readContext, readSource, renderReport, the security profile, the default policy, the adapters, the presets, the errors, the sanitizer, cleanProse, publicView, readResult, reviewSettings and runQuorum', () => {
+  it('exports createQuorum, defineConfig, fileStore, fromConfig, loadConfig, outcome, readContext, readSource, renderReport, the security, code-review, best-practices and performance profiles, the default policy, the adapters, the presets, the errors, the sanitizer, cleanProse, publicView, readResult, reviewSettings and runQuorum', () => {
     expect(Object.keys(api).sort()).toEqual([
       'ConfigError',
       'GitError',
@@ -39,8 +39,10 @@ describe('the public API', () => {
       'QuorumError',
       'REVIEW_CEILING',
       'anthropic',
+      'bestPracticesProfile',
       'claudeCode',
       'cleanProse',
+      'codeReviewProfile',
       'codeSpan',
       'createQuorum',
       'defaultPolicy',
@@ -56,6 +58,7 @@ describe('the public API', () => {
       'ollama',
       'openaiCompatible',
       'outcome',
+      'performanceProfile',
       'presets',
       'publicView',
       'readContext',

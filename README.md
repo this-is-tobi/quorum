@@ -1,6 +1,6 @@
 # Quorum :ballot_box:
 
-**Quorum** reviews a diff with several model calls instead of one. A model, the finder, proposes candidate findings, and a panel of voters blind to each other, one per lens, judges each one. Whether a finding is kept, and at what confidence, is computed in code from the split of their votes, never reported by a model. The default profile reviews security through a model you point it at: over four HTTP protocols (Ollama's native API, OpenAI-compatible `/chat/completions`, the Anthropic Messages API and the Gemini API), with presets for the common vendors, local or hosted, or through your installed Claude Code CLI.
+**Quorum** reviews a diff with several model calls instead of one. A model, the finder, proposes candidate findings, and a panel of voters blind to each other, one per lens, judges each one. Whether a finding is kept, and at what confidence, is computed in code from the split of their votes, never reported by a model. The default profile reviews security, and three advisory profiles, `code-review`, `best-practices` and `performance`, review for functional defects, missing practices and cost patterns, each through a model you point it at: over four HTTP protocols (Ollama's native API, OpenAI-compatible `/chat/completions`, the Anthropic Messages API and the Gemini API), with presets for the common vendors, local or hosted, or through your installed Claude Code CLI.
 
 Quorum is pre-release (`0.x`): the API may change. It assists a reviewer; it does not replace human review of untrusted changes.
 
@@ -76,7 +76,7 @@ The report goes to stdout: the text report on a terminal, the JSON result on a p
 - [Sources](./docs/20-using/15-sources.md) *- A diff file or stdin, a range of commits, the local changes or the files at a commit, and how quorum runs git*
 - [Configuration](./docs/20-using/20-configuration.md) *- The config file and its trust model in CI, the `QUORUM_*` variables and the voter's fallback, the context size each provider states, running Claude Code, the keys, `--print-config`, and the errors a bad setting causes*
 - [Providers](./docs/20-using/30-providers.md) *- The provider port, the shipped adapters and their options, Claude Code run isolated as a provider, the presets, `ProviderError`, and writing a provider of your own*
-- [Profiles](./docs/20-using/40-profiles.md) *- The security profile, writing your own, several in one review, gating and guidelines*
+- [Profiles](./docs/20-using/40-profiles.md) *- The security, code-review, best-practices and performance profiles, writing your own, several in one review, gating and guidelines*
 - [Rules and guidelines](./docs/20-using/45-rules-and-guidelines.md) *- Guidelines and do-not-report text as files of a config, what each request carries of them, the caps, the cleaner and the cost*
 - [Lenses and policy](./docs/20-using/50-lenses-and-policy.md) *- The panel's questions, the rules that turn kept votes into a confidence, failed votes, and what a level means*
 - [Prompts](./docs/20-using/60-prompts.md) *- The layout of every request, the templates and their variables, the notices, and what is not configurable*

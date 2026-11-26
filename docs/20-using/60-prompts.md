@@ -1,6 +1,6 @@
 # Prompts
 
-Every model call quorum makes has the same layout: the profile's instructions and text the code owns in the system message, and every piece of data fenced in one user message. This page shows that layout, the security profile's templates, the variables a template takes, the two notices, what a profile cannot change and why, and what fencing is worth.
+Every model call quorum makes has the same layout: the profile's instructions and text the code owns in the system message, and every piece of data fenced in one user message. This page shows that layout, the security profile's templates and those of the other built-in profiles, the variables a template takes, the two notices, what a profile cannot change and why, and what fencing is worth.
 
 ## The layout of a request
 
@@ -104,6 +104,30 @@ One vote in a {{panel.size}}-voter panel - you do not see the other votes. Refut
 
 Judge only from the blocks you receive. Default keep=false unless genuinely convinced.
 ```
+
+### The built-in profiles' templates
+
+The `code-review`, `best-practices` and `performance` profiles ([The built-in profiles](./40-profiles.md#the-built-in-profiles)) vote with the template above, as it is: one shared text, so the four profiles' votes are worded alike and differ by their lens's question alone. Each has a research template of its own, used as written. Each says what to look for, what a finding's quote holds and what its category means, and names no field of a finding: the findings line and the fields paragraph that follow it are quorum's, and a profile that lists rules gets the one with six fields.
+
+`code-review`:
+
+```text
+Review this diff for functional defects that the changed lines cause or expose: wrong logic or results, broken error and edge paths, concurrency bugs, data loss or corruption, and a misused API or a broken contract. A finding's quote is the code that misbehaves, and its category is one of `bug` (wrong logic, a wrong result, a broken error or edge path), `concurrency` (a race, a deadlock, shared state used without its guard), `data` (data lost, corrupted or left inconsistent) or `api` (an API used against its contract, or a contract the change breaks for its callers).
+```
+
+`best-practices`:
+
+```text
+Review this diff against the review rules this request carries, and report only code the change adds or alters that lacks what one of them asks for. Cite the line where the missing piece belongs, and quote the code beside it that lacks it, the handler, function, call or block, within two lines of that line. A finding's category is `test_gap` for a missing test, `doc_defect` for missing documentation a rule asks for, else the kind of practice in a word or two, such as `error-handling`, `validation` or `cleanup`.
+```
+
+`performance`:
+
+```text
+Review this diff for the cost patterns that the review rules this request carries describe, and for no other. Report one only when the changed lines show both of its halves: the repetition or the blocking context (a loop, a request handler, an async function or a structure that grows) and the costly operation inside it. A finding's quote holds both halves, and its category is `perf`.
+```
+
+A research request of one of the three is its template, then the do-not-report paragraph with the profile's list, then the findings line, which asks for at most 20 findings, then the fields: `code-review` lists no rule and gets the five fields, the other two get the six. The list reaches the finder alone, and a vote carries no text of the profile but its lens's question and the rule its finding cites.
 
 ## Documents
 

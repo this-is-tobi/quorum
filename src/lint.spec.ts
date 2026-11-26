@@ -49,6 +49,12 @@ const CASES: Array<[string, string, string, string[]]> = [
     [],
   ],
   [
+    'a profile imports another profile',
+    'src/profiles/probe.ts',
+    'import { securityProfile } from \'./security.ts\'\n\nexport const probe = securityProfile\n',
+    [],
+  ],
+  [
     'a profile refuses a core value',
     'src/profiles/probe.ts',
     'import { defaultPolicy } from \'../core/policy.ts\'\n\nexport const probe = defaultPolicy\n',

@@ -8,6 +8,7 @@ import { FAIL_ON_LEVELS, profileIssues } from '../core/profile.ts'
 import { cleanedRules, ruleIssues } from '../core/rules.ts'
 import { cleanProse } from '../core/sanitize.ts'
 import type { DocumentKind, FailOn, Profile, ReviewDocument, ReviewRule } from '../core/types.ts'
+import { BUILT_IN } from '../profiles/index.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { PROFILE_ID } from './env.ts'
 import type { RoleBinding } from './env.ts'
@@ -61,11 +62,6 @@ export interface FailOnOverride {
   readonly profiles: ReadonlyMap<string, FailOn>
   readonly path: string
 }
-
-/** The built-in profiles a config can run or extend, by id. */
-const BUILT_IN: ReadonlyMap<string, Profile> = new Map([
-  [securityProfile.id, securityProfile],
-])
 
 const NEEDS_BASE = 'is required: the profile extends no built-in profile'
 const LEVELS = ['high', 'medium', 'low'] as const
@@ -471,6 +467,20 @@ function rulesOf(id: string, entry: ProfileEntry, base: readonly ReviewRule[], a
   return { documents, repository, issues }
 }
 
+/**
+ * Whether an entry is the shape a 0.14.0 config gave a profile of its own under the id of a built-in profile released since: its id is
+ * a built-in profile's other than `security` (the one 0.14.0 shipped), it has no `extends`, and it brings both its own research
+ * template and its own lenses. It would now start from the built-in and silently take what it sets none of (the finding cap,
+ * `changedLinesOnly`, the do-not-report text, the rules and the `failOn`), so it is refused for the entry to say which it means.
+ */
+function namesBuiltInProfileOfItsOwn(id: string, entry: ProfileEntry, builtIn: ReadonlyMap<string, Profile>): boolean {
+  return own(entry, 'extends') === undefined
+    && builtIn.has(id)
+    && id !== securityProfile.id
+    && own(own(entry, 'prompts'), 'research') !== undefined
+    && own(entry, 'lenses') !== undefined
+}
+
 /** What one profile of the config resolves to, or every issue that keeps it from running, and the warnings its fields earn. */
 function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known, builtIn }: Bindings): { readonly resolved?: ResolvedProfile, readonly issues: ConfigIssue[], readonly warnings: string[] } {
   const at = (...segments: PropertyKey[]): string => issuePath(['profiles', id, ...segments])
@@ -481,14 +491,24 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
     : [
         `${at('gating')} is deprecated: set failOn instead, high for true and none for false`,
       ]
-  const both: ConfigIssue[] = gating !== undefined && failOn !== undefined
-    ? [
-        {
-          path: at('gating'),
-          message: 'is deprecated and cannot be set with failOn: remove it',
-        },
-      ]
-    : []
+  const entryIssues: ConfigIssue[] = [
+    ...gating !== undefined && failOn !== undefined
+      ? [
+          {
+            path: at('gating'),
+            message: 'is deprecated and cannot be set with failOn: remove it',
+          },
+        ]
+      : [],
+    ...namesBuiltInProfileOfItsOwn(id, entry, builtIn)
+      ? [
+          {
+            path: at(),
+            message: `is named after the built-in ${id} profile and brings its own research template and lenses: set extends: ${id} to start from the built-in, or rename the profile to keep it your own`,
+          },
+        ]
+      : [],
+  ]
   const base = builtIn.get(own(entry, 'extends') ?? id)
   const entryPrompts = own(entry, 'prompts')
   const research = own(entryPrompts, 'research') ?? base?.prompts.research
@@ -503,7 +523,7 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
     ]
     return {
       issues: [
-        ...both,
+        ...entryIssues,
         ...needed.filter(([value]) => value === undefined).map(([, ...segments]) => ({
           path: at(...segments),
           message: NEEDS_BASE,
@@ -562,10 +582,16 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
     ...requireRule === true
       ? { requireRule }
       : {},
+    ...base?.maxFindings === undefined
+      ? {}
+      : { maxFindings: base.maxFindings },
+    ...base?.changedLinesOnly === true
+      ? { changedLinesOnly: true }
+      : {},
   })
   // `profileIssues` starts its paths at the id given as the fallback root, which is the profile's own id here.
   const issues = [
-    ...both,
+    ...entryIssues,
     ...documentIssues,
     ...ruleProblems,
     ...profileIssues(profile, id).map(issue => ({ path: `${at()}${issue.path.slice(id.length)}`, message: issue.message })),
@@ -617,7 +643,10 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
  * assigning a key of the input. A profile states its `failOn`, the entry's own, else what its deprecated
  * `gating` says (`true` is `high`, `false` is `none`), else the base's, else `high`, and never a `gating`: an
  * entry that sets both is an issue at its `gating`, and one that sets `gating` earns a deprecation warning,
- * returned in `warnings` in the order the entries are written. `failOn`, the levels `parseFailOn` read from the
+ * returned in `warnings` in the order the entries are written. An entry named after a built-in profile other than `security`
+ * that has no `extends` and brings both its own research template and its own lenses is an issue at the entry: a 0.14.0 config's
+ * profile of its own would now start from the built-in and silently take its cap, rules and level, so it says `extends` or is renamed.
+ * `failOn`, the levels `parseFailOn` read from the
  * command line, then sets each selected profile's level over all of that: the level named for the profile, else
  * the level for every profile, as a new frozen profile and binding. A profile it names that is not selected is
  * an issue at its `path`: a typo must not leave a gate weaker or missing. A profile holds the documents its
@@ -631,8 +660,9 @@ function resolveEntry(id: string, entry: ProfileEntry, { roles, providers, known
  * profile then says so in `builtInRules`), then the entry's `rules`, each rule written in the config and each rules file a
  * document of kind `rules`, checked together with the base's (`ruleIssues`) and told at the entry that repeats an id or takes a
  * cap over, as `rulesOf` words it; a `{ repository }` rules file joins `repository`, kind `rules`. Its `requireRule` is the
- * entry's, else the base's, and is set only when `true`. `inputs.builtIn` is the map of the profiles a config can run or extend, the
- * security profile alone by default. `research` is bound to
+ * entry's, else the base's, and is set only when `true`. A profile takes its base's `maxFindings`, and its `changedLinesOnly` when
+ * the base's is `true`. `inputs.builtIn` is the map of the profiles a config can run or extend, the registry's `BUILT_IN` by default
+ * (`security`, `code-review`, `best-practices` and `performance`). `research` is bound to
  * `roles.research`, and each lens to its own provider, else the profile's voter, else `roles.voter`; every provider a profile names
  * must be in `providers`. A selection that runs nothing is an issue, and a profile with an issue does not run.
  */

@@ -1,6 +1,6 @@
 # Profiles
 
-A profile is what a review looks for, as data: the finder's instructions, the panel's lenses and how their votes are graded, the level at which its findings fail the review, and optional guidelines. The CLI runs the `security` profile by default, and the profiles its config selects. A program can run it, change it, write a profile of its own, and run several in one review. This page covers the security profile, writing a profile and the checks it must pass, several profiles at once, gating, and guidelines.
+A profile is what a review looks for, as data: the finder's instructions, the panel's lenses and how their votes are graded, the level at which its findings fail the review, and optional guidelines. Four ship with quorum: `security`, `code-review`, `best-practices` and `performance`. The CLI runs the `security` profile by default, and the profiles its config or `--profile` selects. A program can run one, change it, write a profile of its own, and run several in one review. This page covers the four built-in profiles, writing a profile and the checks it must pass, several profiles at once, gating, and guidelines.
 
 ## The security profile
 
@@ -30,6 +30,106 @@ import { securityProfile } from '@tobi-or-not/quorum'
 
 const security = { ...securityProfile, guidelines: 'Queries go through db.query with parameters.' }
 ```
+
+## The built-in profiles
+
+Three more profiles ship beside `security`, as data read by the same registry and resolved the same way: `codeReviewProfile`, `bestPracticesProfile` and `performanceProfile`, exported by `@tobi-or-not/quorum` and frozen as `securityProfile` is. Each is advisory: its kept findings never fail a review. Each asks its finder for 20 findings a request, keeps a finding only within two rows of a row the change adds or removes, and votes with the security profile's template, a refutation angle for each of three lenses, graded by the same policy, `{ high: 'unanimous', medium: 'majority', low: 'off' }`. `--profile` selects one, or several in one review:
+
+```bash
+quorum --range origin/main...HEAD --profile code-review --profile best-practices
+```
+
+| Profile | Looks for | `failOn` | `maxFindings` | `changedLinesOnly` | `requireRule` | Rules | Lenses |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `security` | Security vulnerabilities, by CWE id | Unset: `high` | Unset: the review's | Unset: `false` | Unset: `false` | None | `reachability`, `impact`, `defenses` |
+| [`code-review`](#code-review) | Functional defects the changed lines cause or expose | `none` | 20 | `true` | Unset: `false` | None | `real`, `introduced`, `consequential` |
+| [`best-practices`](#best-practices) | Changed code that lacks what one of its four rules asks for | `none` | 20 | `true` | `true` | `io-errors`, `input-validation`, `tests-for-new-code`, `resource-cleanup` | `asked`, `absent`, `introduced` |
+| [`performance`](#performance) | A few known cost patterns, both halves in the changed lines | `none` | 20 | `true` | `true` | `query-in-loop`, `nested-loops`, `work-in-loop`, `sync-io-in-async`, `unbounded-list`, `unbounded-cache` | `visible`, `hot`, `unmitigated` |
+
+The three read a review's log and report as any profile does, each line naming its profile: `context: best-practices do-not-report text of the profile, 169 bytes` and `context: best-practices rules: 4 of 4 sent` above the stages, the text report's `code-review (fail-on none): 1 kept, ...`, and, for a finding that cites a rule, a head that ends `  rule io-errors`. A finding dropped for standing away from the change is its own line and count: [Per profile](../95-reference/20-json-result.md#per-profile). A review of the three, or of one with the security profile, is one more research call and one more panel for each: [Several profiles in one review](#several-profiles-in-one-review).
+
+### Unmeasured
+
+The three are design intent rather than measured precision, until quorum has a labelled set of its own to measure them by: the security profile alone has one, [the real-bug suite](./70-bench.md#the-real-bug-suite). What is known of the design is a small, largely synthetic mutation study of five small and mid-size models (arXiv 2606.15689), which found a rule-bound review's best-practice recall at 0 to 6.7 percent and its performance recall near zero. So read a finding of the three as a lead to check, never as a verdict, and a review with none as a review that found none, not as proof there is none. That is why they fail nothing.
+
+Each also reads the diff alone. It cannot see the code outside the change, the callers of a function, a test or a handler that lives in another file, or a limit set elsewhere, and reading the repository around a change is what sub-project 8 brings. The lenses ask the voters to refute a finding from what the diff shows.
+
+### Who receives each text
+
+Each text goes to the roles that need it, and no text of a built-in profile reaches a voter but its lens question and the rule its finding cites:
+
+| Text | Finder (research) | Voters |
+| --- | --- | --- |
+| Research template | The system message | None |
+| Do-not-report list | The system message, after the template (`This review does not report:`) | None |
+| Built-in review rules | The rules block, every rule the review sends | The one rule its finding cites, in the `rule` block of every lens's vote; the `asked` lens judges by it |
+| Vote template | None | Each lens's system message |
+| Lens questions | None | Each lens its own |
+| Guidelines | None of its own | None of its own |
+
+A threat-model guideline sent to the finder and to every voter took kept recall from 60% to 40% in one ablation, the voters rejecting true findings. A do-not-report list in a vote would tell the voter what is out of scope and put the same pressure on it, so the list stays the finder's. Guidelines a config or a review adds go in every request as ever: [What each request carries](./45-rules-and-guidelines.md#what-each-request-carries).
+
+### `code-review`
+
+Functional defects that the changed lines cause or expose: wrong logic or results, broken error and edge paths, concurrency bugs, data loss or corruption, and a misused API or a broken contract. A finding's quote is the code that misbehaves, and its category is `bug`, `concurrency`, `data` or `api`. It lists no rule. Its research template is quoted on [Prompts](./60-prompts.md#the-built-in-profiles-templates), and its lenses `real`, `introduced` and `consequential` on [Lenses and policy](./50-lenses-and-policy.md#the-built-in-profiles-lenses). Its do-not-report list, 441 bytes, reaches the finder alone:
+
+```text
+- style, formatting, naming and comments
+- design, architecture and refactoring preferences
+- what a linter, a formatter or a type checker reports
+- missing tests or documentation
+- slow code that behaves correctly
+- security vulnerabilities, which the security profile reviews
+- issues in code the change does not touch
+- speculation that rests on an input or a caller the diff does not show
+- code a suppression comment silences on purpose
+```
+
+### `best-practices`
+
+Code the change adds or alters that lacks what one of its rules asks for, and nothing else: it sets `requireRule`, so a finding that cites no rule the review sent is dropped. The finder cites the line where the missing piece belongs and quotes the code beside it, the handler, function, call or block, within two lines of that line, so the quote sits in the cited line's evidence and the finding keeps its line. A finding's category is `test_gap` for a missing test, `doc_defect` for missing documentation a rule asks for, else the kind of practice in a word or two, such as `error-handling`, `validation` or `cleanup`. Its research template is on [Prompts](./60-prompts.md#the-built-in-profiles-templates), its lenses `asked`, `absent` and `introduced` on [Lenses and policy](./50-lenses-and-policy.md#the-built-in-profiles-lenses). Its four rules apply to every file, and every review sends all four:
+
+| Rule | Asks |
+| --- | --- |
+| `io-errors` | A call that crosses an I/O boundary (network, file system, database, subprocess) handles its failure on purpose: the error is caught and handled, returned or propagated, never dropped or ignored. |
+| `input-validation` | Data that crosses a trust boundary (a request, a message, a file, input from a user or a tenant) is validated where it enters: its type, shape, size or range is checked before use. |
+| `tests-for-new-code` | A new public function, route, endpoint or branch of behaviour comes with a test that runs it. |
+| `resource-cleanup` | A resource the code acquires (a file handle, a connection, a lock, a timer, a subscription, a temporary file) is released on every path, error paths included. |
+
+Its do-not-report list, 169 bytes, reaches the finder alone:
+
+```text
+- anything no review rule asks for
+- style, naming and formatting
+- a choice between two correct ways of writing the same thing
+- a gap in code the change does not touch
+```
+
+### `performance`
+
+A second opinion on a few known patterns, and not a profiler: the six rules below describe them, and the finder reports one only when the changed lines show both of its halves, the repetition or the blocking context (a loop, a request handler, an async function or a structure that grows) and the costly operation inside it. A finding's quote holds both halves, and its category is `perf`. Like `best-practices` it sets `requireRule`. Its research template is on [Prompts](./60-prompts.md#the-built-in-profiles-templates), its lenses `visible`, `hot` and `unmitigated` on [Lenses and policy](./50-lenses-and-policy.md#the-built-in-profiles-lenses).
+
+| Rule | Describes |
+| --- | --- |
+| `query-in-loop` | A database query, an HTTP or RPC call, or another remote call made once per iteration of a loop over data, where one batched call could serve the loop. |
+| `nested-loops` | A loop over a collection inside a loop over the same or a related collection, or a linear search inside a loop, so the work grows with the square of the input. |
+| `work-in-loop` | Work that gives the same result on every iteration, such as compiling a pattern, parsing a document or building a large object, repeated inside a loop. |
+| `sync-io-in-async` | A synchronous, blocking call (file or network I/O, a subprocess, a sleep) inside an async function, a request handler or an event-loop callback. |
+| `unbounded-list` | An endpoint or a query that returns a list with no limit, page size or cap, so the caller or the data decides how much is read and sent. |
+| `unbounded-cache` | A cache, map, list or buffer that entries are added to and never evicted, expired or capped, in code that lives as long as its process. |
+
+Its do-not-report list, 259 bytes, reaches the finder alone:
+
+```text
+- micro-optimizations: a faster idiom for the same work, string building, the style of a loop
+- costs bounded by a small fixed input
+- code that runs once, such as startup, migrations, scripts and tests
+- a pattern whose two halves the diff does not both show
+```
+
+### Changing one
+
+A program spreads a built-in profile into a new object, as it does `securityProfile`, and sets what it wants over it: `{ ...codeReviewProfile, maxFindings: 40 }` asks the finder for 40 findings a request, over the profile's 20 ([Reply budgets](./20-configuration.md#reply-budgets) says what the ask costs and what limits it), and `{ ...performanceProfile, changedLinesOnly: false }` keeps a finding anywhere in the diff. A config entry named for a built-in profile starts from it and takes what it does not set: an entry named `code-review`, `best-practices` or `performance` keeps the built-in's finding cap, `changedLinesOnly`, do-not-report text and `failOn: none`, and, for `best-practices` and `performance`, its rules and `requireRule`. A profile of your own that took one of these names before they were built in would take all of that without a word, and its `failOn` would read as it was set while most findings that could trip it were dropped. So an entry named after one of the three that has no `extends` and brings both its own research template and its own lenses, the shape of a profile of its own, is refused before any call, `--print-config` included: `profiles.<id>: is named after the built-in <id> profile and brings its own research template and lenses: set extends: <id> to start from the built-in, or rename the profile to keep it your own`. Say `extends` to start from the built-in, or rename the profile to keep it yours. An entry that sets only the template, or only the lenses, starts from the built-in as written. `builtInDoNotReport: false` drops its do-not-report text and `builtInRules: false` its rules, as [Rules and guidelines](./45-rules-and-guidelines.md#builtindonotreport) says. A profile that requires a rule and lists none asks its finder nothing, so drop the rules of `best-practices` or `performance` only to put others in their place.
 
 ## Writing a profile
 

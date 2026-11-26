@@ -921,7 +921,7 @@ A provider's key is the first of:
 | `<path>` | The schema's: `is not a known field`, `is required`, `must be a string`, `must be at least 1`, and the like | A field of the wrong shape, at its path |
 | `QUORUM_PROFILES` | `must list profile ids separated by commas, each matching ^[a-z][a-z0-9_-]*$` | An empty id, or an id of another form |
 | `QUORUM_PROFILES` | `names a profile more than once` | `security,security` |
-| `QUORUM_PROFILES`, or the selection's `path` (`--profile`) | `unknown profile "tema" (did you mean "team"?)`, or `unknown profile "style": the profiles are team and security` | An id that is neither defined nor built in |
+| `QUORUM_PROFILES`, or the selection's `path` (`--profile`) | `unknown profile "tema" (did you mean "team"?)`, or `unknown profile "style": the profiles are team, security, code-review, best-practices and performance` | An id that is neither defined nor built in |
 | The selection's `path` | `must be a profile id matching ^[a-z][a-z0-9_-]*$` | An empty id, or an id of another form, in `selection.ids` |
 | The selection's `path` | `names a profile more than once` | `selection.ids` names an id twice |
 | The selection's `path` | `must name at least one profile` | `selection.ids` is empty |
@@ -939,6 +939,7 @@ A provider's key is the first of:
 | `providers.voter` | `is the name the voter variables give the provider they derive: rename this provider` | The voter variables derive a provider, and one is already named `voter` |
 | `profiles` | `must hold at least one profile, or be left out` | `profiles: {}` with no `QUORUM_PROFILES` |
 | `profiles.<id>.prompts.research`, `profiles.<id>.prompts.vote`, `profiles.<id>.lenses` | `is required: the profile extends no built-in profile` | A profile of its own without prompts or lenses |
+| `profiles.<id>` | `is named after the built-in <id> profile and brings its own research template and lenses: set extends: <id> to start from the built-in, or rename the profile to keep it your own` | An entry with no `extends`, named `code-review`, `best-practices` or `performance`, that sets both its own `prompts.research` and its own `lenses`: [Changing one](../20-using/40-profiles.md#changing-one) |
 | `roles.research`, `roles.voter`, `profiles.<id>.roles.research`, `profiles.<id>.roles.voter`, `profiles.<id>.lenses.<index>.provider` | `unknown provider "claud" (did you mean "claude"?)`, or `unknown provider "x": the providers are a and b` | A reference to a provider that is not defined: the defined name one or two edits away, else the names. A name that is not a safe name is not repeated: `names an unknown provider` |
 | `roles.research` | `is required when several providers are defined` | Several providers, and no research role |
 | `profiles.<id>.failOn` | `must be one of high, medium, low or none` | A `failOn` that is none of the four levels |
@@ -989,6 +990,9 @@ The warnings, each but the first two starting at the path it is about:
 | `fromConfig` | Build a quorum from a config: [`loadConfig` and `fromConfig`](#loadconfig-and-fromconfig) |
 | `loadConfig` | Read a named config file and resolve it with the environment: [`loadConfig` and `fromConfig`](#loadconfig-and-fromconfig) |
 | `securityProfile` | The default profile, frozen: [Profiles](../20-using/40-profiles.md#the-security-profile) |
+| `codeReviewProfile` | The advisory profile for functional defects, frozen and unmeasured: [Profiles](../20-using/40-profiles.md#code-review) |
+| `bestPracticesProfile` | The advisory profile bound to four review rules, frozen and unmeasured: [Profiles](../20-using/40-profiles.md#best-practices) |
+| `performanceProfile` | The advisory profile bound to six cost-pattern rules, frozen and unmeasured: [Profiles](../20-using/40-profiles.md#performance) |
 | `defaultPolicy` | `{ high: 'unanimous', medium: 'majority', low: 'off' }`, frozen |
 | `anthropic` | The Anthropic Messages adapter: [Providers](../20-using/30-providers.md#anthropic) |
 | `claudeCode` | The adapter that runs your installed Claude Code CLI: [Providers](../20-using/30-providers.md#claudecode) |

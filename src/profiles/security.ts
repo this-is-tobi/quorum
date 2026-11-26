@@ -1,4 +1,5 @@
 import type { Profile } from '../core/types.ts'
+import { REFUTATION_VOTE } from './vote.ts'
 
 /**
  * The default profile: the security review quorum has always run. Its policy is spelled out here
@@ -19,12 +20,7 @@ export const securityProfile: Profile = Object.freeze({
   id: 'security',
   prompts: Object.freeze({
     research: 'Review this diff for security vulnerabilities. A finding\'s quote is the offending code (the sink), and its category is its CWE id, such as CWE-89.',
-    vote: [
-      'One vote in a {{panel.size}}-voter panel - you do not see the other votes. Refutation angle: {{lens.id}}.',
-      '{{lens.question}}',
-      '',
-      'Judge only from the blocks you receive. Default keep=false unless genuinely convinced.',
-    ].join('\n'),
+    vote: REFUTATION_VOTE,
   }),
   lenses: Object.freeze([
     Object.freeze({
