@@ -10646,3 +10646,160 @@ describe('the security profile\'s requests through a review', () => {
     expect(looked).toContain(keyOf('vote', 'fe469cddd24059068c2f23e261a56dce57d0d262ba03bb18040463909015542d', reachability!))
   })
 })
+
+describe('a profile that reviews changed lines only', () => {
+  /** One hunk of a.js whose only change is the added `d()`: line 1 is a context row three rows from it, line 7 another. */
+  const hunk = [
+    'diff --git a/a.js b/a.js',
+    '--- a/a.js',
+    '+++ b/a.js',
+    '@@ -1,6 +1,7 @@',
+    ' a()',
+    ' b()',
+    ' c()',
+    '+d()',
+    ' e()',
+    ' f()',
+    ' g()',
+  ].join('\n')
+  const first = { ...reported, quote: 'a()' }
+  const watching: Profile = { ...naming, changedLinesOnly: true }
+  const awayWords = (line: number): string => `"a.js":${line} is more than two lines from a line the change adds or removes`
+  const invalidOf = (events: readonly QuorumEvent[]): QuorumEvent[] => events.filter(event => event.type === 'finding:invalid')
+
+  /** A review of `changed` by `profiles`, one provider playing every role, each research reply listing `replies`. */
+  async function reviewed(profiles: Profile[], changed: string, ...replies: unknown[]): Promise<{ readonly result: QuorumResult, readonly events: QuorumEvent[], readonly both: Fake }> {
+    const both = fake('both', request => isVote(request)
+      ? vote(true)
+      : findings(...replies))
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({ profiles }, {
+      profiles: Object.assign({}, ...profiles.map(profile => portsFor(profile, both).profiles)),
+      events: event => events.push(event),
+    }).review({ diff: changed })
+    return { result, events, both }
+  }
+
+  it('drops a changed-lines profile\'s finding on a context row three rows from the change, and keeps security\'s on the same row', async () => {
+    const { result, events, both } = await reviewed([securityProfile, watching], hunk, first)
+    expect(result.meta.profiles.naming).toMatchObject({ awayFromChange: 1, invalidFindings: 0, invalidRules: 0 })
+    expect(invalidOf(events)).toEqual([
+      {
+        type: 'finding:invalid',
+        profile: 'naming',
+        reason: awayWords(1),
+        cause: 'away',
+      },
+    ])
+    expect(result.meta.profiles.naming.research).toMatchObject({ listed: 1, panel: 0 })
+    // Security's finding on the same row is voted on and kept, and its meta holds no count of findings away from the change.
+    expect(result.meta.profiles.security.research).toMatchObject({ listed: 1, panel: 1 })
+    expect(result.kept.map(verdict => verdict.profile)).toEqual(['security'])
+    expect(both.requests.some(isVote)).toBe(true)
+    expect(Object.hasOwn(result.meta.profiles.security, 'awayFromChange')).toBe(false)
+  })
+
+  it('records awayFromChange 0 for a changed-lines profile that dropped none, and none for a profile that does not review changed lines only', async () => {
+    const near = await reviewed([watching], diff, reported)
+    expect(near.result.meta.profiles.naming.awayFromChange).toBe(0)
+    expect(invalidOf(near.events)).toEqual([])
+    expect(near.result.kept).toHaveLength(1)
+    for (const profile of [
+      naming,
+      { ...naming, changedLinesOnly: false },
+    ]) {
+      const plain = await reviewed([profile], hunk, first)
+      expect(Object.hasOwn(plain.result.meta.profiles.naming, 'awayFromChange'), JSON.stringify(profile.changedLinesOnly)).toBe(false)
+      expect(plain.result.kept).toHaveLength(1)
+      expect(invalidOf(plain.events)).toEqual([])
+    }
+  })
+
+  it('records no gap for a reply whose findings all stand away from the change, which was read and judged by the profile\'s policy', async () => {
+    const { result, events } = await reviewed([watching], hunk, first, { ...reported, line: 7, quote: 'g()' })
+    expect(result.meta.profiles.naming).toMatchObject({ awayFromChange: 2, invalidFindings: 0 })
+    expect(invalidOf(events).map(event => event.type === 'finding:invalid' && [event.reason, event.cause])).toEqual([
+      [
+        awayWords(1),
+        'away',
+      ],
+      [
+        awayWords(7),
+        'away',
+      ],
+    ])
+    expect(result.kept).toEqual([])
+    expect(result.meta.incomplete).toEqual([])
+    expect(events.filter(event => event.type === 'incomplete')).toEqual([])
+  })
+
+  it('sends the findings outside the diff, then those away from the change, then the citations that failed, and checks the place before the citation', async () => {
+    const profile: Profile = {
+      ...watching,
+      rules: [
+        { id: 'license', text: 'Each file starts with the license header.' },
+      ],
+    }
+    const { result, events } = await reviewed(
+      [profile],
+      hunk,
+      { ...first, rule: 'nothing-here' },
+      { ...first, line: 99, rule: 'license' },
+      {
+        ...first,
+        line: 4,
+        quote: 'd()',
+        rule: 'nothing-here',
+      },
+    )
+    expect(invalidOf(events).map(event => event.type === 'finding:invalid' && [event.reason, event.cause])).toEqual([
+      ['a.js:99 is not in the diff', undefined],
+      [
+        awayWords(1),
+        'away',
+      ],
+      ['"a.js":4 cites no rule this review sent', 'rule'],
+    ])
+    // The finding away from the change is dropped for its place only: its citation, which fails, is never counted.
+    expect(result.meta.profiles.naming).toMatchObject({ invalidFindings: 1, awayFromChange: 1, invalidRules: 1 })
+  })
+
+  it('reads the replies of a change researched in parts as those of one request are read', async () => {
+    const wide = (file: string): string => [
+      `diff --git a/${file} b/${file}`,
+      `--- a/${file}`,
+      `+++ b/${file}`,
+      '@@ -1,6 +1,7 @@',
+      ' a()',
+      ' b()',
+      ' c()',
+      `+${'y'.repeat(3000)}`,
+      ' e()',
+      ' f()',
+      ' g()',
+    ].join('\n')
+    // A provider that states its room is researched in parts once the change outgrows partTokens.
+    const both: Fake = {
+      ...fake('both', request => isVote(request)
+        ? vote(true)
+        : findings({ ...reported, quote: 'a()' }, { ...reported, file: 'b.js', quote: 'a()' })),
+      room: () => 100_000,
+    }
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [watching],
+      partTokens: 1024,
+    }, {
+      ...portsFor(watching, both),
+      events: event => events.push(event),
+    }).review({ diff: `${wide('a.js')}\n${wide('b.js')}` })
+    // Two parts, each read: the reply of each lists a finding on line 1 of both files, three rows from the added row.
+    const researches = both.requests.filter(request => !isVote(request))
+    expect(researches).toHaveLength(2)
+    for (const request of researches) expect(request.messages[0].content).toContain('untrusted-parts-')
+    expect(result.meta.profiles.naming).toMatchObject({ awayFromChange: 4, invalidFindings: 0 })
+    expect(invalidOf(events).map(event => event.type === 'finding:invalid' && event.cause)).toEqual(['away', 'away', 'away', 'away'])
+    expect(result.kept).toEqual([])
+    expect(result.meta.incomplete).toEqual([])
+  })
+})

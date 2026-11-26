@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { locate, splitDiff } from './diff.ts'
 import type { FindingDetails, ReviewRule } from './types.ts'
-import { checkCitations, MAX_ANCHOR_OCCURRENCES, MIN_ANCHOR_QUOTE, placeOf, UNCATEGORIZED, verifyFindings } from './verify.ts'
+import { checkCitations, checkNearChange, MAX_ANCHOR_OCCURRENCES, MIN_ANCHOR_QUOTE, placeOf, UNCATEGORIZED, verifyFindings } from './verify.ts'
 import type { VerifiedFinding } from './verify.ts'
 
 const diff = [
@@ -736,5 +736,104 @@ describe('a rule citation', () => {
     const [quoted] = invalid
     expect(quoted).toBe(`${JSON.stringify(`${name.slice(0, 79)}…`)}:2 cites no rule this review sent`)
     expect(quoted.indexOf(':2 cites')).toBe(82)
+  })
+})
+
+describe('a finding away from the change', () => {
+  const hunk = [
+    'diff --git a/src/a.js b/src/a.js',
+    '--- a/src/a.js',
+    '+++ b/src/a.js',
+    '@@ -1,6 +1,7 @@',
+    ' const a = load()',
+    ' const b = parse()',
+    ' const c = check()',
+    '+const d = compute()',
+    ' const e = store()',
+    ' const f = report()',
+    ' const g = finish()',
+  ].join('\n')
+  const shown = splitDiff(hunk)
+  const citing = (line: number, quote: string, file = 'src/a.js'): FindingDetails => ({ ...reported, file, line, quote })
+  const away = (line: number): string => `"src/a.js":${line} is more than two lines from a line the change adds or removes`
+
+  it('drops a finding away from the change with its reason, and keeps one near it', () => {
+    const { findings } = verifyFindings([
+      citing(1, 'const a = load()'),
+      citing(3, 'const c = check()'),
+    ], shown)
+    const checked = checkNearChange(findings, shown)
+    expect(checked.findings.map(finding => finding.line)).toEqual([3])
+    expect(checked.invalid).toEqual([
+      away(1),
+    ])
+  })
+
+  it.each([
+    [
+      'cited three rows from the change, moved onto the changed row, it is kept',
+      1,
+      'const d = compute()',
+      4,
+      [4],
+      [],
+    ],
+    [
+      'cited beside the change, moved onto a context row three rows from it, it is dropped',
+      3,
+      'const g = finish()',
+      7,
+      [],
+      [
+        away(7),
+      ],
+    ],
+  ])('reads the line the anchor moved a finding to: %s', (_name, cited, quote, movedTo, kept, invalid) => {
+    const verified = verifyFindings([
+      citing(cited, quote),
+    ], shown).findings
+    expect(verified.map(finding => [finding.line, finding.citedLine])).toEqual([
+      [movedTo, cited],
+    ])
+    const checked = checkNearChange(verified, shown)
+    expect(checked.findings.map(finding => finding.line)).toEqual(kept)
+    expect(checked.invalid).toEqual(invalid)
+  })
+
+  it('keeps the findings it does not drop as they are, in their order, and names a long file as JSON cut at 80 characters', () => {
+    const name = `src/${'d'.repeat(120)}.ts`
+    const long = splitDiff([
+      `diff --git a/${name} b/${name}`,
+      '@@ -1,6 +1,7 @@',
+      ' const a = load()',
+      ' const b = parse()',
+      ' const c = check()',
+      '+const d = compute()',
+      ' const e = store()',
+      ' const f = report()',
+      ' const g = finish()',
+    ].join('\n'))
+    const { findings } = verifyFindings([
+      citing(4, 'const d = compute()', name),
+      citing(1, 'const a = load()', name),
+      citing(2, 'const b = parse()', name),
+    ], long)
+    const checked = checkNearChange(findings, long)
+    expect(checked.findings).toEqual([findings[0], findings[2]])
+    expect(checked.invalid).toEqual([`${JSON.stringify(`${name.slice(0, 79)}…`)}:1 is more than two lines from a line the change adds or removes`])
+  })
+
+  it('keeps a finding of a diff with no file headers, which the one unkeyed section shows', () => {
+    const plain = splitDiff([
+      '@@ -1,6 +1,7 @@',
+      ...hunk.split('\n').slice(4),
+    ].join('\n'))
+    const { findings } = verifyFindings([
+      citing(3, 'const c = check()', 'any.js'),
+      citing(7, 'const g = finish()', 'any.js'),
+    ], plain)
+    const checked = checkNearChange(findings, plain)
+    expect(checked.findings.map(finding => finding.line)).toEqual([3])
+    expect(checked.invalid).toEqual(['"any.js":7 is more than two lines from a line the change adds or removes'])
   })
 })

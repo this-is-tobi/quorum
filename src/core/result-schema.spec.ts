@@ -895,6 +895,90 @@ describe('the schemas of a result', () => {
     }
   })
 
+  it('reads awayFromChange as an optional count, and a result without it', () => {
+    const base = reportMeta()
+    const { providers, policy, failOn, gating, invalidFindings, rules, invalidRules, research, stages, coverage } = base.profiles.security
+    // The profile as the core writes it: the count after the counts of rules, before the research record.
+    const counted = reportResult({
+      meta: {
+        ...base,
+        profiles: {
+          security: {
+            providers,
+            policy,
+            failOn,
+            gating,
+            invalidFindings,
+            rules,
+            invalidRules,
+            awayFromChange: 2,
+            research,
+            stages,
+            coverage,
+          },
+        },
+      },
+    })
+    const full = saved(counted)
+    const view = saved(publicView(counted))
+    expect(resultSchema.parse(full)).toEqual(full)
+    expect(JSON.stringify(resultSchema.parse(full))).toBe(JSON.stringify(full))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(JSON.stringify(publicViewSchema.parse(view))).toBe(JSON.stringify(view))
+    expect(Object.keys(full.meta.profiles.security).slice(6, 9)).toEqual(['invalidRules', 'awayFromChange', 'research'])
+    expect(Object.keys(view.meta.profiles.security).slice(4, 8)).toEqual([
+      'invalidFindings',
+      'rules',
+      'invalidRules',
+      'awayFromChange',
+    ])
+    expect(full.meta.profiles.security.awayFromChange).toBe(2)
+    expect(view.meta.profiles.security.awayFromChange).toBe(2)
+    // A result of an earlier release holds none, and the schema returns it as it always did.
+    const plain = saved(reportResult())
+    expect(resultSchema.parse(plain).meta.profiles.security).not.toHaveProperty('awayFromChange')
+    expect(publicViewSchema.parse(saved(publicView(reportResult()))).meta.profiles.security).not.toHaveProperty('awayFromChange')
+    // A count of 0 is a value: a profile that reviews changed lines only and dropped none says so.
+    for (const value of [0, 7]) {
+      const zero = {
+        ...full,
+        meta: {
+          ...full.meta,
+          profiles: {
+            security: { ...full.meta.profiles.security, awayFromChange: value },
+          },
+        },
+      }
+      expect(resultSchema.parse(zero).meta.profiles.security.awayFromChange).toBe(value)
+    }
+    // It is a whole number from 0 on.
+    const profile = (meta: { profiles: Record<string, Forged> }, changes: Forged): Forged => ({
+      ...meta,
+      profiles: {
+        security: {
+          ...meta.profiles.security,
+          ...changes,
+        },
+      },
+    })
+    for (const forged of [
+      { awayFromChange: -1 },
+      { awayFromChange: 0.5 },
+      { awayFromChange: '1' },
+      { awayFromChange: null },
+      { awayFromChange: true },
+    ] as Forged[]) {
+      expect(resultSchema.safeParse({
+        ...full,
+        meta: profile(full.meta, forged),
+      }).success, JSON.stringify(forged)).toBe(false)
+      expect(publicViewSchema.safeParse({
+        ...view,
+        meta: profile(view.meta, forged),
+      }).success, JSON.stringify(forged)).toBe(false)
+    }
+  })
+
   it('reads meta.reused strictly, in the public view too, and does not require it', () => {
     const result = reportResult({
       meta: {

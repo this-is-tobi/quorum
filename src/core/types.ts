@@ -175,6 +175,14 @@ export interface Profile {
    * quorum's `maxFindings` does for a profile that sets none, which asks that.
    */
   readonly maxFindings?: number
+  /**
+   * Whether a finding stands only near a changed line: it is kept when the rows its evidence reads, the cited row and two on each
+   * side, hold a row the change adds or removes, checked on the line the anchor moved it to and before its rule citation. A finding
+   * on a context row three rows or more from every changed row is dropped, a `finding:invalid` event of cause `away` counted in
+   * `meta.profiles.<id>.awayFromChange`. A path review's diff only adds, so it drops none. `false` when unset: every finding that
+   * cites the diff stands.
+   */
+  readonly changedLinesOnly?: boolean
 }
 
 /**
@@ -486,6 +494,13 @@ export interface ProfileMeta {
   rules: { listed: number, sent: number }
   /** How many citations failed their check: a finding's `rule` that names no rule the review sent whose `paths` match its file, and, in a profile that requires a rule, a finding that cites none. Counted apart from `invalidFindings`. */
   invalidRules: number
+  /**
+   * How many findings it dropped for standing away from the change, counted apart from `invalidFindings` (the findings that cite
+   * code outside the diff) as `invalidRules` is: a finding the finder misplaced is not one the profile's policy dropped. Present, 0
+   * included, for a profile that reviews changed lines only (`Profile.changedLinesOnly`), and absent, never 0, for every other
+   * profile, so a result with none is unchanged.
+   */
+  awayFromChange?: number
   /** What its research came to: the parts, the findings its replies listed, those the panel was asked about, those the cap left unread and the replies that listed all they were asked for. */
   research: ResearchRecord
   /**
@@ -1123,10 +1138,11 @@ export type QuorumEvent
     | { type: 'stored-refused', provider: string, role: 'research' | 'vote' }
     /**
      * A finding was dropped for citing code outside the diff, with the reason, or, with `cause` `rule`, a finding's rule citation
-     * failed its check (the finding is dropped with it in a profile that requires a rule): the reason names the finding's file and
-     * line, never the rule the finder cited.
+     * failed its check (the finding is dropped with it in a profile that requires a rule), or, with `cause` `away`, a finding of a
+     * profile that reviews changed lines only stood more than two lines from a line the change adds or removes: the reason names the
+     * finding's file and line, never the rule the finder cited.
      */
-    | { type: 'finding:invalid', profile: string, reason: string, cause?: 'rule' }
+    | { type: 'finding:invalid', profile: string, reason: string, cause?: 'rule' | 'away' }
     /** A gap was recorded, as `meta.incomplete` will hold it. */
     | { type: 'incomplete', entry: IncompleteEntry }
     /**

@@ -646,6 +646,50 @@ describe('renderEvent', () => {
     expect(renderEvent(event, prefixed, view)).toBe(line)
   })
 
+  /** A finding a changed-lines profile dropped for standing away from the change, as the core says it. */
+  const away = (reason: string, profile = 'naming'): QuorumEvent => ({
+    type: 'finding:invalid',
+    profile,
+    reason,
+    cause: 'away',
+  })
+  const AWAY = '"a.js":1 is more than two lines from a line the change adds or removes'
+
+  it.each<[string, 'full' | 'public', boolean, string]>([
+    [
+      `finding away from the change dropped: ${AWAY}`,
+      'full',
+      false,
+      AWAY,
+    ],
+    [
+      'finding away from the change dropped',
+      'public',
+      false,
+      AWAY,
+    ],
+    [
+      `[naming] finding away from the change dropped: ${AWAY}`,
+      'full',
+      true,
+      AWAY,
+    ],
+    [
+      '[naming] finding away from the change dropped',
+      'public',
+      true,
+      AWAY,
+    ],
+    [
+      'finding away from the change dropped: "a<U+202E>.js":1 is more than two lines from a line the change adds or removes',
+      'full',
+      false,
+      `"a${RLO}.js":1 is more than two lines from a line the change adds or removes`,
+    ],
+  ])('writes a finding:invalid of the cause away as %j in the %s view', (line, view, prefixed, reason) => {
+    expect(renderEvent(away(reason), prefixed, view)).toBe(line)
+  })
+
   it('renders the text a line carries inert', () => {
     expect(renderEvent({ type: 'finding:invalid', profile: 'security', reason: 'a\u001B[2J.js:1 is not in the diff' })).toBe('invalid finding dropped: a<U+001B>[2J.js:1 is not in the diff')
     expect(renderEvent({

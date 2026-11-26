@@ -405,6 +405,77 @@ describe('agentResult', () => {
     }))).toThrow(TypeError)
   })
 
+  it('gives a changed-lines profile its awayFromChange, and no other profile one', () => {
+    const { security } = reportMeta().profiles
+    // The profile as the core writes it: the count after the counts of rules, before the research record.
+    const { providers, policy, failOn, gating, invalidFindings, rules, invalidRules, research, stages, coverage } = security
+    const watching = (awayFromChange: number): QuorumResult => reportResult({
+      meta: {
+        profiles: {
+          security: {
+            providers,
+            policy,
+            failOn,
+            gating,
+            invalidFindings: 1,
+            rules,
+            invalidRules,
+            awayFromChange,
+            research,
+            stages,
+            coverage,
+          },
+          naming: {
+            providers,
+            policy,
+            failOn,
+            gating,
+            invalidFindings,
+            rules,
+            invalidRules,
+            research,
+            stages,
+            coverage,
+          },
+        },
+      },
+    })
+    const full = received(watching(3))
+    // The count of its own sits beside the findings outside the diff, which it never joins.
+    expect(full.profiles.map(entry => [entry.id, entry.outsideDiff, entry.awayFromChange])).toEqual([
+      ['security', 1, 3],
+      ['naming', 0, undefined],
+    ])
+    expect(Object.keys(full.profiles[0])).toEqual([
+      'id',
+      'failOn',
+      'kept',
+      'unreviewed',
+      'discarded',
+      'outsideDiff',
+      'awayFromChange',
+      'invalidRules',
+      'files',
+    ])
+    expect(full.profiles[1]).not.toHaveProperty('awayFromChange')
+    // A count of 0 is a value, and --code-fields-only keeps it as it keeps every code-checked field.
+    expect(received(watching(0)).profiles[0].awayFromChange).toBe(0)
+    expect(received(watching(3), FINDINGS, { codeFieldsOnly: true }).profiles).toEqual(full.profiles)
+    // A result of a profile that has none is the one it always was.
+    for (const profile of received(reportResult()).profiles) expect(profile).not.toHaveProperty('awayFromChange')
+    // The strict schema reads it back, and refuses a count that is no whole number.
+    expect(agentResultSchema.parse(JSON.parse(JSON.stringify(full)))).toEqual(full)
+    for (const forged of [-1, 0.5, '3', null]) {
+      expect(agentResultSchema.safeParse({
+        ...full,
+        profiles: [
+          { ...full.profiles[0], awayFromChange: forged },
+          full.profiles[1],
+        ],
+      }).success, String(forged)).toBe(false)
+    }
+  })
+
   it('tells the agent that a profile\'s research asked nothing, with --code-fields-only too, and writes nothing for a profile that did', () => {
     const { security } = reportMeta().profiles
     // The profile as the core writes it: the flag after the counts of rules, before the coverage.

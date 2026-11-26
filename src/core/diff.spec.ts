@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeDiff, diffSectionFor, diffSections, firstLineOutside, headerNames, holds, locate, movedTo, namedPaths, namesOldSide, parseHunks, sectionFor, splitDiff } from './diff.ts'
+import { decodeDiff, diffSectionFor, diffSections, firstLineOutside, headerNames, holds, locate, movedTo, namedPaths, namesOldSide, nearChange, parseHunks, sectionFor, splitDiff } from './diff.ts'
 
 const gitDiff = [
   'diff --git a/src/a.js b/src/a.js',
@@ -779,6 +779,79 @@ describe('locate', () => {
     }
     expect(performance.now() - started).toBeLessThan(300)
     expect(located).toBe(1_000)
+  })
+})
+
+describe('nearChange', () => {
+  const oneAdded = splitDiff([
+    'diff --git a/a.js b/a.js',
+    '@@ -1,6 +1,7 @@',
+    ' a',
+    ' b',
+    ' c',
+    '+d',
+    ' e',
+    ' f',
+    ' g',
+  ].join('\n'))
+
+  it.each([
+    [1, 'away from'],
+    [2, 'near'],
+    [3, 'near'],
+    [4, 'near'],
+    [6, 'near'],
+    [7, 'away from'],
+  ])('reads line %i of a hunk of one added row as %s the change', (line, word) => {
+    expect(nearChange(oneAdded, 'a.js', line)).toBe(word === 'near')
+  })
+
+  it('reads a deletion-only hunk\'s line, a line beside a removed row, and every line of an all-added diff as near the change, and a line no hunk shows as away', () => {
+    const removed = splitDiff([
+      'diff --git a/lib/b.js b/lib/b.js',
+      '@@ -5,2 +4,0 @@',
+      '-gone()',
+      '-alsoGone()',
+    ].join('\n'))
+    expect(nearChange(removed, 'lib/b.js', 4)).toBe(true)
+    // The rows count and not the new-file lines: a removed row stands between `four` and `five`, so it is two rows from `three`.
+    const beside = splitDiff([
+      'diff --git a/c.js b/c.js',
+      '@@ -1,9 +1,8 @@',
+      ' one',
+      ' two',
+      ' three',
+      ' four',
+      '-gone',
+      ' five',
+      ' six',
+      ' seven',
+      ' eight',
+    ].join('\n'))
+    expect([1, 2, 3, 4, 5, 6, 7, 8].map(line => nearChange(beside, 'c.js', line))).toEqual([
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+    ])
+    const added = splitDiff([
+      'diff --git a/n.js b/n.js',
+      '@@ -0,0 +1,5 @@',
+      '+l1',
+      '+l2',
+      '+l3',
+      '+l4',
+      '+l5',
+    ].join('\n'))
+    expect([1, 2, 3, 4, 5].map(line => nearChange(added, 'n.js', line))).toEqual([true, true, true, true, true])
+    expect(nearChange(oneAdded, 'a.js', 8)).toBe(false)
+    expect(nearChange(oneAdded, 'a.js', 0)).toBe(false)
+    expect(nearChange(oneAdded, 'elsewhere.js', 4)).toBe(false)
+    expect(nearChange(oneAdded, 'a.js', 4.5)).toBe(false)
   })
 })
 

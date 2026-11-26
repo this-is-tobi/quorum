@@ -230,7 +230,7 @@ function rulesClause({ rules, invalidRules, asksNothing }: QuorumMeta['profiles'
   return `; rules: ${ruleCountWords(rules, asksNothing === true)}${refused}`
 }
 
-/** Each profile in run order: its fail-on level and its counts, with the findings it dropped for citing code outside the diff and the rules it sent and the citations refused, wrapped at 80 columns after its head, then its coverage and, in a full result, its research counts, wrapped at 80 columns too. A public view's discarded count is the one it records, and it has no research counts. */
+/** Each profile in run order: its fail-on level and its counts, with the findings it dropped for citing code outside the diff, those a changed-lines profile dropped for standing away from the change, and the rules it sent and the citations refused, wrapped at 80 columns after its head, then its coverage and, in a full result, its research counts, wrapped at 80 columns too. A public view's discarded count is the one it records, and it has no research counts. */
 function profileLines(result: ReportInput): string[] {
   const full = isPublicView(result)
     ? undefined
@@ -240,8 +240,11 @@ function profileLines(result: ReportInput): string[] {
     const outside = profile.invalidFindings > 0
       ? `, ${profile.invalidFindings} outside the diff`
       : ''
+    const away = profile.awayFromChange !== undefined && profile.awayFromChange > 0
+      ? `, ${profile.awayFromChange} away from the changed lines`
+      : ''
     return [
-      ...wrap(`${id} (fail-on ${profileFailOn(result, id)}):`, `${count(result.kept as ReadonlyArray<Verdict | PublicVerdict>)} kept, ${count(result.unreviewed as ReadonlyArray<Verdict | PublicVerdict>)} unreviewed, ${discardedOf(result, id)} discarded${outside}${rulesClause(profile)}`).map(inertLine),
+      ...wrap(`${id} (fail-on ${profileFailOn(result, id)}):`, `${count(result.kept as ReadonlyArray<Verdict | PublicVerdict>)} kept, ${count(result.unreviewed as ReadonlyArray<Verdict | PublicVerdict>)} unreviewed, ${discardedOf(result, id)} discarded${outside}${away}${rulesClause(profile)}`).map(inertLine),
       inertLine(`  ${coverageWords(profile.coverage)}`),
       ...full === undefined
         ? []

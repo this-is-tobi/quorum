@@ -194,6 +194,37 @@ describe('markdown', () => {
     }), PASS)[7]).toBe('| security | high | 0 | 0 | 0 | 0 | the diff holds no file |')
   })
 
+  it('adds the findings away from the changed lines to a profile\'s coverage cell, after the coverage words and before what a profile that asked nothing adds', () => {
+    const { security } = reportResult().meta.profiles
+    const watching = (changes: Partial<typeof security>): QuorumResult => blankResult({
+      profiles: {
+        security: {
+          ...security,
+          ...changes,
+          coverage: [
+            { file: 'a.js', status: 'reviewed' },
+          ],
+        },
+      },
+    })
+    expect(render(watching({ awayFromChange: 1 }), PASS)[7]).toBe('| security | high | 0 | 0 | 0 | 0 | 1 of 1 file reviewed; 1 finding(s) away from the changed lines |')
+    expect(render(watching({ awayFromChange: 12 }), PASS)[7]).toBe('| security | high | 0 | 0 | 0 | 0 | 1 of 1 file reviewed; 12 finding(s) away from the changed lines |')
+    expect(render(watching({
+      awayFromChange: 2,
+      rules: { listed: 1, sent: 0 },
+      asksNothing: true,
+    }), PASS)[7]).toBe('| security | high | 0 | 0 | 0 | 0 | 1 of 1 file reviewed; 2 finding(s) away from the changed lines; rules 0 of 1 sent, so its research asks nothing |')
+    // The column of the findings outside the diff keeps its own count.
+    expect(render(watching({ awayFromChange: 3, invalidFindings: 2 }), PASS)[7]).toBe('| security | high | 0 | 0 | 0 | 2 | 1 of 1 file reviewed; 3 finding(s) away from the changed lines |')
+    // The view the summary is written from keeps the count, so a result given as that view reads the same, and the cell holds no `|` and nothing a model wrote.
+    expect(render(publicView(watching({ awayFromChange: 1 })), PASS)).toEqual(render(watching({ awayFromChange: 1 }), PASS))
+    expectCodeWritten(render(watching({ awayFromChange: 1 }), PASS).join('\n'))
+    // A count of 0, and a profile with none, leave the cell as it always was.
+    expect(render(watching({ awayFromChange: 0 }), PASS)[7]).toBe('| security | high | 0 | 0 | 0 | 0 | 1 of 1 file reviewed |')
+    expect(render(watching({}), PASS)[7]).toBe('| security | high | 0 | 0 | 0 | 0 | 1 of 1 file reviewed |')
+    expect(render(reportResult())).toEqual(MAIN)
+  })
+
   it('writes the verdict of an interrupted review', () => {
     const lines = render(blankResult({
       incomplete: [

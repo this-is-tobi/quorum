@@ -104,6 +104,8 @@ export interface ProfileRun {
   readonly maxFindings: number
   /** Whether `maxFindings` is the profile's own: the lever a gap or a summary names to raise it is then the profile's setting, not the quorum's. */
   readonly ownMaxFindings: boolean
+  /** Whether a finding stands only near a changed line (`Profile.changedLinesOnly`): one on a context row three rows or more from every changed row is dropped, once its anchor has placed it and before its rule citation is checked. */
+  readonly changedLinesOnly: boolean
 }
 
 /**

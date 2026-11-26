@@ -691,6 +691,49 @@ describe('text', () => {
     expect(colored.endsWith('  CWE-89  rule tests-for-new-code')).toBe(true)
   })
 
+  it('says a changed-lines profile\'s findings away from the change on its line, after those outside the diff', () => {
+    const { security } = reportResult().meta.profiles
+    const watching = (changes: Partial<typeof security>): QuorumResult => reportResult({
+      meta: {
+        profiles: {
+          security,
+          naming: {
+            ...security,
+            failOn: 'none',
+            gating: false,
+            ...changes,
+          },
+        },
+      },
+    })
+    /** The line of the profile `naming`, wrapped at 80 columns, joined back: its head up to the coverage line. */
+    const lineOf = (result: QuorumResult | PublicView): string => {
+      const lines = render(result)
+      const at = lines.findIndex(line => line.startsWith('naming ('))
+      const end = lines.findIndex((line, index) => index > at && line.startsWith('  1 of 3 files'))
+      return lines.slice(at, end).map((line, index) => index === 0
+        ? line
+        : line.trim()).join(' ')
+    }
+    const both = watching({ invalidFindings: 1, awayFromChange: 2 })
+    expect(lineOf(both)).toBe('naming (fail-on none): 0 kept, 0 unreviewed, 0 discarded, 1 outside the diff, 2 away from the changed lines')
+    // The count of its own, with none outside the diff, and the line the public view writes of it.
+    expect(lineOf(watching({ awayFromChange: 1 }))).toBe('naming (fail-on none): 0 kept, 0 unreviewed, 0 discarded, 1 away from the changed lines')
+    expect(lineOf(publicView(both))).toBe(lineOf(both))
+    // It comes before the rules clause, and the two never merge.
+    expect(lineOf(watching({
+      awayFromChange: 2,
+      rules: { listed: 1, sent: 1 },
+      invalidRules: 1,
+    }))).toBe('naming (fail-on none): 0 kept, 0 unreviewed, 0 discarded, 2 away from the changed lines; rules: 1 of 1 sent, 1 citation(s) refused')
+    // A count of 0, and a profile with none, add nothing to the line, so a report of a profile that does not review changed lines only is unchanged.
+    expect(lineOf(watching({ awayFromChange: 0 }))).toBe('naming (fail-on none): 0 kept, 0 unreviewed, 0 discarded')
+    expect(lineOf(watching({}))).toBe('naming (fail-on none): 0 kept, 0 unreviewed, 0 discarded')
+    expect(render(reportResult()).join('\n')).not.toContain('away from')
+    // Every line stays within 80 columns.
+    for (const line of render(both)) expect([...line].length).toBeLessThanOrEqual(80)
+  })
+
   it('says on the line of a profile that asked nothing that its research asks nothing, whether it lists rules or none, and on no other profile\'s', () => {
     const { security } = reportResult().meta.profiles
     /** A review of one file whose profile `asksNothing`: it requires a rule and was sent none, so nothing was found and every file reads as reviewed. */

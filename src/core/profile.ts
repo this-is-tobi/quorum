@@ -21,7 +21,7 @@ const OPEN_PART_ISSUE = 'holds a {{ that opens no placeholder: write \\{{ for a 
 /**
  * Every problem that keeps a profile from running, all at once. Each field is checked by shape
  * first, because an untyped caller can hand over anything and a `TypeError` is no report: the
- * profile itself, the id, the lenses (and each lens), the policy, both prompts, `failOn`, `gating`, `requireRule`, `maxFindings` and
+ * profile itself, the id, the lenses (and each lens), the policy, both prompts, `failOn`, `gating`, `requireRule`, `changedLinesOnly`, `maxFindings` and
  * the documents (`guidelines`, `doNotReport`, `rules` and `documents`, which are cleaned as a review sends them and refused
  * over their caps, too deep to clean or, for the rules, a repeated id: see `profileDocumentIssues`). What follows the shape
  * is the policy for the lens count and both templates, so a library caller gets the checks a config file gets, and a typo
@@ -49,6 +49,7 @@ export function profileIssues(profile: Profile, fallbackRoot = 'profile'): Confi
   if (profile.gating !== undefined && typeof profile.gating !== 'boolean') issues.push({ path: `${root}.gating`, message: 'must be true or false' })
   else if (profile.gating !== undefined && profile.failOn !== undefined) issues.push({ path: `${root}.gating`, message: 'is deprecated and cannot be set with failOn: remove it' })
   if (profile.requireRule !== undefined && typeof profile.requireRule !== 'boolean') issues.push({ path: `${root}.requireRule`, message: 'must be true or false' })
+  if (profile.changedLinesOnly !== undefined && typeof profile.changedLinesOnly !== 'boolean') issues.push({ path: `${root}.changedLinesOnly`, message: 'must be true or false' })
   const maxFindings = positiveIntegerProblem(profile.maxFindings)
   if (maxFindings !== undefined) issues.push({ path: `${root}.maxFindings`, message: maxFindings })
   issues.push(...profileDocumentIssues(profile, root))

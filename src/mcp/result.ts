@@ -20,7 +20,9 @@
  * Each finding's `rule` (the id of the review rule it cites, the configuration's, checked by code) and each profile's
  * `invalidRules` (how many citations failed their check) and `asksNothing` (`true` when it requires a rule and was sent none,
  * so its finder was never asked and its empty list of findings is no review's) are code-checked fields: a rule's id matches a
- * fixed pattern, and `codeFieldsOnly` keeps all three.
+ * fixed pattern, and `codeFieldsOnly` keeps all three. So is a profile's `awayFromChange` (how many findings a profile that
+ * reviews changed lines only dropped for standing away from the change, counted apart from `outsideDiff`), present for such a
+ * profile alone.
  *
  * Text from the change reaches the agent in four places and no other. A file name, in a finding, a gap, a
  * file left out and a flag, passes `showHidden`, so a hidden character shows as `<U+XXXX>` and the agent can
@@ -90,6 +92,7 @@ const profile = z.strictObject({
   unreviewed: count,
   discarded: count,
   outsideDiff: count,
+  awayFromChange: count.optional(),
   invalidRules: count,
   asksNothing: z.literal(true).optional(),
   files: z.strictObject({
@@ -228,6 +231,9 @@ function profilesOf(view: PublicView): AgentResult['profiles'] {
       unreviewed: unreviewed.get(id) ?? 0,
       discarded: meta.discarded,
       outsideDiff: meta.invalidFindings,
+      ...meta.awayFromChange === undefined
+        ? {}
+        : { awayFromChange: meta.awayFromChange },
       invalidRules: meta.invalidRules,
       ...meta.asksNothing === true
         ? { asksNothing: true as const }

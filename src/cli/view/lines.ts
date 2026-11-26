@@ -115,14 +115,17 @@ function progressLine(event: QuorumEvent, prefixed: boolean, view: ReportView): 
 }
 
 /**
- * What a `finding:invalid` event says: `invalid finding dropped` for a finding that cited code outside the diff, or `rule citation
+ * What a `finding:invalid` event says: `invalid finding dropped` for a finding that cited code outside the diff, `rule citation
  * refused` for one whose rule failed its check (the finding goes on with no rule, or is dropped with it in a profile that requires
- * one), each followed by `: <reason>` in the full view. The public view leaves the reason out: it names a file and a line of the diff.
+ * one), or `finding away from the change dropped` for one a changed-lines profile dropped for standing away from the change, each
+ * followed by `: <reason>` in the full view. The public view leaves the reason out: it names a file and a line of the diff.
  */
 function invalidWords({ cause, reason }: Extract<QuorumEvent, { type: 'finding:invalid' }>, view: ReportView): string {
   const what = cause === 'rule'
     ? 'rule citation refused'
-    : 'invalid finding dropped'
+    : cause === 'away'
+      ? 'finding away from the change dropped'
+      : 'invalid finding dropped'
   return view === 'public'
     ? what
     : `${what}: ${reason}`
