@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.15.0](https://github.com/this-is-tobi/quorum/compare/v0.14.0...v0.15.0) (2026-11-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* a config profile keyed code-review, best-practices or performance now starts from the built-in profile of that name and takes what it does not set: failOn none, 20 findings a request, changed lines only, the do-not-report text, and for the last two their rules and requireRule. One that brings both its own research template and lenses is refused: rename it, or set extends to start from the built-in.
+
+### Features
+
+* let a config extend any built-in profile and set its own maxFindings and changedLinesOnly ([8f0d61f](https://github.com/this-is-tobi/quorum/commit/8f0d61fc571a07d8b7f7df181585b8195f897fd1))
+* let a profile review changed lines only, and count its findings away from the change apart ([eb68262](https://github.com/this-is-tobi/quorum/commit/eb682627ef24b0b30043026958cddb9066b7bd68))
+* let a profile size its own research requests with maxFindings, its lever named in its gap ([b46c5d1](https://github.com/this-is-tobi/quorum/commit/b46c5d101d8634e48ba7e62005ca08169213ddc4))
+* say that a path review's estimate and finding cap count every profile that runs ([c263f5e](https://github.com/this-is-tobi/quorum/commit/c263f5e11d52f4078ae9595a75a8a212d9ddd70e))
+* ship the code-review, best-practices and performance profiles as advisory, unmeasured data ([0e0c3f2](https://github.com/this-is-tobi/quorum/commit/0e0c3f224e5d2c0a14733bb278fe71b16b483f1f))
+
+
+### Dependencies
+
+* **deps:** update gcr.io/distroless/cc-debian13:nonroot docker digest to 29ee707 ([f1c12e1](https://github.com/this-is-tobi/quorum/commit/f1c12e14dbf9b5ce812dbdd858b31388ff52665c))
+
 ## [0.14.0](https://github.com/this-is-tobi/quorum/compare/v0.13.0...v0.14.0) (2026-11-25)
 
 
