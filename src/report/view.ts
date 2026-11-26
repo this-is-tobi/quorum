@@ -110,6 +110,11 @@ function publicProfile(entry: unknown, discarded: number): PublicProfileMeta {
     invalidFindings: ownData(entry, 'invalidFindings') as number,
     rules: structuredClone(ownData(entry, 'rules')) as PublicProfileMeta['rules'],
     invalidRules: ownData(entry, 'invalidRules') as number,
+    ...ownData(entry, 'awayFromChange') === undefined
+      ? {}
+      : {
+          awayFromChange: ownData(entry, 'awayFromChange') as number,
+        },
     stages: structuredClone(ownData(entry, 'stages')) as PublicProfileMeta['stages'],
     ...ownData(entry, 'asksNothing') === undefined
       ? {}

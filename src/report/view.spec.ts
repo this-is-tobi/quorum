@@ -380,6 +380,81 @@ describe('publicView', () => {
     })).toThrow('the public view is not one quorum writes, at meta.profiles.security.asksNothing')
   })
 
+  it('keeps awayFromChange in the public view, after invalidRules, and leaves it out of a profile that has none, so such a view is unchanged', () => {
+    const base = reportMeta()
+    const { providers, policy, failOn, gating, invalidFindings, rules, invalidRules, research, stages, coverage } = base.profiles.security
+    const counted = reportResult({
+      meta: {
+        ...base,
+        profiles: {
+          security: {
+            providers,
+            policy,
+            failOn,
+            gating,
+            invalidFindings,
+            rules,
+            invalidRules,
+            awayFromChange: 2,
+            research,
+            stages,
+            coverage,
+          },
+        },
+      },
+    })
+    const view = publicView(counted)
+    expect(view.meta.profiles.security.awayFromChange).toBe(2)
+    expect(Object.keys(view.meta.profiles.security)).toEqual([
+      'policy',
+      'failOn',
+      'gating',
+      'discarded',
+      'invalidFindings',
+      'rules',
+      'invalidRules',
+      'awayFromChange',
+      'stages',
+      'coverage',
+    ])
+    expect(publicView(view)).toBe(view)
+    expect(inertJson(view)).toContain('"awayFromChange": 2')
+    // A count of 0 is kept, and a profile that has none gets none.
+    const zero = publicView(reportResult({
+      meta: {
+        ...base,
+        profiles: {
+          security: {
+            providers,
+            policy,
+            failOn,
+            gating,
+            invalidFindings,
+            rules,
+            invalidRules,
+            awayFromChange: 0,
+            research,
+            stages,
+            coverage,
+          },
+        },
+      },
+    }))
+    expect(zero.meta.profiles.security.awayFromChange).toBe(0)
+    expect(publicView(reportResult()).meta.profiles.security).not.toHaveProperty('awayFromChange')
+    expect(inertJson(publicView(reportResult()))).not.toContain('awayFromChange')
+    // A count that is no whole number is no view quorum writes.
+    expect(() => publicView({
+      ...counted,
+      meta: {
+        ...counted.meta,
+        profiles: {
+          security: { ...counted.meta.profiles.security, awayFromChange: -1 },
+        },
+      },
+    })).toThrow('the public view is not one quorum writes, at meta.profiles.security.awayFromChange')
+  })
+
   it('keeps a finding\'s rule and a profile\'s rule counts in the public view', () => {
     const base = reportMeta()
     const cited: Verdict = {

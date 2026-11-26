@@ -160,7 +160,7 @@ function textItem(text: string): Item {
   }
 }
 
-/** The table of each profile: its level, its counts and its coverage. A profile's id is the core's `[a-z][a-z0-9_-]*`, so it is no text of a model or a diff. */
+/** The table of each profile: its level, its counts and its coverage, which says the findings a changed-lines profile dropped for standing away from the change. A profile's id is the core's `[a-z][a-z0-9_-]*`, so it is no text of a model or a diff. */
 function profileTable(view: PublicView): Listing {
   const counts = (verdicts: readonly PublicVerdict[]): Map<string, number> => {
     const byProfile = new Map<string, number>()
@@ -172,7 +172,14 @@ function profileTable(view: PublicView): Listing {
   return listing(`${TABLE_HEAD}\n${TABLE_RULE}`, {
     headSep: '\n',
     countSep: '\n\n',
-  }, Object.entries(view.meta.profiles).map(([id, profile]) => textItem(`| ${id} | ${profileFailOn(view, id)} | ${kept.get(id) ?? 0} | ${unreviewed.get(id) ?? 0} | ${discardedOf(view, id)} | ${profile.invalidFindings} | ${coverageWords(profile.coverage)}${askedNothing(profile)} |`)))
+  }, Object.entries(view.meta.profiles).map(([id, profile]) => textItem(`| ${id} | ${profileFailOn(view, id)} | ${kept.get(id) ?? 0} | ${unreviewed.get(id) ?? 0} | ${discardedOf(view, id)} | ${profile.invalidFindings} | ${coverageWords(profile.coverage)}${awayWords(profile)}${askedNothing(profile)} |`)))
+}
+
+/** What a changed-lines profile that dropped findings for standing away from the change adds to its coverage cell, `; 2 finding(s) away from the changed lines`: nothing for a profile with none, and the column of the findings outside the diff keeps its own count. No `|` and no text of a model or a diff. */
+function awayWords({ awayFromChange }: PublicView['meta']['profiles'][string]): string {
+  return awayFromChange !== undefined && awayFromChange > 0
+    ? `; ${awayFromChange} finding(s) away from the changed lines`
+    : ''
 }
 
 /** What a profile that asked nothing adds to its coverage cell, `; rules 0 of 0 sent, so its research asks nothing`, since its files read as reviewed: nothing for any other profile. No `|` and no text of a model or a diff. */

@@ -93,6 +93,8 @@ interface Tally {
   readonly invalidFindings: Map<string, number>
   /** The citations that failed their check, from the `finding:invalid` events whose cause is `rule`, apart from the findings outside the diff. */
   readonly invalidRules: Map<string, number>
+  /** The findings a changed-lines profile dropped for standing away from the change, from the `finding:invalid` events whose cause is `away`, apart from the findings outside the diff. */
+  readonly awayFromChange: Map<string, number>
   /** The research calls and the votes a store answered, counted from the `call` events that say `reused`. */
   readonly reused: { research: number, votes: number }
   /** What each provider's calls came to, by provider id in the order its first call ended: the models its replies named and its roles' counts, counted from the `call` events (`countCall`). */
@@ -468,6 +470,12 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * `meta.profiles.<id>.rules` records how many rules the profile lists and how many the review sent, and the `context` event holds the
  * same for each profile that lists one.
  *
+ * A profile with `Profile.changedLinesOnly` keeps a finding only near a changed line (`checkNearChange`): once the anchor has placed it, and
+ * before its rule citation is checked, a finding whose evidence rows, the cited row and two on each side, hold no row the change adds or
+ * removes is dropped. Each is a `finding:invalid` event of cause `away` and counted in `meta.profiles.<id>.awayFromChange`, present (0
+ * included) for such a profile and absent for every other, apart from `invalidFindings` and `invalidRules`; a reply whose findings all
+ * stand away was read, and records no gap.
+ *
  * @throws ConfigError listing every issue of the input and the options: an input that is not an object, a `diff` that is not a string, a `source`, a `settings` that is no record `reviewSettings` builds, a `leftOut`, a `send` or a `context` it cannot take (a repository document of a profile the quorum lacks, of another origin, at a commit the source does not read documents from, of a `diff` source, over its cap once cleaned or too deep to clean), repository documents that leave a research provider less than 1024 tokens of diff, options that are not an object, a `signal` that is not an AbortSignal, a `store` that is no object with a `get` and a `put` function, a `maxReviewTokens` or a `reviewTimeoutMs` out of range, a `findingsCap` that is no positive integer
  * @throws the signal's reason once the review is aborted, before it starts or while it runs
  * @throws the error of a sink that throws
@@ -597,6 +605,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
   const tally: Tally = {
     invalidFindings: new Map(),
     invalidRules: new Map(),
+    awayFromChange: new Map(),
     reused: { research: 0, votes: 0 },
     calls: new Map(),
     stages: new Map(),
@@ -619,7 +628,9 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
     if (event.type === 'finding:invalid') {
       const counts = event.cause === 'rule'
         ? tally.invalidRules
-        : tally.invalidFindings
+        : event.cause === 'away'
+          ? tally.awayFromChange
+          : tally.invalidFindings
       counts.set(event.profile, (counts.get(event.profile) ?? 0) + 1)
     }
     try {
@@ -735,7 +746,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
     settings,
     profiles: Object.fromEntries(runs.map((run, index) => [
       run.id,
-      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, tally.invalidRules.get(run.id) ?? 0, outcomes[index]?.research ?? NO_RESEARCH, tally.stages.get(run.id) ?? {}, withCapped(coverageOf(scope, filtered, outcomes[index]?.packing ?? plans[index]?.packing, outcomes[index]?.parts ?? []), outcomes[index]?.unread ?? []), outcomes[index]?.recovery),
+      profileMeta(run, tally.invalidFindings.get(run.id) ?? 0, tally.invalidRules.get(run.id) ?? 0, tally.awayFromChange.get(run.id) ?? 0, outcomes[index]?.research ?? NO_RESEARCH, tally.stages.get(run.id) ?? {}, withCapped(coverageOf(scope, filtered, outcomes[index]?.packing ?? plans[index]?.packing, outcomes[index]?.parts ?? []), outcomes[index]?.unread ?? []), outcomes[index]?.recovery),
     ])),
     ...(tally.usage === undefined
       ? {}
@@ -1011,7 +1022,7 @@ function ruleCounts(runs: readonly ProfileRun[]): Record<string, { listed: numbe
       ]))
 }
 
-function profileMeta(run: ProfileRun, invalidFindings: number, invalidRules: number, research: ResearchRecord, stages: ProfileMeta['stages'], coverage: CoverageEntry[], recovery: ProfileMeta['recovery']): ProfileMeta {
+function profileMeta(run: ProfileRun, invalidFindings: number, invalidRules: number, awayFromChange: number, research: ResearchRecord, stages: ProfileMeta['stages'], coverage: CoverageEntry[], recovery: ProfileMeta['recovery']): ProfileMeta {
   return {
     providers: providersOf(run),
     policy: { ...run.thresholds },
@@ -1020,6 +1031,9 @@ function profileMeta(run: ProfileRun, invalidFindings: number, invalidRules: num
     invalidFindings,
     rules: ruleCountOf(run),
     invalidRules,
+    ...run.changedLinesOnly
+      ? { awayFromChange }
+      : {},
     research: { ...research },
     stages: { ...stages },
     ...asksNothing(run)
@@ -1063,6 +1077,7 @@ function compile(profile: Profile, ports: ProfilePorts, maxFindings: number): Pr
     requireRule: profile.requireRule === true,
     maxFindings: profile.maxFindings ?? maxFindings,
     ownMaxFindings: profile.maxFindings !== undefined,
+    changedLinesOnly: profile.changedLinesOnly === true,
     ...texts,
   })
 }

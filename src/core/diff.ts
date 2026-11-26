@@ -419,6 +419,18 @@ export function locate(sections: ReadonlyMap<string, string>, file: string, line
 }
 
 /**
+ * Whether the line `line` of `file` is near a change: the rows `locate` reads for it (the row that shows it and `EVIDENCE_RADIUS`
+ * rows on each side, uncapped) hold a row the change adds or removes, one that starts with `+` or `-`. A line that no hunk shows
+ * is no place `locate` finds, so it is not near. A deletion-only hunk's line is near, its rows all being removed ones, and every
+ * line of a diff that only adds, as a path review's is, is near. The rows count and not the new-file lines, so a removed row
+ * between two lines is a row between them.
+ */
+export function nearChange(sections: ReadonlyMap<string, string>, file: string, line: number): boolean {
+  const located = locate(sections, file, line)
+  return located !== undefined && located.evidence.split('\n').some(row => row.startsWith('+') || row.startsWith('-'))
+}
+
+/**
  * The first line from `start` to `end` that no hunk of `file` holds, or undefined when each sits in
  * one: the answer `locate` gives for each line in turn, found by a binary search over the spans the
  * hunks hold, merged and sorted once per section, so a range costs a search and not a walk over every

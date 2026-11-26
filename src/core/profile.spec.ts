@@ -270,6 +270,21 @@ describe('profileIssues', () => {
     }
   })
 
+  it('refuses a changedLinesOnly that is not true or false', () => {
+    for (const changedLinesOnly of ['yes', 'true', 1, 0, null, [], {}]) {
+      expect(profileIssues({
+        ...valid,
+        id: 'naming',
+        changedLinesOnly,
+      } as unknown as Profile), JSON.stringify(changedLinesOnly)).toEqual([
+        { path: 'naming.changedLinesOnly', message: 'must be true or false' },
+      ])
+    }
+    for (const changedLinesOnly of [true, false, undefined]) {
+      expect(profileIssues({ ...valid, changedLinesOnly }), String(changedLinesOnly)).toEqual([])
+    }
+  })
+
   it.each([
     [0, 'must be a positive integer, got 0'],
     [1.5, 'must be a positive integer, got 1.5'],

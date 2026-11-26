@@ -119,6 +119,7 @@ describe('checkReply', () => {
     expect(checkReply(reply([]), sections, 'security')).toEqual({
       findings: [],
       invalid: [],
+      away: [],
       invalidRules: [],
       incomplete: [],
       unread: [],
@@ -676,10 +677,106 @@ describe('checkReplies', () => {
     expect(checkReplies([], sections, 'security')).toEqual({
       findings: [],
       invalid: [],
+      away: [],
       invalidRules: [],
       incomplete: [],
       unread: [],
       counts: { listed: 0, capped: 0, saturated: 0 },
+    })
+  })
+
+  describe('a profile that reviews changed lines only', () => {
+    /** Seven rows, the fourth added: line 1 and line 7 are context rows three rows from it. */
+    const shown = splitDiff([
+      'diff --git a/a.js b/a.js',
+      '--- a/a.js',
+      '+++ b/a.js',
+      '@@ -1,6 +1,7 @@',
+      ' a()',
+      ' b()',
+      ' c()',
+      '+d()',
+      ' e()',
+      ' f()',
+      ' g()',
+    ].join('\n'))
+    const replies = [
+      {
+        text: reply([
+          {
+            ...reported,
+            line: 1,
+            quote: 'a()',
+            rule: 'nothing-here',
+          },
+          {
+            ...reported,
+            line: 7,
+            quote: 'g()',
+            rule: 'nothing-here',
+          },
+        ]),
+      },
+    ]
+    const away = (line: number): string => `"a.js":${line} is more than two lines from a line the change adds or removes`
+
+    it('drops a changed-lines profile\'s findings away from the change before the citation check, and records no research-unusable when every one is away', () => {
+      const outcome = checkReplies(replies, shown, 'naming', DEFAULT_MAX_FINDINGS, {
+        changedLinesOnly: true,
+        citation: { rules: [], requireRule: false },
+      })
+      expect(outcome.findings).toEqual([])
+      expect(outcome.away).toEqual([
+        away(1),
+        away(7),
+      ])
+      // Their citations, which both fail, are never checked: the place is judged first.
+      expect(outcome.invalidRules).toEqual([])
+      expect(outcome.invalid).toEqual([])
+      expect(outcome.incomplete).toEqual([])
+    })
+
+    it('keeps the findings away from the change of a profile that does not review changed lines only', () => {
+      for (const policy of [
+        {},
+        { changedLinesOnly: false },
+        {
+          citation: { rules: [], requireRule: false },
+        },
+      ]) {
+        const outcome = checkReplies(replies, shown, 'naming', DEFAULT_MAX_FINDINGS, policy)
+        expect(outcome.findings.map(found => found.line), JSON.stringify(policy)).toEqual([1, 7])
+        expect(outcome.away).toEqual([])
+      }
+    })
+
+    it('keeps a finding near the change, reads the others, and still records research-unusable for a reply none of whose findings the diff shows', () => {
+      const mixed = checkReplies([
+        {
+          text: reply([
+            { ...reported, line: 3, quote: 'c()' },
+            { ...reported, line: 1, quote: 'a()' },
+            { ...reported, line: 99 },
+          ]),
+        },
+      ], shown, 'naming', DEFAULT_MAX_FINDINGS, { changedLinesOnly: true })
+      expect(mixed.findings.map(found => found.line)).toEqual([3])
+      expect(mixed.invalid).toEqual(['a.js:99 is not in the diff'])
+      expect(mixed.away).toEqual([
+        away(1),
+      ])
+      expect(mixed.incomplete).toEqual([])
+      const unusable = checkReplies([
+        {
+          text: reply([
+            { ...reported, line: 99 },
+          ]),
+        },
+      ], shown, 'naming', DEFAULT_MAX_FINDINGS, { changedLinesOnly: true })
+      expect(unusable.away).toEqual([])
+      expect(unusable.incomplete).toEqual([
+        { profile: 'naming', reason: 'research-unusable', detail: '1 finding(s) reported, none usable' },
+      ])
     })
   })
 

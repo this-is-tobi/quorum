@@ -1,4 +1,4 @@
-import { hunksOf, locate, sectionFor } from './diff.ts'
+import { hunksOf, locate, nearChange, sectionFor } from './diff.ts'
 import type { FindingLocation, Hunk } from './diff.ts'
 import { excludeMatcher } from './exclude.ts'
 import { stripHidden } from './sanitize.ts'
@@ -122,6 +122,26 @@ export function placeOf(sections: ReadonlyMap<string, string>, file: string, lin
   return path === undefined || path === ''
     ? undefined
     : path
+}
+
+/**
+ * Keep the findings of `findings` that stand near a change, once `verifyFindings` has anchored them, so on each finding's final file
+ * and line: a finding stands near a change when the rows its evidence reads, the cited row and two on each side, hold a row the change
+ * adds or removes (`nearChange`). Any other is dropped, with the reason `"<file>":<line> is more than two lines from a line the change
+ * adds or removes`, its file JSON-quoted and cut at 80 characters, as `checkCitations` writes it. The findings it keeps are the
+ * findings as they were, in their order.
+ */
+export function checkNearChange(findings: readonly VerifiedFinding[], sections: ReadonlyMap<string, string>): { findings: VerifiedFinding[], invalid: string[] } {
+  const kept: VerifiedFinding[] = []
+  const invalid: string[] = []
+  for (const finding of findings) {
+    if (nearChange(sections, finding.file, finding.line)) {
+      kept.push(finding)
+      continue
+    }
+    invalid.push(`${JSON.stringify(cap(finding.file, MAX_REPORTED_FILE))}:${finding.line} is more than two lines from a line the change adds or removes`)
+  }
+  return { findings: kept, invalid }
 }
 
 /**

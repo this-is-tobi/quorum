@@ -14,7 +14,7 @@ import { halves, unitsOf } from '../recovery.ts'
 import type { Piece } from '../recovery.ts'
 import { replyLimit, tokenBound } from '../tokens.ts'
 import type { CallFailure, Finding, FindingDetails, IncompleteEntry, Position, ProfileMeta, QuorumEvent, ReviewRule } from '../types.ts'
-import { checkCitations, collapse, placeOf, verifyFindings } from '../verify.ts'
+import { checkCitations, checkNearChange, collapse, placeOf, verifyFindings } from '../verify.ts'
 import type { VerifiedFinding } from '../verify.ts'
 import { isTooLarge, lackOf, ownData, providerFailure, refusalMessage } from '../facts.ts'
 import { asksNothing, callProvider, roomOf } from './context.ts'
@@ -30,6 +30,13 @@ export interface ResearchOutcome {
    * code outside the diff, or names no file). An unreadable finding is reported in `incomplete` only.
    */
   invalid: string[]
+  /**
+   * One reason per finding of a profile that reviews changed lines only (`ReadPolicy.changedLinesOnly`) that the check against the
+   * change dropped, in the findings' order: on its final line it stands more than two lines from a line the change adds or removes.
+   * Each reason names the finding's file and line. Such a finding was read and placed in the diff, so it is no unusable finding, and
+   * `[]` for a profile that does not review changed lines only and wherever an outcome reads no reply.
+   */
+  away: string[]
   /**
    * One reason per finding whose rule citation failed its check, in the findings' order: it names no rule the review sent whose paths
    * match its file, or, in a profile that requires a rule, it names none. Each reason names the finding's file and line and never what
@@ -220,15 +227,17 @@ export interface Citation {
 /**
  * What reading a profile's replies knows of the profile besides the cap: the `citation` a profile that lists review rules checks
  * its findings against, the findings its requests asked for at most (`requestFindings`, the cap's value unless given), and whether
- * that ask is the profile's own (`ownAsk`), which names the profile's `maxFindings` as the lever of a saturated reply.
+ * that ask is the profile's own (`ownAsk`), which names the profile's `maxFindings` as the lever of a saturated reply, and
+ * whether the profile reviews changed lines only (`changedLinesOnly`): a finding must stand near a changed line.
  */
 export interface ReadPolicy {
   readonly citation?: Citation
   readonly requestFindings?: number
   readonly ownAsk?: boolean
+  readonly changedLinesOnly?: boolean
 }
 
-/** What a run's replies are read by: the citation its findings are checked against (none for a profile that lists no rule, whose findings hold no rule), and the ask its requests carry. */
+/** What a run's replies are read by: the citation its findings are checked against (none for a profile that lists no rule, whose findings hold no rule), the ask its requests carry, and whether its findings must stand near a changed line. */
 function readPolicyOf(run: ProfileRun): ReadPolicy {
   return {
     ...run.sent === undefined
@@ -238,6 +247,7 @@ function readPolicyOf(run: ProfileRun): ReadPolicy {
         },
     requestFindings: run.maxFindings,
     ownAsk: run.ownMaxFindings,
+    changedLinesOnly: run.changedLinesOnly,
   }
 }
 
@@ -363,6 +373,11 @@ function saturationWords(count: number, asked: number, requestFindings: number, 
  * the review sent, by `checkCitations`, which `invalidRules` reports. A finding dropped for its citation only was read and
  * anchored in the diff: it is no unusable finding, so it does not make a reply's findings all unusable.
  *
+ * With `policy.changedLinesOnly`, a finding must also stand near a changed line: once `verifyFindings` has anchored it, and before its
+ * citation is checked, `checkNearChange` drops each finding whose rows hold no row the change adds or removes, and `away` reports them.
+ * Such a finding was read and placed in the diff as one dropped for its citation was, so a reply whose findings all stand away is no
+ * `research-unusable` gap, which still reads `verifyFindings`' output.
+ *
  * @throws OutputError when a reply is not one JSON object holding a `findings` array and nothing else
  * @throws RangeError when `maxFindings` is not a positive integer
  */
@@ -370,7 +385,7 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
   if (!Number.isInteger(maxFindings) || maxFindings < 1) {
     throw new RangeError(`maxFindings must be a positive integer, got ${maxFindings}`)
   }
-  const { citation, requestFindings = maxFindings, ownAsk = false } = policy
+  const { citation, requestFindings = maxFindings, ownAsk = false, changedLinesOnly = false } = policy
   const entries = replies.map(({ text }) => researchEntries(text))
   const listed = entries.reduce((sum, own) => sum + own.length, 0)
   const depths = capDepths(entries.map(own => own.length), maxFindings)
@@ -389,9 +404,12 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
       : `${label}: ${reason}`))
   }
   const checked = verifyFindings(details, sections)
+  const near = changedLinesOnly
+    ? checkNearChange(checked.findings, sections)
+    : { findings: checked.findings, invalid: [] }
   const cited = citation === undefined
-    ? { findings: checked.findings, invalid: [] }
-    : checkCitations(checked.findings, citation.rules, citation.requireRule)
+    ? { findings: near.findings, invalid: [] }
+    : checkCitations(near.findings, citation.rules, citation.requireRule)
   const ranks = new Map<string, Map<string, number>>()
   const findings = cited.findings.map((finding): Finding => ({
     id: findingId(profile, finding.file, finding.line, finding.category),
@@ -418,6 +436,7 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
   return {
     findings,
     invalid: checked.invalid,
+    away: near.invalid,
     invalidRules: cited.invalid,
     incomplete,
     unread,
@@ -429,7 +448,7 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
  * The research stage of one profile, as `plan` lays it out: a change within one request is researched by one
  * call to its research provider, with the profile's research instructions, the diff, the rules the review sends it
  * (`run.sent`) and the guidelines, and a large change is researched in parts, one call each, whose replies
- * `checkReplies` turns into what the panel receives. Each finding dropped for citing code outside the diff is reported by a `finding:invalid` event, and so is each rule citation that failed its check, with the cause `rule`,
+ * `checkReplies` turns into what the panel receives. Each finding dropped for citing code outside the diff is reported by a `finding:invalid` event, and so is each finding of a profile that reviews changed lines only that stands away from the change, with the cause `away`, and each rule citation that failed its check, with the cause `rule`,
  * and each gap by an `incomplete` event.
  *
  * A profile that asks its research nothing (`asksNothing`: it requires a rule and sends none) makes no call, and its one part is
@@ -502,6 +521,7 @@ function nothingRead(parts: PartOutcome[]): ResearchOutcome {
   return {
     findings: [],
     invalid: [],
+    away: [],
     invalidRules: [],
     incomplete: [],
     unread: [],
@@ -1085,9 +1105,17 @@ function cutOffGap(profile: string, scope: Scope, leaves: readonly Leaf[]): Inco
       }
 }
 
-/** Sends the events of a finished research, the `finding:invalid` ones (the findings outside the diff, then the citations that failed, each with the cause `rule`) then the `incomplete` ones, and returns its outcome. */
+/** Sends the events of a finished research, the `finding:invalid` ones (the findings outside the diff, then those away from the change, each with the cause `away`, then the citations that failed, each with the cause `rule`) then the `incomplete` ones, and returns its outcome. */
 function reported(ctx: RunContext, run: ProfileRun, outcome: ResearchOutcome): ResearchOutcome {
   for (const reason of outcome.invalid) ctx.emit({ type: 'finding:invalid', profile: run.id, reason })
+  for (const reason of outcome.away) {
+    ctx.emit({
+      type: 'finding:invalid',
+      profile: run.id,
+      reason,
+      cause: 'away',
+    })
+  }
   for (const reason of outcome.invalidRules) {
     ctx.emit({
       type: 'finding:invalid',
@@ -1106,6 +1134,7 @@ function gap(ctx: RunContext, entry: IncompleteEntry, outcome: PartOutcome): Res
   return {
     findings: [],
     invalid: [],
+    away: [],
     invalidRules: [],
     incomplete: [entry],
     unread: [],

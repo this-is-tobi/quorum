@@ -121,6 +121,7 @@ describe('profileBudgets', () => {
       requireRule: false,
       maxFindings: 50,
       ownMaxFindings: false,
+      changedLinesOnly: false,
     }
   }
 
@@ -285,6 +286,7 @@ describe('profileBudgets', () => {
       requireRule: false,
       maxFindings: 50,
       ownMaxFindings: false,
+      changedLinesOnly: false,
       ...documents.rules === undefined || documents.rules.length === 0
         ? {}
         : { sent: documents.rules },
