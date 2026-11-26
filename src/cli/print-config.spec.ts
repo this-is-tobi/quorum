@@ -632,6 +632,7 @@ describe('printConfig', () => {
         replyTokens: 2048,
         findings: 3,
         findingsWithoutThinking: 7,
+        maxFindings: 50,
         rooms: { one: 3841, part: 3529 },
         worstPart: { tokens: 8192, holds: 244 },
       },

@@ -212,16 +212,33 @@ interface Reply {
 }
 
 /** What a profile that lists review rules checks each finding's citation against: the rules its review sent, and whether it requires a finding to cite one. */
-interface Citation {
+export interface Citation {
   readonly rules: readonly ReviewRule[]
   readonly requireRule: boolean
 }
 
-/** What a run's findings are checked against: undefined for a profile that lists no rule, whose findings hold no rule. */
-function citationOf(run: ProfileRun): Citation | undefined {
-  return run.sent === undefined
-    ? undefined
-    : { rules: run.sent, requireRule: run.requireRule }
+/**
+ * What reading a profile's replies knows of the profile besides the cap: the `citation` a profile that lists review rules checks
+ * its findings against, the findings its requests asked for at most (`requestFindings`, the cap's value unless given), and whether
+ * that ask is the profile's own (`ownAsk`), which names the profile's `maxFindings` as the lever of a saturated reply.
+ */
+export interface ReadPolicy {
+  readonly citation?: Citation
+  readonly requestFindings?: number
+  readonly ownAsk?: boolean
+}
+
+/** What a run's replies are read by: the citation its findings are checked against (none for a profile that lists no rule, whose findings hold no rule), and the ask its requests carry. */
+function readPolicyOf(run: ProfileRun): ReadPolicy {
+  return {
+    ...run.sent === undefined
+      ? {}
+      : {
+          citation: { rules: run.sent, requireRule: run.requireRule },
+        },
+    requestFindings: run.maxFindings,
+    ownAsk: run.ownMaxFindings,
+  }
 }
 
 /** What reading research replies comes to: what the panel receives, and the gaps of the reading. */
@@ -288,13 +305,17 @@ function unreadPlaces(entries: readonly unknown[], from: number, asked: number, 
 
 /**
  * The words of the saturation clause of the `findings-capped` gap, and its lever: `count` replies listed the `asked` findings their
- * requests asked for at most, which is `requestFindings`, the `maxFindings` that sizes every request, unless the reply budget held fewer.
- * A reply that asked for all of `maxFindings` is helped by raising it; one whose budget held fewer, by a larger `maxTokens`.
+ * requests asked for at most, which is `requestFindings`, the `maxFindings` that sizes the profile's requests, unless the reply budget held fewer.
+ * A reply that asked for all of `maxFindings` is helped by raising it; one whose budget held fewer, by a larger `maxTokens`. A profile
+ * that sets its own `maxFindings` (`own`) has that one named, `the profile's maxFindings`, since raising the quorum's would not move it.
  */
-function saturationWords(count: number, asked: number, requestFindings: number): string {
+function saturationWords(count: number, asked: number, requestFindings: number, own: boolean): string {
+  const name = own
+    ? 'the profile\'s maxFindings'
+    : 'maxFindings'
   const lever = asked >= requestFindings
-    ? 'raise maxFindings'
-    : `raise maxTokens, since the reply budget holds ${asked} of maxFindings ${requestFindings}`
+    ? `raise ${name}`
+    : `raise maxTokens, since the reply budget holds ${asked} of ${name} ${requestFindings}`
   return `${count} research reply(ies) listed the ${asked} findings they were asked for at most, so they may have left some out: ${lever}`
 }
 
@@ -329,14 +350,15 @@ function saturationWords(count: number, asked: number, requestFindings: number):
  * A reply that lists at least the `asked` findings its request asked for at most is saturated: it may have stopped
  * at the ask, so the profile records one `findings-capped` gap that counts such replies and names the largest ask
  * (`<k> research reply(ies) listed the <n> findings they were asked for at most, so they may have left some out`), then its lever:
- * `: raise maxFindings` when that ask is `requestFindings` (the `maxFindings` that sizes the requests, `maxFindings` itself unless given),
- * else `: raise maxTokens, since the reply budget holds <n> of maxFindings <m>`.
+ * `: raise maxFindings` when that ask is `policy.requestFindings` (the `maxFindings` that sizes the requests, `maxFindings` itself unless given),
+ * else `: raise maxTokens, since the reply budget holds <n> of maxFindings <m>`; for a profile whose ask is its own (`policy.ownAsk`),
+ * `: raise the profile's maxFindings` and `: raise maxTokens, since the reply budget holds <n> of the profile's maxFindings <m>`.
  * Where the replies list more than the cap (`maxFindings`) too, the same gap goes on after `; ` with the cap's count
  * (`<c> of <l> reported findings were not reviewed, the last ones of the replies that listed the most (the cap is <n>): raise findingsCap`), so a
  * profile never has two of one reason. A saturated reply below `requestFindings` is split and never gets here, unless
  * its piece is at the floor.
  *
- * With `citation`, the replies are a profile's that lists review rules: each finding is read with its sixth field, `rule` (see
+ * With `policy.citation`, the replies are a profile's that lists review rules: each finding is read with its sixth field, `rule` (see
  * `readEntries`), and, once `verifyFindings` has anchored it, its citation is checked against `citation.rules`, the rules
  * the review sent, by `checkCitations`, which `invalidRules` reports. A finding dropped for its citation only was read and
  * anchored in the diff: it is no unusable finding, so it does not make a reply's findings all unusable.
@@ -344,10 +366,11 @@ function saturationWords(count: number, asked: number, requestFindings: number):
  * @throws OutputError when a reply is not one JSON object holding a `findings` array and nothing else
  * @throws RangeError when `maxFindings` is not a positive integer
  */
-export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMap<string, string>, profile: string, maxFindings = DEFAULT_MAX_FINDINGS, citation?: Citation, requestFindings = maxFindings): Reading {
+export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMap<string, string>, profile: string, maxFindings = DEFAULT_MAX_FINDINGS, policy: ReadPolicy = {}): Reading {
   if (!Number.isInteger(maxFindings) || maxFindings < 1) {
     throw new RangeError(`maxFindings must be a positive integer, got ${maxFindings}`)
   }
+  const { citation, requestFindings = maxFindings, ownAsk = false } = policy
   const entries = replies.map(({ text }) => researchEntries(text))
   const listed = entries.reduce((sum, own) => sum + own.length, 0)
   const depths = capDepths(entries.map(own => own.length), maxFindings)
@@ -379,7 +402,7 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
   const incomplete = unreadable.map((detail): IncompleteEntry => ({ profile, reason: 'finding-unreadable', detail }))
   const asks = saturated.length === 0
     ? undefined
-    : saturationWords(saturated.length, Math.max(...saturated), requestFindings)
+    : saturationWords(saturated.length, Math.max(...saturated), requestFindings, ownAsk)
   const cap = listed > maxFindings
     ? `${listed - maxFindings} of ${listed} reported findings were not reviewed, the last ones of the replies that listed the most (the cap is ${maxFindings}): raise findingsCap`
     : undefined
@@ -534,7 +557,7 @@ interface Spend {
  * - any other failure of the call is `research-failed` with the words `researchFailed` writes;
  * - a reply that is no findings envelope (an `OutputError` of the check) is `research-failed` with the reason; any other
  *   error the parser throws rethrows, a bug and not a reply;
- * - a reply that lists at least the findings it was asked for at most, when `splittable` and below `maxFindings`, is saturated
+ * - a reply that lists at least the findings it was asked for at most, when `splittable` and below the run's `maxFindings`, is saturated
  *   and is not returned: the stage splits the request;
  * - else `reviewed`, with the reply's text, the findings it was asked for at most and the findings it listed.
  * A call that built its request adds what it spent to `spend`, and its start when `spend` has none. A `research-failed`
@@ -562,7 +585,7 @@ async function askResearch(ctx: RunContext, run: ProfileRun, where: Position, sp
           throw error
         }
         state.listed = listed
-        return { saturated: splittable && state.findings < ctx.maxFindings && listed >= state.findings, listed }
+        return { saturated: splittable && state.findings < run.maxFindings && listed >= state.findings, listed }
       },
       onFailure: (_error, made, ran) => {
         state.attempts = made
@@ -653,7 +676,7 @@ function askOf(ctx: RunContext, run: ProfileRun): Ask & { readonly findings: num
   const lowered = replyBudget({
     ...factsOf(run.research),
     ceiling,
-  }, stated.window, ctx.maxFindings)
+  }, stated.window, run.maxFindings)
   return {
     findings: ctx.adapt.findings(run.research, lowered),
     replyTokens: lowered.research,
@@ -924,7 +947,7 @@ async function researchInOne(ctx: RunContext, run: ProfileRun, plan: ResearchPla
   return reported(ctx, run, {
     ...checkReplies([
       { text: leaf.text, asked: leaf.asked },
-    ], sections, run.id, ctx.findingsCap, citationOf(run), ctx.maxFindings),
+    ], sections, run.id, ctx.findingsCap, readPolicyOf(run)),
     parts: ['reviewed'],
   })
 }
@@ -992,7 +1015,7 @@ function concluded(ctx: RunContext, run: ProfileRun, scope: Scope, packing: Pack
         },
       ]
     : []))
-  const read = checkReplies(replies, sections, run.id, ctx.findingsCap, citationOf(run), ctx.maxFindings)
+  const read = checkReplies(replies, sections, run.id, ctx.findingsCap, readPolicyOf(run))
   const cutOff = cutOffGap(run.id, scope, runs.flatMap(({ leaves }) => leaves))
   return reported(ctx, run, {
     ...read,

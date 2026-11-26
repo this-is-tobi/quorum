@@ -61,7 +61,7 @@ export const EXACT_WORDS: NumberWords = {
  * them when it sets none). The expected figure is the research's alone, as the votes are in the worst case only, and
  * the worst counts every part recovered. When research alone expects over half of the token cap, one line follows that
  * says what cap the review needs (`needed`, always exact, as it is the value to set), and then one for each research
- * provider whose reply asks for fewer findings than `maxFindings`, since the parts with more split. Each count and
+ * provider whose reply asks for fewer findings than its profile's `maxFindings`, since the parts with more split. Each count and
  * duration is written by `words`, scaled for a person unless a program is to parse it. Each line is inert.
  */
 export function estimateLines(estimate: Estimate, bounds: Bounds, words: NumberWords = PERSON_WORDS): string[] {
@@ -151,17 +151,19 @@ function capLine(estimate: Estimate, words: NumberWords): string[] {
 }
 
 /**
- * One line for each research provider whose request asks for fewer findings than `maxFindings`, in profile order,
- * once however many profiles share it: a reply with more findings than it was asked for splits its part, so the
- * review makes more calls than the estimate counts. A profile whose research makes no call asks nothing.
+ * One line for each research provider whose request asks for fewer findings than its profile's `maxFindings`, in profile order,
+ * once however many profiles share the provider and the ceiling: a reply with more findings than it was asked for splits its part,
+ * so the review makes more calls than the estimate counts. A profile whose research makes no call asks nothing, and one that asks
+ * its own `maxFindings` in full is at its ceiling.
  */
 function findingsLines(estimate: Estimate): string[] {
   const named = new Set<string>()
   const lines: string[] = []
-  for (const { parts, findings, provider } of Object.values(estimate.profiles)) {
-    if (parts.length === 0 || findings >= estimate.maxFindings || named.has(provider)) continue
-    named.add(provider)
-    lines.push(`estimate: on ${provider} a research reply asks for at most ${findings} of maxFindings ${estimate.maxFindings} findings: parts with more split, so expect more calls than this estimate; a larger window, or thinking: off, raises N`)
+  for (const { parts, findings, maxFindings, provider } of Object.values(estimate.profiles)) {
+    const key = JSON.stringify([provider, maxFindings])
+    if (parts.length === 0 || findings >= maxFindings || named.has(key)) continue
+    named.add(key)
+    lines.push(`estimate: on ${provider} a research reply asks for at most ${findings} of maxFindings ${maxFindings} findings: parts with more split, so expect more calls than this estimate; a larger window, or thinking: off, raises N`)
   }
   return lines
 }
@@ -234,8 +236,9 @@ export interface BoundFacts {
  * What the view knows of a review before it runs, from its resolved config: the calls at once, the token cap and
  * where it came from, the deadline and where it came from (`deadline`: the config's, else the longest allowed for a path review's bounds, else the default),
  * whether the review keeps its answered calls (`keeps`, which only a caller that offers `--state` knows: left out when unsaid, and the view then writes no state notice), the panel's finding cap (`maxFindings` in the facts, which sizes the votes to come: the config's
- * `findingsCap`, else its `maxFindings`, else the default), what each research request asks for (`asks`, from the quorum's `budgets`
- * and the config's `maxFindings`, which sizes the requests), and for a path review its estimate. A path review's bounds are
+ * `findingsCap`, else its `maxFindings`, else the default), what each research request asks for (`asks`, from the quorum's `budgets`,
+ * the config's `maxFindings`, which sizes the requests of every profile that sets none, and the `maxFindings` each profile sets of its own),
+ * and for a path review its estimate. A path review's bounds are
  * derived, so it gives them as `bounds`, and they win over the config's. The view reads the config's numbers only
  * through these facts.
  */
@@ -259,6 +262,11 @@ export function viewFacts(config: ResolvedConfig, extra: { readonly estimate?: E
     asks: {
       maxFindings: config.maxFindings ?? DEFAULT_MAX_FINDINGS,
       findings: Object.fromEntries(Object.entries(budgets).map(([id, { research }]) => [id, research.findings])),
+      own: Object.fromEntries(config.profiles.flatMap(({ profile }) => profile.maxFindings === undefined
+        ? []
+        : [
+            [profile.id, profile.maxFindings],
+          ])),
     },
     ...estimate === undefined
       ? {}

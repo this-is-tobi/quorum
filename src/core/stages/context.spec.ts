@@ -60,7 +60,6 @@ function context(clock: FakeClock, controller = new AbortController(), concurren
     lacked: new Set(),
     storedRefused: new Set(),
     adapt: createAdaptations(),
-    maxFindings: 50,
     findingsCap: 50,
     budgets: {},
     concurrency,
@@ -3636,6 +3635,7 @@ describe('the reply budgets a learned cut holds', () => {
       replyTokens,
       findings: 50,
       findingsWithoutThinking: 50,
+      maxFindings: 50,
     },
     lenses: {
       impact: { provider: 'p', replyTokens: 9216 },

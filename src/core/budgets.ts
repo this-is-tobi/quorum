@@ -15,7 +15,7 @@ import { longestFinding } from './verify.ts'
 /**
  * The reply budget of each request kind, which the core derives from what a provider states of itself (its
  * window, its `maxTokens` and its `thinking`) so that a reply of one kind is never given more room than it
- * needs, nor less than it must have. With `W` the window, `M` `maxFindings`, `F` `FINDING_TOKENS`, `E`
+ * needs, nor less than it must have. With `W` the window, `M` the profile's `maxFindings`, `F` `FINDING_TOKENS`, `E`
  * `ENVELOPE_TOKENS` and `T` the thinking allowance (`THINKING_TOKENS`):
  *
  * - a research reply takes `R = min(M * F + E + T, floor(W / 4))`: what its findings and its thinking need,
@@ -121,9 +121,8 @@ export function replyBudget(facts: ReplyFacts, window: number | undefined, maxFi
   }
 }
 
-/** What a profile's budgets read of a quorum's settings: `maxFindings` sizes the replies, `partTokens` and `maxReviewTokens` the worst case of a research part. */
+/** What a profile's budgets read of a quorum's settings: `partTokens` and `maxReviewTokens` size the worst case of a research part. The replies are sized by the run's own `maxFindings`. */
 export interface BudgetSettings {
-  readonly maxFindings: number
   readonly partTokens: number
   readonly maxReviewTokens: number
 }
@@ -136,6 +135,8 @@ export interface ProfileBudgets {
     readonly replyTokens?: number
     readonly findings: number
     readonly findingsWithoutThinking: number
+    /** The findings a request asks for at most before the reply budget narrows them: the run's `maxFindings`, N's ceiling. */
+    readonly maxFindings: number
     /**
      * The tokens of diff the provider's stated room leaves a request with its reply budget and N at `maxFindings`: the
      * one-request research's (an empty diff), and a part's, whose parts block lists no file and is at its smallest.
@@ -246,8 +247,8 @@ export function voteProbe(run: ProfileRun, lens: LensRun, replyTokens: number | 
 /** The rooms of a profile's research and the worst case of its parts, or none when its research provider states no room. */
 function researchRooms(run: ProfileRun, replyTokens: number | undefined, settings: BudgetSettings): Pick<ProfileBudgets['research'], 'rooms' | 'worstPart'> {
   if (run.research.room === undefined) return {}
-  const one = roomOf(run.research, researchProbe(run, replyTokens, settings.maxFindings))
-  const partProbe = researchProbe(run, replyTokens, settings.maxFindings, PART_POSITION)
+  const one = roomOf(run.research, researchProbe(run, replyTokens, run.maxFindings))
+  const partProbe = researchProbe(run, replyTokens, run.maxFindings, PART_POSITION)
   const part = roomOf(run.research, partProbe)
   if (one === undefined || part === undefined) return {}
   // A request's reservation grows by a token for each token of diff, one per byte as the size guard counts, so the part that fills its room is the empty one's reservation and that many tokens: no diff of up to `partTokens` bytes is built.
@@ -264,26 +265,27 @@ function researchRooms(run: ProfileRun, replyTokens: number | undefined, setting
 /**
  * The reply budgets and the rooms of one profile, from its providers' stated facts and the window `windowOf` gives each of
  * them, frozen. `createQuorum` calls it with the stated windows (`target => target.window`); a later phase calls it again
- * for each review with the effective ones, and the signature stays. `settings` gives `maxFindings`, which sizes N,
- * and `partTokens` and `maxReviewTokens`, which size the worst case of a part.
+ * for each review with the effective ones, and the signature stays. The run's `maxFindings` sizes N, and `settings` gives
+ * `partTokens` and `maxReviewTokens`, which size the worst case of a part.
  *
  * The rooms are what each provider states for the requests the review sends (`roomOf`), so a provider that states none has none:
  * the research's, for the one-request research and a part, and each lens's, for the vote of the longest finding.
  */
 export function profileBudgets(run: ProfileRun, windowOf: (target: Target) => number | undefined, settings: BudgetSettings): ProfileBudgets {
   const research = windowOf(run.research)
-  const budget = replyBudget(factsOf(run.research), research, settings.maxFindings)
+  const budget = replyBudget(factsOf(run.research), research, run.maxFindings)
   return freezeBudgets({
     research: {
       provider: run.research.ref.id,
       ...sizes(research, budget.research),
       findings: budget.findings,
       findingsWithoutThinking: budget.findingsWithoutThinking,
+      maxFindings: run.maxFindings,
       ...researchRooms(run, budget.research, settings),
     },
     lenses: Object.fromEntries(run.lenses.map((lens) => {
       const window = windowOf(lens)
-      const replyTokens = replyBudget(factsOf(lens), window, settings.maxFindings).vote
+      const replyTokens = replyBudget(factsOf(lens), window, run.maxFindings).vote
       const room = lens.room === undefined
         ? undefined
         : roomOf(lens, voteProbe(run, lens, replyTokens))

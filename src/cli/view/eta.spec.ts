@@ -134,6 +134,7 @@ function estimateOf(parts: number[]): Estimate {
         expected: 0,
         worst: 0,
         findings: 50,
+        maxFindings: 50,
         provider: 'api',
         documents: { research: 0, vote: 0 },
       },

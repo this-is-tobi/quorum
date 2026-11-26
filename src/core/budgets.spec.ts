@@ -5,6 +5,7 @@ import type { BudgetSettings, ReplyFacts } from './budgets.ts'
 import type { CompletionRequest, Provider } from './ports.ts'
 import { thresholdsFor } from './profile.ts'
 import { doNotReportInstructions, renderTemplate, researchRequest, voteRequest } from './prompts.ts'
+import { createQuorum } from './quorum.ts'
 import { targetOf } from './stages/context.ts'
 import type { ProfileRun } from './stages/context.ts'
 import { ruleEntry, rulesBlock } from './rules.ts'
@@ -83,7 +84,7 @@ describe('a ceiling on a reply budget', () => {
 })
 
 describe('profileBudgets', () => {
-  const settings: BudgetSettings = { maxFindings: 50, partTokens: 32_768, maxReviewTokens: 2_000_000 }
+  const settings: BudgetSettings = { partTokens: 32_768, maxReviewTokens: 2_000_000 }
 
   function provider(id: string, facts: Partial<Pick<Provider, 'window' | 'maxTokens' | 'thinking'>> = {}): Provider {
     return {
@@ -118,6 +119,8 @@ describe('profileBudgets', () => {
       },
       rules: [],
       requireRule: false,
+      maxFindings: 50,
+      ownMaxFindings: false,
     }
   }
 
@@ -135,6 +138,7 @@ describe('profileBudgets', () => {
       replyTokens: 21_024,
       findings: 50,
       findingsWithoutThinking: 50,
+      maxFindings: 50,
     })
     expect(budgets.lenses[first]).toEqual({ provider: 'big', window: 200_000, replyTokens: 9216 })
     expect(budgets.lenses[second]).toEqual({ provider: 'small', window: 8192, replyTokens: 1024 })
@@ -204,14 +208,14 @@ describe('profileBudgets', () => {
   it('reads the template reserve from what the stated room leaves', () => {
     const run = realRun(guarded('cli', 8192, 4096), guarded('local', 200_000))
     const budgets = profileBudgets(run, target => target.window, settings)
-    const [issue, ...rest] = roomIssues('security', budgets, run, settings.maxFindings)
+    const [issue, ...rest] = roomIssues('security', budgets, run, run.maxFindings)
     expect(rest).toEqual([])
     expect(issue.path).toBe('profiles.security')
     // 8192 less 1791 for the text, 4096 for the template and 2048 for the reply leaves 257.
     expect(issue.message).toBe('the research request on cli leaves 257 tokens for the diff, less than the 1024 a hunk may need: contextTokens 8192 counts 1791 for the instructions, 4096 for the chat template and 2048 for the reply: lower maxTokens, or state a larger window')
     // The same window with the usual 512 leaves room.
     const usual = realRun(guarded('local', 8192), guarded('local', 200_000))
-    expect(roomIssues('security', profileBudgets(usual, target => target.window, settings), usual, settings.maxFindings)).toEqual([])
+    expect(roomIssues('security', profileBudgets(usual, target => target.window, settings), usual, usual.maxFindings)).toEqual([])
   })
 
   it('says there are no tokens for the diff, and how far over the window the other tokens are, below a room of 0', () => {
@@ -221,7 +225,7 @@ describe('profileBudgets', () => {
         ...guarded('local', window),
         maxTokens: 2000,
       }, guarded('big', 200_000))
-      const [issue, ...rest] = roomIssues('security', profileBudgets(run, target => target.window, settings), run, settings.maxFindings)
+      const [issue, ...rest] = roomIssues('security', profileBudgets(run, target => target.window, settings), run, run.maxFindings)
       expect(rest).toEqual([])
       return issue.message
     }
@@ -233,7 +237,7 @@ describe('profileBudgets', () => {
     const run = realRun(guarded('local', 200_000), {
       ...guarded('small', 1000),
     })
-    const messages = roomIssues('security', profileBudgets(run, target => target.window, settings), run, settings.maxFindings).map(issue => issue.message)
+    const messages = roomIssues('security', profileBudgets(run, target => target.window, settings), run, run.maxFindings).map(issue => issue.message)
     expect(messages).toHaveLength(3)
     for (const message of messages) expect(message).toMatch(/^the vote request on small for the longest finding leaves no tokens for the diff, its other tokens \d+ over the window, where a hunk may need 1024: contextTokens 1000 counts \d+ for the instructions and the finding, 512 for the chat template and \d+ for the reply: lower maxTokens, or state a larger window$/)
   })
@@ -279,6 +283,8 @@ describe('profileBudgets', () => {
       },
       rules: documents.rules ?? [],
       requireRule: false,
+      maxFindings: 50,
+      ownMaxFindings: false,
       ...documents.rules === undefined || documents.rules.length === 0
         ? {}
         : { sent: documents.rules },
@@ -292,7 +298,7 @@ describe('profileBudgets', () => {
   }
 
   /** The messages of `run`'s refusals at a quorum's default settings. */
-  const refusals = (run: ProfileRun): string[] => roomIssues(run.id, profileBudgets(run, target => target.window, settings), run, settings.maxFindings).map(issue => issue.message)
+  const refusals = (run: ProfileRun): string[] => roomIssues(run.id, profileBudgets(run, target => target.window, settings), run, run.maxFindings).map(issue => issue.message)
 
   /** The number each figure of a refusal that names its parts is, as `(\d+)` groups of `pattern`, after the window. */
   const figuresOf = (message: string, pattern: RegExp): number[] => {
@@ -478,5 +484,31 @@ describe('profileBudgets', () => {
     expect(rest).toEqual([])
     expect(message).toMatch(/counts \d+ for the instructions, 512 for the chat template and 800 for the reply: lower maxTokens, or state a larger window$/)
     expect(message).not.toContain('rules')
+  })
+
+  it('sizes a profile\'s research by its own maxFindings, and one that sets none by the quorum\'s', () => {
+    const model = provider('local')
+    const ports = {
+      profiles: {
+        security: {
+          research: model,
+          voters: Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, model])),
+        },
+        naming: {
+          research: model,
+          voters: Object.fromEntries(naming.lenses.map(lens => [lens.id, model])),
+        },
+      },
+    }
+    const profiles = [
+      securityProfile,
+      { ...naming, maxFindings: 20 },
+    ]
+    const usual = createQuorum({ profiles }, ports).budgets
+    expect(usual.naming.research).toMatchObject({ findings: 20, maxFindings: 20 })
+    expect(usual.security.research).toMatchObject({ findings: 50, maxFindings: 50 })
+    const raised = createQuorum({ profiles, maxFindings: 30 }, ports).budgets
+    expect(raised.naming.research).toMatchObject({ findings: 20, maxFindings: 20 })
+    expect(raised.security.research).toMatchObject({ findings: 30, maxFindings: 30 })
   })
 })

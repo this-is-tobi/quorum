@@ -536,7 +536,7 @@ describe('checkReplies', () => {
       '1 research reply(ies) listed the 3 findings they were asked for at most, so they may have left some out: raise maxFindings; 2 of 4 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 2): raise findingsCap',
     ],
   ])('ends the findings-capped detail with %s', (_name, replies, cap, requestFindings, detail) => {
-    const outcome = checkReplies(replies, sections, 'security', cap, undefined, requestFindings)
+    const outcome = checkReplies(replies, sections, 'security', cap, { requestFindings })
     expect(outcome.incomplete).toEqual([
       { profile: 'security', reason: 'findings-capped', detail },
     ])
@@ -551,9 +551,33 @@ describe('checkReplies', () => {
     ]
     const asks = '1 research reply(ies) listed the 50 findings they were asked for at most, so they may have left some out: raise maxFindings'
     const cap = '30 of 50 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 20): raise findingsCap'
-    expect(checkReplies(replies, sections, 'security', 20, undefined, 50).incomplete[0].detail).toBe(`${asks}; ${cap}`)
+    expect(checkReplies(replies, sections, 'security', 20, { requestFindings: 50 }).incomplete[0].detail).toBe(`${asks}; ${cap}`)
     expect(checkReplies(replies, sections, 'security', 20).incomplete[0].detail).toBe(`${asks}; ${cap}`)
-    expect(checkReplies(replies, sections, 'security', 20, undefined, 80).incomplete[0].detail).toContain('raise maxTokens, since the reply budget holds 50 of maxFindings 80; ')
+    expect(checkReplies(replies, sections, 'security', 20, { requestFindings: 80 }).incomplete[0].detail).toContain('raise maxTokens, since the reply budget holds 50 of maxFindings 80; ')
+  })
+
+  it.each([
+    [
+      'the profile\'s maxFindings',
+      20,
+      '1 research reply(ies) listed the 20 findings they were asked for at most, so they may have left some out: raise the profile\'s maxFindings',
+    ],
+    [
+      'maxTokens',
+      12,
+      '1 research reply(ies) listed the 12 findings they were asked for at most, so they may have left some out: raise maxTokens, since the reply budget holds 12 of the profile\'s maxFindings 20',
+    ],
+  ])('names %s as the lever of a saturated reply of a profile that sets its own maxFindings', (_name, asked, detail) => {
+    const replies = [
+      {
+        text: reply(named('A', asked)),
+        asked,
+      },
+    ]
+    const outcome = checkReplies(replies, sections, 'code-review', 50, { requestFindings: 20, ownAsk: true })
+    expect(outcome.incomplete).toEqual([
+      { profile: 'code-review', reason: 'findings-capped', detail },
+    ])
   })
 
   it('counts an unreadable entry among what the reply listed', () => {

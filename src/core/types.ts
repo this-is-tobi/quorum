@@ -168,6 +168,13 @@ export interface Profile {
    * `false` when unset: a finding whose citation fails goes on with no rule, and one that cites none is kept as it is.
    */
   readonly requireRule?: boolean
+  /**
+   * The findings each research request of this profile asks for at most, the most serious first: a positive integer, over the
+   * quorum's `maxFindings` for this profile alone. It is the profile's ask, never the panel's cap, which stays the review's
+   * `findingsCap`, one for every profile. It sizes the profile's reply budgets and rooms and the saturation of its replies as the
+   * quorum's `maxFindings` does for a profile that sets none, which asks that.
+   */
+  readonly maxFindings?: number
 }
 
 /**
@@ -841,6 +848,8 @@ export interface ProfileEstimate {
   worst: number
   /** The findings its research requests ask for at most, the most serious first: `maxFindings`, or fewer when the research provider's reply budget holds fewer. */
   findings: number
+  /** The findings its research requests ask for at most before the reply budget narrows them: the profile's own `maxFindings`, else the quorum's. */
+  maxFindings: number
   /** The id of the profile's research provider. */
   provider: string
   /**
@@ -866,9 +875,9 @@ export interface Estimate {
   expected: number
   worst: number
   inFlight: number
-  /** How many findings of a research reply each profile sends to the panel, as `createQuorum` was given or defaulted it. */
+  /** The quorum's `maxFindings`, as `createQuorum` was given or defaulted it: what each profile that sets none of its own asks for, which each profile's `ProfileEstimate.maxFindings` states. */
   maxFindings: number
-  /** The most findings of the research each profile sends to its panel in the review the estimate is for: the `limits` it was given, else `maxFindings`. Every research request is still sized by `maxFindings`. */
+  /** The most findings of the research each profile sends to its panel in the review the estimate is for: the `limits` it was given, else `maxFindings`. Every research request is still sized by the profile's own `maxFindings`, else the review's. */
   findingsCap: number
   /** The token cap the estimate was made under: the `limits` it was given, else the quorum's, as `createQuorum` was given or defaulted it. */
   maxReviewTokens: number
@@ -898,8 +907,8 @@ export interface Quorum {
    * quorum's, each checked as `QuorumOptions` checks it: a caller that sizes a cap or a deadline to its input, as the
    * CLI does for a path review, gives them here and leaves the quorum's as its default for the reviews that give none.
    * `findingsCap` is the most findings of the research each profile sends to its panel in this review, a positive
-   * integer, in place of `maxFindings`; every research request is still sized by `maxFindings`, so a `findingsCap`
-   * above it changes no request and splits no reply, and the findings past it are a `findings-capped` gap.
+   * integer, in place of `maxFindings`; every research request is still sized by the profile's own `maxFindings`, else the review's,
+   * so a `findingsCap` above what a request asks for changes no request and splits no reply, and the findings past it are a `findings-capped` gap.
    */
   readonly review: (input: ReviewInput, options?: { readonly signal?: AbortSignal, readonly interrupt?: AbortSignal, readonly store?: ReplyStore, readonly maxReviewTokens?: number, readonly reviewTimeoutMs?: number, readonly findingsCap?: number }) => Promise<QuorumResult>
   /**
@@ -916,7 +925,7 @@ export interface Quorum {
    * `maxReviewTokens` and `reviewTimeoutMs` are: `Estimate.maxReviewTokens`, `reviewTimeoutMs`, `fits` and `held` read them.
    * `findingsCap`, as `review` takes it, moves `Estimate.findingsCap`, each profile's `votes` and `worst`, and `inFlight`
    * and what `fits` and `held` read of it, since it counts each lens's votes; the parts, their reservations and
-   * `expected` do not depend on it, as `maxFindings` sizes every request.
+   * `expected` do not depend on it, as the profile's own `maxFindings`, else the review's, sizes every request.
    * Throws a `ConfigError` for an input or a limit `review` would refuse.
    */
   readonly estimate: (input: { readonly diff: string, readonly send?: readonly string[], readonly context?: ReviewContext }, limits?: { readonly maxReviewTokens?: number, readonly reviewTimeoutMs?: number, readonly findingsCap?: number }) => Estimate

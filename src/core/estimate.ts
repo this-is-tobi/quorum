@@ -26,7 +26,7 @@ export interface EstimateSettings {
   readonly excluded: (path: string) => boolean
   /** The most tokens of diff text one research part holds. */
   readonly partTokens: number
-  /** How many findings of a research reply each profile sends to the panel. */
+  /** The quorum's `maxFindings`, the ask of each profile that sets none of its own: the estimate's `maxFindings`. Each run's requests are planned at its own `ProfileRun.maxFindings`. */
   readonly maxFindings: number
   /** How many findings of the research each profile sends to its panel: the votes are counted at it, and no request is sized by it. */
   readonly findingsCap: number
@@ -97,7 +97,7 @@ export function estimateReview(given: readonly ProfileRun[], settings: EstimateS
     run,
     ...largest === undefined || asksNothing(run)
       ? noCall(settings.budgets[run.id])
-      : profileEstimate(run, planResearch(run, scope.diff, filtered, { partTokens: settings.partTokens, maxFindings: settings.maxFindings, replyTokens: settings.budgets[run.id].research.replyTokens }), scope.diff, largest, settings),
+      : profileEstimate(run, planResearch(run, scope.diff, filtered, { partTokens: settings.partTokens, maxFindings: run.maxFindings, replyTokens: settings.budgets[run.id].research.replyTokens }), scope.diff, largest, settings),
   }))
   const profiles = planned.map(({ estimate }) => estimate)
   const expected = sum(profiles.map(profile => profile.expected))
@@ -156,6 +156,7 @@ function noCall(budgets: ProfileBudgets): Planned {
       expected: 0,
       worst: 0,
       findings: budgets.research.findings,
+      maxFindings: budgets.research.maxFindings,
       provider: budgets.research.provider,
       documents: { research: 0, vote: 0 },
     },
@@ -261,6 +262,7 @@ function profileEstimate(run: ProfileRun, plan: ResearchPlan, diff: string, larg
       expected: sum(partsExpected),
       worst: researchWorst + findingsCap * sum(bounds),
       findings: budgets.research.findings,
+      maxFindings: budgets.research.maxFindings,
       provider: budgets.research.provider,
       documents: documentsAdd(run, budgets),
     },

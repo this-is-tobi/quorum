@@ -220,7 +220,7 @@ function requestFor(ctx: RunContext, run: ProfileRun, finding: Finding, lens: Le
     : replyBudget({
       ...factsOf(lens),
       ceiling,
-    }, stated.window, ctx.maxFindings).vote
+    }, stated.window, run.maxFindings).vote
   const ask = { replyTokens }
   const rule = citedRule(run, finding)
   const nearest = lens.room === undefined
