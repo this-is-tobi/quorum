@@ -1341,6 +1341,54 @@ describe('review', () => {
     ])
   })
 
+  it('names the profile\'s own maxFindings as the lever of a saturated reply, through a review', async () => {
+    const own: Profile = { ...style, id: 'own', maxFindings: 2 }
+    const second = { ...reported, file: 'other.js', quote: 'UNRELATED' }
+    const answering = (...items: unknown[]) => (request: CompletionRequest): string => isVote(request)
+      ? vote(true)
+      : findings(...items)
+    const securityFinder = fake('security-finder', answering(reported))
+    const ownFinder = fake('own-finder', answering(reported, second))
+    // The review's own maxFindings of 1 sizes security's requests, the profile's 2 its own; findingsCap keeps the cap off both.
+    const result = await createQuorum({
+      profiles: [securityProfile, own],
+      maxFindings: 1,
+    }, {
+      profiles: {
+        ...portsFor(securityProfile, securityFinder).profiles,
+        ...portsFor(own, ownFinder).profiles,
+      },
+    }).review({ diff }, { findingsCap: 50 })
+    expect(securityFinder.requests.filter(request => !isVote(request)).map(request => /List at most (\d+) findings/.exec(request.system)?.[1])).toEqual(['1'])
+    expect(ownFinder.requests.filter(request => !isVote(request)).map(request => /List at most (\d+) findings/.exec(request.system)?.[1])).toEqual(['2'])
+    const gaps = (profile: string): string[] => result.meta.incomplete.filter(entry => entry.profile === profile && entry.reason === 'findings-capped').map(entry => entry.detail)
+    expect(gaps('own')).toEqual([
+      '1 research reply(ies) listed the 2 findings they were asked for at most, so they may have left some out: raise the profile\'s maxFindings',
+    ])
+    expect(gaps('security')).toEqual([
+      '1 research reply(ies) listed the 1 findings they were asked for at most, so they may have left some out: raise maxFindings',
+    ])
+  })
+
+  it('names maxTokens, and what the reply budget holds, when a profile\'s own maxFindings asks for more than it holds, through a review', async () => {
+    // A window of 16384 asks a reply for at most 7 findings; the profile asks for 40, so the budget is the limit.
+    const sizable: Profile = { ...securityProfile, maxFindings: 40 }
+    const seven = Array.from({ length: 7 }, (_, index) => ({ ...reported, line: index + 1 }))
+    const finder = {
+      ...fake('finder', request => isVote(request)
+        ? vote(true)
+        : findings(...seven)),
+      window: 16_384,
+    }
+    const single = diff.split('\n').slice(0, 6).join('\n')
+    const result = await createQuorum({
+      profiles: [sizable],
+    }, portsFor(sizable, finder)).review({ diff: single })
+    expect(result.meta.incomplete.filter(entry => entry.reason === 'findings-capped').map(entry => entry.detail)).toEqual([
+      '1 research reply(ies) listed the 7 findings they were asked for at most, so they may have left some out: raise maxTokens, since the reply budget holds 7 of the profile\'s maxFindings 40',
+    ])
+  })
+
   it('records a vote whose provider throws something other than an Error with its text', async () => {
     complete.mockResolvedValueOnce(findings(reported)).mockResolvedValueOnce(vote(true)).mockResolvedValueOnce(vote(true)).mockRejectedValueOnce('socket closed')
     const result = await run().review({ diff })
@@ -10563,6 +10611,38 @@ describe('the security profile\'s requests through a review', () => {
     // a review makes of this diff, `+exec(cmd)`, where that pin states `>    1 + exec(cmd)` of its own, so its digest is another
     // value, which the 0.12.0 sources give for the same review.
     expect(looked).toContain(keyOf('research', '9332a0a8136fce260d587532024e35f86770b01eca89c4fbf8f5467d327ea63f', research!))
+    expect(looked).toContain(keyOf('vote', 'fe469cddd24059068c2f23e261a56dce57d0d262ba03bb18040463909015542d', reachability!))
+  })
+
+  it('asks a profile\'s research for its own maxFindings, and the security profile\'s as it always did, key for key', async () => {
+    const both = fake('both', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
+    const kept = memory()
+    const looked: string[] = []
+    const store: ReplyStore = {
+      get: async (entry) => {
+        looked.push(entry.key)
+        return kept.get(entry)
+      },
+      put: kept.put,
+    }
+    const own: Profile = { ...naming, maxFindings: 20 }
+    await createQuorum({
+      profiles: [securityProfile, own],
+    }, {
+      profiles: {
+        ...portsFor(securityProfile, both).profiles,
+        ...portsFor(own, both).profiles,
+      },
+    }).review({ diff: pinned }, { store })
+    const researches = both.requests.filter(request => !isVote(request))
+    const asked = researches.find(request => request.system.includes(naming.prompts.research))
+    const security = researches.find(request => !request.system.includes(naming.prompts.research))
+    const reachability = both.requests.find(request => isVote(request) && request.system.includes('Refutation angle: reachability.'))
+    expect(asked?.system).toContain('List at most 20 findings, the most serious first.')
+    expect(security?.system).toContain('List at most 50 findings, the most serious first.')
+    expect(looked).toContain(keyOf('research', '9332a0a8136fce260d587532024e35f86770b01eca89c4fbf8f5467d327ea63f', security!))
     expect(looked).toContain(keyOf('vote', 'fe469cddd24059068c2f23e261a56dce57d0d262ba03bb18040463909015542d', reachability!))
   })
 })

@@ -111,25 +111,38 @@ function raiseWords(levers: readonly string[]): string {
 /**
  * The fix of the `findings-capped` gap, read from what each profile's research counted (`meta.profiles.<id>.research`) and what its
  * requests asked for (`asks`), never from the gap's detail: `findingsCap` when a profile left findings unread under the cap,
- * `maxTokens` when a profile whose replies listed all they were asked for asked for fewer than `maxFindings`, since its reply budget
- * held no more, and `maxFindings` when one asked for `maxFindings`, in that order, as `raiseWords` joins them. A profile that
- * `asks` names none asked for `maxFindings`. The report holds the gap when no profile counts either.
+ * `maxTokens` when a profile whose replies listed all they were asked for asked for fewer than its ceiling, since its reply budget
+ * held no more, `maxFindings` when one that sets no `maxFindings` of its own asked for the review's, and `profiles.<id>.maxFindings`
+ * for each profile that asked for its own, in that order and each profile's once in run order, as `raiseWords` joins them. A profile
+ * that `asks` names none asked for its ceiling, its own `maxFindings` (`asks.own`), else the review's. The report holds the gap when no
+ * profile counts either.
  */
 export function cappedFix(profiles: Readonly<Record<string, ProfileMeta>>, asks: ViewFacts['asks']): string {
   const counts = Object.entries(profiles)
-  const asked = counts.filter(([, { research }]) => research.saturated > 0).map(([id]) => Object.hasOwn(asks.findings, id)
-    ? asks.findings[id]
-    : asks.maxFindings)
+  const saturated = counts.filter(([, { research }]) => research.saturated > 0).map(([id]) => {
+    const own = Object.hasOwn(asks.own, id)
+    const ceiling = own
+      ? asks.own[id]
+      : asks.maxFindings
+    return {
+      id,
+      own,
+      full: (Object.hasOwn(asks.findings, id)
+        ? asks.findings[id]
+        : ceiling) >= ceiling,
+    }
+  })
   const levers = [
     ...counts.some(([, { research }]) => research.capped > 0)
       ? ['findingsCap']
       : [],
-    ...asked.some(findings => findings < asks.maxFindings)
+    ...saturated.some(({ full }) => !full)
       ? ['maxTokens']
       : [],
-    ...asked.some(findings => findings >= asks.maxFindings)
+    ...saturated.some(({ own, full }) => full && !own)
       ? ['maxFindings']
       : [],
+    ...saturated.filter(({ own, full }) => full && own).map(({ id }) => `profiles.${id}.maxFindings`),
   ]
   return levers.length === 0
     ? SEE_REPORT

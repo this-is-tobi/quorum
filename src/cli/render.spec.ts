@@ -21,6 +21,7 @@ describe('estimateLines', () => {
         expected: 16_667,
         worst: 1_850_000,
         findings: 50,
+        maxFindings: 50,
         provider: 'api',
         documents: { research: 0, vote: 0 },
       },
@@ -52,6 +53,7 @@ describe('estimateLines', () => {
       expected: 2667,
       worst: 608_000,
       findings: 50,
+      maxFindings: 50,
       provider: 'api',
       documents: { research: 0, vote: 0 },
     }
@@ -192,6 +194,38 @@ describe('estimateLines', () => {
       },
     }, bounds).slice(4)).toEqual([
       line('x<U+202E>y', 7),
+    ])
+  })
+
+  it('names a research provider whose reply holds fewer findings than its profile\'s own maxFindings, and none for one that asks its own in full', () => {
+    const profile = (findings: number, maxFindings: number, provider: string): Estimate['profiles'][string] => ({
+      ...estimate.profiles.security,
+      parts: [1000],
+      findings,
+      maxFindings,
+      provider,
+    })
+    // The run's maxFindings is 50: a profile that asks its own 20 in full is at its ceiling, and one whose budget holds 12 of its 20 is below it.
+    expect(estimateLines({
+      ...estimate,
+      profiles: {
+        a: profile(20, 20, 'local'),
+        b: profile(12, 20, 'research'),
+      },
+    }, bounds).slice(4)).toEqual([
+      'estimate: on research a research reply asks for at most 12 of maxFindings 20 findings: parts with more split, so expect more calls than this estimate; a larger window, or thinking: off, raises N',
+    ])
+    // One provider under two ceilings has a line for each, in profile order.
+    expect(estimateLines({
+      ...estimate,
+      profiles: {
+        a: profile(12, 20, 'local'),
+        b: profile(12, 50, 'local'),
+        c: profile(12, 20, 'local'),
+      },
+    }, bounds).slice(5)).toEqual([
+      'estimate: on local a research reply asks for at most 12 of maxFindings 20 findings: parts with more split, so expect more calls than this estimate; a larger window, or thinking: off, raises N',
+      'estimate: on local a research reply asks for at most 12 of maxFindings 50 findings: parts with more split, so expect more calls than this estimate; a larger window, or thinking: off, raises N',
     ])
   })
 
@@ -355,6 +389,7 @@ describe('findingsCapOf', () => {
     expected: 0,
     worst: 0,
     findings: 50,
+    maxFindings: 50,
     provider: 'api',
     documents: { research: 0, vote: 0 },
   })
@@ -586,7 +621,12 @@ describe('profileProviders', () => {
 
 describe('viewFacts', () => {
   const lone = (findings: number) => ({
-    research: { provider: 'api', findings, findingsWithoutThinking: findings },
+    research: {
+      provider: 'api',
+      findings,
+      maxFindings: 50,
+      findingsWithoutThinking: findings,
+    },
     lenses: {},
   }) satisfies ProfileBudgets
   const config = resolvedConfig({
@@ -606,7 +646,7 @@ describe('viewFacts', () => {
       deadlineMs: 1_800_000,
       deadline: 'default',
       maxFindings: 50,
-      asks: { maxFindings: 50, findings: {} },
+      asks: { maxFindings: 50, findings: {}, own: {} },
     })
     const set = {
       ...config,
@@ -633,7 +673,7 @@ describe('viewFacts', () => {
       deadlineMs: 60_000,
       deadline: 'config',
       maxFindings: 9,
-      asks: { maxFindings: 9, findings: {} },
+      asks: { maxFindings: 9, findings: {}, own: {} },
       estimate,
     })
     // A path review's finding cap is the facts' maxFindings, which sizes the votes to come.
@@ -732,6 +772,20 @@ describe('viewFacts', () => {
     expect(facts.asks).toEqual({
       maxFindings: 50,
       findings: { security: 47, naming: 50 },
+      own: {},
     })
+  })
+
+  it('gives the view the maxFindings each profile sets of its own', () => {
+    const [security] = config.profiles
+    const naming = {
+      ...security,
+      profile: { ...security.profile, id: 'naming', maxFindings: 20 },
+    }
+    expect(viewFacts({
+      ...config,
+      profiles: [security, naming],
+    }).asks.own).toEqual({ naming: 20 })
+    expect(viewFacts(config).asks.own).toEqual({})
   })
 })

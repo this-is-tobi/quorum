@@ -37,11 +37,12 @@ export interface ViewFacts {
   /** The findings of the research each panel reads at most (a review's `findingsCap`), which sizes the votes to come. */
   readonly maxFindings: number
   /**
-   * What each research request asks for, which the summary's fix of a capped review reads: the config's `maxFindings`, which sizes every
-   * request, and the findings each profile's request asks for at most (`findings`, by profile id), fewer when its reply budget holds fewer.
-   * A profile with no entry asks for `maxFindings`.
+   * What each research request asks for, which the summary's fix of a capped review reads: the config's `maxFindings`, which sizes the
+   * requests of every profile that sets none of its own, the findings each profile's request asks for at most (`findings`, by profile id),
+   * fewer when its reply budget holds fewer, and the `maxFindings` each profile sets of its own (`own`, by profile id), the ceiling of its ask.
+   * A profile with no entry in `findings` asks for its ceiling: its own `maxFindings`, else `maxFindings`.
    */
-  readonly asks: { readonly maxFindings: number, readonly findings: Readonly<Record<string, number>> }
+  readonly asks: { readonly maxFindings: number, readonly findings: Readonly<Record<string, number>>, readonly own: Readonly<Record<string, number>> }
   /** A path review's estimate, which weighs the parts not yet started. */
   readonly estimate?: Estimate
 }
@@ -52,7 +53,7 @@ export const DEFAULT_FACTS: ViewFacts = {
   deadlineMs: DEFAULT_REVIEW_TIMEOUT_MS,
   deadline: 'default',
   maxFindings: DEFAULT_MAX_FINDINGS,
-  asks: { maxFindings: DEFAULT_MAX_FINDINGS, findings: {} },
+  asks: { maxFindings: DEFAULT_MAX_FINDINGS, findings: {}, own: {} },
 }
 
 /** One profile's time in a stage: when it started, and when it ended once it has. */

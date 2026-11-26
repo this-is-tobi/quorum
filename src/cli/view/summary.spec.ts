@@ -1193,9 +1193,14 @@ describe('summaryLines', () => {
 
   describe('a findings-capped gap\'s fix', () => {
     interface Counts { readonly capped: number, readonly saturated: number }
-    const counted = (profiles: Readonly<Record<string, Counts>>, asks: ViewFacts['asks']): string[] => {
+    /** The asks a table row gives: those a profile sets of its own, `own`, are left out of a row where none does. */
+    type Asks = Omit<ViewFacts['asks'], 'own'> & Partial<Pick<ViewFacts['asks'], 'own'>>
+    const counted = (profiles: Readonly<Record<string, Counts>>, asks: Asks): string[] => {
       const base = reportMeta().profiles.security
-      const state = reviewedUnder({ ...DEFAULT_FACTS, asks }, ...Object.keys(profiles).map(profile => incomplete('findings-capped', 1, profile)))
+      const state = reviewedUnder({
+        ...DEFAULT_FACTS,
+        asks: { own: {}, ...asks },
+      }, ...Object.keys(profiles).map(profile => incomplete('findings-capped', 1, profile)))
       return lines(state, factsOf({
         result: reportResult({
           meta: {
@@ -1277,6 +1282,38 @@ describe('summaryLines', () => {
       expect(counted(profiles, asks)).toContain(line)
     })
 
+    it.each([
+      [
+        'profiles.code-review.maxFindings',
+        { capped: 0, saturated: 1 },
+        20,
+        20,
+        'raise profiles.code-review.maxFindings',
+      ],
+      [
+        'maxTokens',
+        { capped: 0, saturated: 1 },
+        60,
+        55,
+        'raise maxTokens',
+      ],
+      [
+        'findingsCap and profiles.code-review.maxFindings',
+        { capped: 2, saturated: 1 },
+        20,
+        20,
+        'raise findingsCap, and profiles.code-review.maxFindings',
+      ],
+    ])('names %s as the fix of a capped review of a profile with its own maxFindings', (_name, counts, own, asked, fix) => {
+      // The review's maxFindings is 50: a profile that asked for 55 of its own 60 asked for fewer than its ceiling, though more than the review's.
+      const asks = {
+        maxFindings: 50,
+        findings: { 'code-review': asked },
+        own: { 'code-review': own },
+      }
+      expect(counted({ 'code-review': counts }, asks)).toContain(`gaps: 1 gap(s) findings-capped: ${fix}`)
+    })
+
     it('reads the fix from the counts, never from the gap\'s detail, and leaves it to the report when no profile counts either', () => {
       const asks = { maxFindings: 50, findings: {} }
       expect(counted({
@@ -1298,7 +1335,7 @@ describe('summaryLines', () => {
           ...base,
           research: research(1),
         },
-      }, { maxFindings: 50, findings: {} })).toBe('raise maxFindings')
+      }, { maxFindings: 50, findings: {}, own: {} })).toBe('raise maxFindings')
       expect(cappedFix({
         security: {
           ...base,
@@ -1307,13 +1344,14 @@ describe('summaryLines', () => {
       }, {
         maxFindings: 50,
         findings: { security: 12 },
+        own: {},
       })).toBe('raise maxTokens')
       expect(cappedFix({
         security: {
           ...base,
           research: research(0),
         },
-      }, { maxFindings: 50, findings: {} })).toBe('see the gap in the report')
+      }, { maxFindings: 50, findings: {}, own: {} })).toBe('see the gap in the report')
     })
   })
 

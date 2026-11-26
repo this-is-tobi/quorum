@@ -100,6 +100,10 @@ export interface ProfileRun {
   readonly sent?: readonly ReviewRule[]
   /** Whether every finding must cite a rule the review sent (`Profile.requireRule`): a finding that cites none, or whose citation fails its check, is dropped. */
   readonly requireRule: boolean
+  /** The findings each research request of the profile asks for at most: its own `maxFindings`, else the quorum's. It sizes the profile's requests, its reply budgets and rooms, and the saturation of its replies; the panel's cap is the review's `findingsCap`. */
+  readonly maxFindings: number
+  /** Whether `maxFindings` is the profile's own: the lever a gap or a summary names to raise it is then the profile's setting, not the quorum's. */
+  readonly ownMaxFindings: boolean
 }
 
 /**
@@ -172,9 +176,7 @@ export interface RunContext {
   readonly store?: ReplyStore
   /** What this review moved by itself, and the probes that find out whether a move helps: one per review, so nothing carries to the next. */
   readonly adapt: Adaptations
-  /** How many findings each research request asks for at most: it sizes every request, and the saturation and the splitting of a reply read it. */
-  readonly maxFindings: number
-  /** How many findings of the research each profile sends to its panel in this review: the review's own `findingsCap`, else the quorum's, which is `maxFindings` unless set. Only the checked replies read it; `maxFindings` sizes the requests. */
+  /** How many findings of the research each profile sends to its panel in this review: the review's own `findingsCap`, else the quorum's, which is `maxFindings` unless set. Only the checked replies read it; each profile's `maxFindings` sizes its requests. */
   readonly findingsCap: number
   /** The reply budgets of each profile, by profile id: what its research and vote requests carry and ask for. */
   readonly budgets: Readonly<Record<string, ProfileBudgets>>

@@ -26,7 +26,7 @@ import type { Packing, PartResult, UnreadPlace } from './parts.ts'
 import { MAX_SERVED, settingsSchema } from './result-schema.ts'
 import { adaptsProblem, MAX_STATED_TIMEOUT_MS, retriesProblem, slotsProblem, streamsProblem, thinkingProblem, timeoutProblem, tokensProblem } from './ports.ts'
 import type { EventSink, ProfilePorts, Provider, QuorumPorts, ReplyStore } from './ports.ts'
-import { failOnOf, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
+import { failOnOf, positiveIntegerProblem, profileIssues, profileWarnings, thresholdsFor } from './profile.ts'
 import { doNotReportInstructions, renderTemplate } from './prompts.ts'
 import { ownData } from './facts.ts'
 import { addUsage, asksNothing, elapsed, stage, targetOf, withSent } from './stages/context.ts'
@@ -57,7 +57,7 @@ interface Compiled {
   readonly runs: readonly ProfileRun[]
   /** The review's `concurrency`, or none: each provider then has a lane. */
   readonly concurrency: number | undefined
-  /** The findings each research request asks for at most: it sizes every request. */
+  /** The findings each research request asks for at most, for a profile that sets none of its own (`ProfileRun.maxFindings`): the review's `Estimate.maxFindings`, and `findingsCap`'s default. */
   readonly maxFindings: number
   /** The most findings of the research each profile sends to its panel in a review that gives no cap of its own: the quorum's `findingsCap`, else `maxFindings`. */
   readonly findingsCap: number
@@ -227,18 +227,18 @@ export function createQuorum(options: QuorumOptions, ports: QuorumPorts): Quorum
 export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clock: Clock): Quorum {
   const issues = inputIssues(options, ports)
   if (issues.length > 0) throw new ConfigError(issues)
-  // The checks found every profile valid and named once, with an own entry in ports.profiles and an own voter per lens.
-  const runs = Object.freeze(options.profiles.map(profile => compile(profile, ports.profiles[profile.id])))
   const settings = {
     maxFindings: options.maxFindings ?? DEFAULT_MAX_FINDINGS,
     maxReviewTokens: options.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS,
     partTokens: options.partTokens ?? DEFAULT_PART_TOKENS,
   }
+  // The checks found every profile valid and named once, with an own entry in ports.profiles and an own voter per lens.
+  const runs = Object.freeze(options.profiles.map(profile => compile(profile, ports.profiles[profile.id], settings.maxFindings)))
   const budgets: Readonly<Record<string, ProfileBudgets>> = Object.freeze(Object.fromEntries(runs.map(run => [
     run.id,
     profileBudgets(run, target => target.window, settings),
   ])))
-  const room = runs.flatMap(run => roomIssues(run.id, budgets[run.id], run, settings.maxFindings))
+  const room = runs.flatMap(run => roomIssues(run.id, budgets[run.id], run, run.maxFindings))
   if (room.length > 0) throw new ConfigError(room)
   const compiled: Compiled = {
     runs,
@@ -581,7 +581,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
   const runs = reviewed.runs.map(run => withSent(run, filtered))
   const plans = sections === undefined
     ? []
-    : runs.map(run => planResearch(run, scope.diff, filtered, { partTokens: compiled.partTokens, maxFindings: compiled.maxFindings, replyTokens: compiled.budgets[run.id].research.replyTokens }))
+    : runs.map(run => planResearch(run, scope.diff, filtered, { partTokens: compiled.partTokens, maxFindings: run.maxFindings, replyTokens: compiled.budgets[run.id].research.replyTokens }))
   const gaps = new Map(runs.map((run, index) => {
     const tooLarge = tooLargeGap(run.id, filtered, plans[index]?.packing, scope.leftOut)
     return [
@@ -651,7 +651,6 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
       ? {}
       : { store: options.store },
     adapt: createAdaptations(),
-    maxFindings: compiled.maxFindings,
     findingsCap: options.findingsCap ?? compiled.findingsCap,
     budgets: compiled.budgets,
     concurrency: compiled.concurrency ?? REVIEW_CEILING,
@@ -960,7 +959,7 @@ function reviewRuns(compiled: Compiled, context: ReviewContext | undefined): Rev
     return runWith(run, withRepository(run.texts, documents.map(({ document }) => document)))
   })
   for (const run of runs) {
-    if (changed.has(run.id)) issues.push(...roomIssues(run.id, profileBudgets(run, target => target.window, compiled), run, compiled.maxFindings))
+    if (changed.has(run.id)) issues.push(...roomIssues(run.id, profileBudgets(run, target => target.window, compiled), run, run.maxFindings))
   }
   if (issues.length > 0) throw new ConfigError(issues)
   return {
@@ -1040,9 +1039,9 @@ function profileMeta(run: ProfileRun, invalidFindings: number, invalidRules: num
  * template rendered, the vote template rendered once per lens, the thresholds resolved, `failOn` (`high` unless the profile says
  * otherwise, `none` for its deprecated `gating: false`) and `gating` (true unless `failOn` is `none`), and
  * each provider captured beside the `{ id, model }` ref events and meta report and the deadline of its
- * attempts.
+ * attempts. Its `maxFindings` is the profile's own, else the quorum's `maxFindings`, which is given.
  */
-function compile(profile: Profile, ports: ProfilePorts): ProfileRun {
+function compile(profile: Profile, ports: ProfilePorts, maxFindings: number): ProfileRun {
   const failOn = failOnOf(profile)
   const panelSize = String(profile.lenses.length)
   const lenses = profile.lenses.map(lens => Object.freeze({
@@ -1062,6 +1061,8 @@ function compile(profile: Profile, ports: ProfilePorts): ProfileRun {
     failOn,
     gating: failOn !== 'none',
     requireRule: profile.requireRule === true,
+    maxFindings: profile.maxFindings ?? maxFindings,
+    ownMaxFindings: profile.maxFindings !== undefined,
     ...texts,
   })
 }
@@ -1154,14 +1155,12 @@ function profileListIssues(profiles: readonly unknown[]): { issues: ConfigIssue[
  */
 function limitIssues(options: Record<string, unknown>): ConfigIssue[] {
   const issues: ConfigIssue[] = LIMITS.flatMap((path) => {
-    const value = options[path]
-    if (value === undefined || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 1)) return []
-    const got = typeof value === 'number'
-      ? `, got ${value}`
-      : ''
-    return [
-      { path, message: `must be a positive integer${got}` },
-    ]
+    const message = positiveIntegerProblem(options[path])
+    return message === undefined
+      ? []
+      : [
+          { path, message },
+        ]
   })
   issues.push(...reviewLimitIssues(options))
   const partTokens = options.partTokens === undefined

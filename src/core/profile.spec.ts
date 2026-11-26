@@ -270,6 +270,23 @@ describe('profileIssues', () => {
     }
   })
 
+  it.each([
+    [0, 'must be a positive integer, got 0'],
+    [1.5, 'must be a positive integer, got 1.5'],
+    [2 ** 53, 'must be a positive integer, got 9007199254740992'],
+    ['20', 'must be a positive integer'],
+  ])('refuses a maxFindings of %j at the profile\'s path', (maxFindings, message) => {
+    expect(profileIssues({ ...valid, id: 'naming', maxFindings } as unknown as Profile)).toEqual([
+      { path: 'naming.maxFindings', message },
+    ])
+  })
+
+  it('accepts a profile\'s own maxFindings of 1 and of 9007199254740991', () => {
+    for (const maxFindings of [1, 9_007_199_254_740_991]) {
+      expect(profileIssues({ ...valid, maxFindings }), String(maxFindings)).toEqual([])
+    }
+  })
+
   it('reports missing prompts and lenses as issues', () => {
     expect(profileIssues({ id: 'bare' } as unknown as Profile)).toEqual([
       { path: 'bare.lenses', message: 'must be an array of lenses' },

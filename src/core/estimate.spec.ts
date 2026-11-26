@@ -588,6 +588,35 @@ describe('estimate', () => {
     expect(estimate.profiles.free).toMatchObject({ findings: 50, provider: 'silent' })
   })
 
+  it('states each profile\'s own maxFindings beside the findings its requests ask for', () => {
+    const naming: Profile = {
+      id: 'naming',
+      prompts: { research: 'Review this diff for names that mislead.', vote: 'Judge as {{lens.id}}.' },
+      lenses: [
+        { id: 'only', question: 'Does the name mislead?' },
+      ],
+      policy: { high: 'unanimous', medium: 'off', low: 'off' },
+    }
+    const model = silent()
+    const estimate = createQuorum({
+      profiles: [
+        securityProfile,
+        { ...naming, maxFindings: 20 },
+      ],
+    }, {
+      profiles: {
+        ...portsFor(securityProfile, model).profiles,
+        ...portsFor(naming, model).profiles,
+      },
+    }).estimate({
+      diff: addedFile('a.js', 3),
+    })
+
+    expect(estimate.profiles.naming).toMatchObject({ findings: 20, maxFindings: 20 })
+    expect(estimate.profiles.security).toMatchObject({ findings: 50, maxFindings: 50 })
+    expect(estimate.maxFindings).toBe(50)
+  })
+
   it('keeps fits to expected and inFlight within the cap', () => {
     const diff = Array.from({ length: 8 }, (_, index) => addedFile(`f${index}.js`, 120)).join('\n')
     const reserve = (request: CompletionRequest): number => requestTokens(request) + 512 + (request.replyTokens ?? 16_000)
@@ -624,6 +653,7 @@ describe('estimate', () => {
           expected: 0,
           worst: 0,
           findings: 50,
+          maxFindings: 50,
           provider: 'windowed',
           documents: { research: 0, vote: 0 },
         },
@@ -1224,6 +1254,7 @@ describe('estimate', () => {
       expected: 0,
       worst: 0,
       findings: 50,
+      maxFindings: 50,
       provider: 'windowed',
       documents: { research: 0, vote: 0 },
     })

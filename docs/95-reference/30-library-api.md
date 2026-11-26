@@ -50,7 +50,7 @@ interface ReviewInput {
 | --- | --- | --- |
 | `profiles` | The profiles to run: at least one, ids unique | Required |
 | `concurrency` | The most provider calls in flight at once in one review, shared by every profile, with no lane and no adaptation; a positive integer. Unset, each provider has a lane of its own that follows its rate-limit headers, from `LANE_START` (4) calls at once, up to `REVIEW_CEILING` (16) calls in all: [Lanes](../20-using/30-providers.md#lanes) | Lanes |
-| `maxFindings` | The findings every research request is sized by ([Reply budgets](../20-using/20-configuration.md#reply-budgets)), and the most findings of the research each profile reads, the only ones that can reach its panel, unless `findingsCap` says another; a positive integer | `50` |
+| `maxFindings` | The findings every research request of a profile that sets none of its own is sized by ([Reply budgets](../20-using/20-configuration.md#reply-budgets)), and the most findings of the research each profile reads, the only ones that can reach its panel, unless `findingsCap` says another; a positive integer | `50` |
 | `findingsCap` | The most findings of the research each profile sends to its panel in one review; a positive integer. It sizes no request, so a `findingsCap` above `maxFindings` changes no request, splits no reply and moves no store key, and a capped review's `findings-capped` gap names it as its lever. A review's own `findingsCap` option takes its place for that review | `maxFindings` |
 | `exclude` | Path patterns of the files left out of every request ([Excludes](../20-using/20-configuration.md#excludes)). Each file excluded reaches no model and is listed in `meta.leftOut` as `excluded`, never as a gap. At most 100 patterns, each at most 256 characters | None |
 | `maxReviewTokens` | The most tokens, input and output, one review may spend: [The token cap](../20-using/20-configuration.md#the-token-cap). A whole number from 1 to 9007199254740991 | `2000000` |
@@ -71,6 +71,7 @@ One provider object may fill several ports: the research provider of a profile c
 | `profiles` | `must be an array of profiles`, or `must hold at least one profile` |
 | `profiles.<index>`, `<id>` and below | The profile's own issues: [The checks](../20-using/40-profiles.md#the-checks) |
 | `profiles.<index>.id` | `repeats the profile id "security"` |
+| `<id>.maxFindings` | A profile's own `maxFindings`: `must be a positive integer, got 0`, the value quoted when it is a number, else `must be a positive integer` |
 | `concurrency`, `maxFindings`, `findingsCap` | `must be a positive integer, got 0`, the value quoted when it is a number |
 | `maxReviewTokens` | `must be a whole number of tokens from 1 to 9007199254740991` |
 | `reviewTimeoutMs` | `must be a whole number of milliseconds from 1000 to 86400000` |
@@ -111,7 +112,7 @@ Each profile is compiled once, when the quorum is created: its vote template ren
 
 ### `budgets`
 
-`Quorum.budgets` holds each profile's `ProfileBudgets` by profile id, frozen, at its providers' stated windows: the reply budget of its research and of each lens's vote (`replyTokens`), the `N` its research asks for (`findings`, and `findingsWithoutThinking`), the tokens of diff its research provider's stated room leaves a one-request research and a part (`rooms.one` and `rooms.part`), the room each voter leaves the vote of the longest finding (`room`), and `worstPart`, the tokens the review's token cap reserves for a part that holds as much diff as its room and `partTokens` allow, with how many of them `maxReviewTokens` holds: the worst case of a part that lists no file, so where `partTokens` bounds the diff the figure runs low and `holds` high, by the size of the file list a real part carries, and where the room bounds it both are exact. A provider that states no room has no `rooms`, `worstPart` or `room`. [`--print-config`](../20-using/10-cli.md#printing-the-resolved-config) prints them. A profile whose rooms fall below 1,024 tokens never gets this far: `createQuorum` throws it ([Room accounting](../20-using/20-configuration.md#room-accounting)). `fromConfig` keeps the field.
+`Quorum.budgets` holds each profile's `ProfileBudgets` by profile id, frozen, at its providers' stated windows: the reply budget of its research and of each lens's vote (`replyTokens`), the `N` its research asks for (`findings`, and `findingsWithoutThinking`) and the ceiling of that ask (`maxFindings`, the profile's own, else the quorum's), the tokens of diff its research provider's stated room leaves a one-request research and a part (`rooms.one` and `rooms.part`), the room each voter leaves the vote of the longest finding (`room`), and `worstPart`, the tokens the review's token cap reserves for a part that holds as much diff as its room and `partTokens` allow, with how many of them `maxReviewTokens` holds: the worst case of a part that lists no file, so where `partTokens` bounds the diff the figure runs low and `holds` high, by the size of the file list a real part carries, and where the room bounds it both are exact. A provider that states no room has no `rooms`, `worstPart` or `room`. [`--print-config`](../20-using/10-cli.md#printing-the-resolved-config) prints them. A profile whose rooms fall below 1,024 tokens never gets this far: `createQuorum` throws it ([Room accounting](../20-using/20-configuration.md#room-accounting)). `fromConfig` keeps the field.
 
 ### `warnings`
 
@@ -458,6 +459,7 @@ interface ProfileEstimate {
   expected: number
   worst: number
   findings: number
+  maxFindings: number
   provider: string
   documents: { research: number, vote: number }
 }
@@ -474,6 +476,7 @@ interface ProfileEstimate {
 | `profiles.<id>.expected` | The research parts alone, each counted at a third of its input, rounded up (the bound is one token per byte, and code takes about one per three), and its reply at the lesser of its budget and 4096 tokens, its usual size, so a large `maxTokens` is headroom and no expectation. No recovery and no vote is in it, since how many findings research reports is not known before it runs |
 | `profiles.<id>.worst` | An upper bound: the parts in full, each with what recovery may add to it (`3d + 14h + 14 (r - d + e)` for a part of `d` diff tokens, reservation `r`, largest file header `h` and `e` the tokens a piece's request holds beyond its part's: [Recovering a cut-off part](../20-using/20-configuration.md#recovering-a-cut-off-part)), and `findingsCap` votes of every lens at its bound |
 | `profiles.<id>.findings` | The findings its research requests ask for at most, `N`: `maxFindings`, or fewer when the research provider's reply budget holds fewer ([Reply budgets](../20-using/20-configuration.md#reply-budgets)). Below `maxFindings`, a part whose reply lists that many is split, which `expected` counts no call for |
+| `profiles.<id>.maxFindings` | The findings its research requests ask for at most before the reply budget narrows them: the profile's own `maxFindings`, else the quorum's. `findings` is compared with it, and the CLI's line for a provider whose reply holds fewer names it |
 | `profiles.<id>.provider` | The id of the profile's research provider |
 | `profiles.<id>.documents` | What the profile's documents add to what the ledger reserves for one research request (`research`: its guidelines and its do-not-report text) and for one vote (`vote`: its guidelines, at the lens that adds most), each the difference of the request built over no diff with them and without them, a review's repository documents included. 0 and 0 for a profile with none, and for one whose research makes no call. It is not in `expected`, `worst` or `inFlight`, which already count the documents in each request: it says what share of each request they are |
 | `expected` | The sum over the profiles |
@@ -483,7 +486,7 @@ interface ProfileEstimate {
 | `fits` | `expected + inFlight <= maxReviewTokens`: whether the research may finish under the cap. It leaves recovery and the adaptations out, which only a failing or an adversarial review reaches and which would refuse every large path review: `worst` counts them |
 | `held` | How many research parts the cap holds: the parts of every profile, in profile order and then in the order they are sent, counted while their expected spends and `inFlight` stay within `maxReviewTokens`. 0 for a cap below `inFlight`, every part when `fits`. The CLI's warning for a cap the config sets below the estimate names it |
 
-A blank diff, and one whose every file `exclude` leaves out or is held back as a secret, make no call: every token figure is 0, `parts` and `vote` are empty and `fits` is true, with `findings` and `provider` as the profile's research provider states them. The CLI prints the estimate of a path review, derives the review's token cap and deadline from it and never refuses one for its size: [The bounds of a path review](../20-using/15-sources.md#the-bounds-of-a-path-review). A blank diff has `held` 0. It is an estimate, not a limit: each call of a review still reserves its worst case against `maxReviewTokens`, whatever `fits` says, so a review that does not fit stops at the cap with a `token-cap` gap, and one that fits may stop there too, since the votes are in `worst` alone.
+A blank diff, and one whose every file `exclude` leaves out or is held back as a secret, make no call: every token figure is 0, `parts` and `vote` are empty and `fits` is true, with `findings`, `maxFindings` and `provider` as the profile's research provider states them. The CLI prints the estimate of a path review, derives the review's token cap and deadline from it and never refuses one for its size: [The bounds of a path review](../20-using/15-sources.md#the-bounds-of-a-path-review). A blank diff has `held` 0. It is an estimate, not a limit: each call of a review still reserves its worst case against `maxReviewTokens`, whatever `fits` says, so a review that does not fit stops at the cap with a `token-cap` gap, and one that fits may stop there too, since the votes are in `worst` alone.
 
 ## `readSource`
 
