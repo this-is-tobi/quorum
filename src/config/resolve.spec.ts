@@ -531,7 +531,7 @@ describe('resolveConfig', () => {
         local: { preset: 'ollama', model: 'q', contextTokens: 131072 },
       },
     }, { QUORUM_PROFILES: 'nope' })).toEqual([
-      { path: 'QUORUM_PROFILES', message: 'unknown profile "nope": the profiles are security' },
+      { path: 'QUORUM_PROFILES', message: 'unknown profile "nope": the profiles are security, code-review, best-practices and performance' },
     ])
   })
 

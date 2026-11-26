@@ -109,6 +109,9 @@ export type {
   VoteFailureKind,
 } from './core/types.ts'
 export { GitError } from './git/run.ts'
+export { bestPracticesProfile } from './profiles/best-practices.ts'
+export { codeReviewProfile } from './profiles/code-review.ts'
+export { performanceProfile } from './profiles/performance.ts'
 export { securityProfile } from './profiles/security.ts'
 export { anthropic } from './providers/anthropic.ts'
 export type { AnthropicOptions } from './providers/anthropic.ts'

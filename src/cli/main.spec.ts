@@ -425,6 +425,34 @@ describe('runCli', () => {
     expect(result.meta.profiles.security).toMatchObject({ failOn: 'none', gating: false })
   })
 
+  it('refuses a config profile named after a built-in that brings its own research template and lenses, with --print-config too, before any call', async () => {
+    const named = write('named-built-in.yaml', [
+      'profiles:',
+      '  performance:',
+      '    failOn: high',
+      '    prompts: {research: "Find slow code in this diff.", vote: "Judge from {{lens.id}}: {{lens.question}}"}',
+      '    lenses:',
+      '      - {id: grounded, question: "Is it backed by a stated convention?"}',
+      '',
+    ].join('\n'))
+    const fetchMock = stubChat()
+    for (const argv of [
+      [],
+      ['--print-config'],
+    ]) {
+      const { io, stdout, stderr } = harness({
+        argv,
+        cwd: dir,
+        env: { ...MODEL, QUORUM_CONFIG: named },
+        stdin: DIFF,
+      })
+      expect(await runCli(io)).toBe(EXIT.usage)
+      expect(stdout()).toBe('')
+      expect(stderr()).toBe('Error: profiles.performance: is named after the built-in performance profile and brings its own research template and lenses: set extends: performance to start from the built-in, or rename the profile to keep it your own\n')
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('exits 1 for a kept medium finding with --fail-on medium, and 0 for a kept high one with --fail-on security=none', async () => {
     stubChat(JSON.stringify({
       findings: [FINDING],
@@ -1263,6 +1291,61 @@ describe('a profile\'s repository documents', () => {
   })
 })
 
+describe('a built-in profile selected alone', () => {
+  const BASE = 'a'.repeat(40)
+  const HEAD = 'b'.repeat(40)
+  const MERGE = 'c'.repeat(40)
+
+  it('reviews a range with --profile code-review alone as advisory: its do-not-report line above the block, a kept finding, exit 0', async () => {
+    const fetchMock = stubChat(JSON.stringify({
+      findings: [
+        { ...FINDING, category: 'bug', summary: 'runs a command built from input' },
+      ],
+    }), vote(true), vote(true), vote(true))
+    const fake = fakeGit(({ command }) => {
+      if (command[0] === 'config') return { code: 1 }
+      if (command[0] === 'rev-parse' && command[1] === '--verify') {
+        return {
+          stdout: command[4] === 'base^{commit}'
+            ? `${BASE}\n`
+            : `${HEAD}\n`,
+        }
+      }
+      if (command[0] === 'merge-base') return { stdout: `${MERGE}\n` }
+      if (command[1] === 'diff') return { stdout: DIFF }
+      if (command[0] === 'ls-files') return { stdout: '' }
+      return undefined
+    })
+    const { io, stdout, stderr } = harness({
+      argv: [
+        '--range',
+        'base...head',
+        '--profile',
+        'code-review',
+        '--progress',
+        'plain',
+        '--format',
+        'text',
+      ],
+      env: MODEL,
+      git: { executable: '/usr/bin/git', spawn: fake.spawn },
+      platform: 'linux',
+    })
+    // The profile is advisory: its kept finding does not fail the review.
+    expect(await runCli(io)).toBe(EXIT.ok)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(stderr().split('\n')).toContain('context: code-review do-not-report text of the profile, 441 bytes')
+    expect(stderr()).toContain('context: code-review: do-not-report text 441 bytes')
+    expect(stdout()).toContain('code-review (fail-on none): 1 kept')
+    // The do-not-report list reaches the finder alone; each vote carries its lens's question and nothing of the list.
+    const research = sent(fetchMock, 0).body.messages as Array<{ role: string, content: string }>
+    expect(research[0].content).toContain('This review does not report:\n- style, formatting, naming and comments\n')
+    for (const call of [1, 2, 3]) {
+      expect(JSON.stringify(sent(fetchMock, call).body)).not.toContain('This review does not report:')
+    }
+  })
+})
+
 describe('--state', () => {
   /** A directory of its own for the state a test keeps, which no other test reads. */
   let state = ''
@@ -1842,6 +1925,10 @@ describe('flags', () => {
     [
       ['--profile', 'secrity'],
       'Error: --profile: unknown profile "secrity" (did you mean "security"?)\n',
+    ],
+    [
+      ['--profile', 'code-reviw'],
+      'Error: --profile: unknown profile "code-reviw" (did you mean "code-review"?)\n',
     ],
     [
       ['-p', 'Security'],

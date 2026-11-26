@@ -16,6 +16,36 @@ const lens = { id: 'reachability', question: 'Is this sink actually reachable fr
 
 The security profile has three lenses, reachability, impact and defenses, each an angle from which the finding may not hold. Three is not a round number waiting for more: self-consistency research shows most of the gain of repeated sampling arriving by roughly five to ten samples on a capable model, while each vote costs one more call per finding and running them in parallel has a real latency cost, so three differently angled votes are close to the cost-effective floor. Three is also the fewest lenses with which the default policy has a level below unanimity: 2 of 3.
 
+### The built-in profiles' lenses
+
+The other three built-in profiles ([The built-in profiles](./40-profiles.md#the-built-in-profiles)) have three lenses each, nine in all, under the same policy as the security profile's and the same vote template: a refutation angle, `keep=false` unless genuinely convinced. A lens's question is the only text of the profile a voter reads, with the rule its finding cites.
+
+`code-review`:
+
+| Lens | Question |
+| --- | --- |
+| `real` | Does the quoted code, as written, misbehave: is there an input or a sequence of events, shown in the diff or plainly possible, that makes it fail, rather than code that only looks unusual? |
+| `introduced` | Is the defect in what this change adds or alters, rather than in code it leaves as it was? |
+| `consequential` | Would a maintainer fix it before merging: does it crash, lose or corrupt data, return a wrong result or break a caller, rather than being a matter of style or design? |
+
+`best-practices`:
+
+| Lens | Question |
+| --- | --- |
+| `asked` | Does the cited rule's text really ask for what the finding says is missing, for this kind of code? Keep=false when the finding stretches the rule or the rule does not fit this code. |
+| `absent` | Is the required piece really missing? A handler, check, wrapper, cleanup or test that the diff or the other blocks show elsewhere refutes the claim, and so does a line the test-coverage block shows as covered. |
+| `introduced` | Is the gap in code this change adds or alters, rather than in code it leaves as it was? |
+
+`performance`:
+
+| Lens | Question |
+| --- | --- |
+| `visible` | Do the changed lines show both halves: the loop, handler or growing structure, and the costly operation inside it? Keep=false when either half is inferred rather than shown. |
+| `hot` | Does this run often or on input that can grow: per request, per item or per message, on data a user or the outside world controls? Keep=false for code that runs once or on small fixed input. |
+| `unmitigated` | Is the cost left in place: does no batching, cache, index, limit, pagination or early exit, in the diff or the other blocks, already bound it? |
+
+Every lens's vote receives the one rule its finding cites, in the `rule` block ([The citation](./60-prompts.md#the-citation)), and the `asked` lens judges by it. `absent` speaks of a test-coverage block that quorum does not send yet: a review that reads a coverage report comes with phase 6c. The clause ships now so the lens's text, and with it every vote's digest, stays as it is when the block arrives, and a bench of `best-practices` before and after compares. Until then a voter with no such block reads a clause about a block it does not have, and judges from the diff and the other blocks it does receive.
+
 ## Policy rules
 
 A policy gives one rule for each level, `high`, `medium` and `low`, and each rule resolves to the number of kept votes the level needs, its threshold, once the lens count `n` is known:

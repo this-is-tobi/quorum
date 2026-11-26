@@ -1,6 +1,6 @@
 # Quorum :ballot_box:
 
-**Quorum** reviews a diff with several model calls instead of one. A model, the **finder**, reads the diff and proposes candidate findings. Each finding then goes to a **panel** of voters blind to each other, one per **lens**, each asking its own question about it. Whether a finding is kept, and at what confidence, is computed in code from the split of their votes, never reported by a model. What a review looks for is a **profile**: `security` by default, or one you write.
+**Quorum** reviews a diff with several model calls instead of one. A model, the **finder**, reads the diff and proposes candidate findings. Each finding then goes to a **panel** of voters blind to each other, one per **lens**, each asking its own question about it. Whether a finding is kept, and at what confidence, is computed in code from the split of their votes, never reported by a model. What a review looks for is a **profile**: `security` by default, the advisory `code-review`, `best-practices` and `performance`, or one you write.
 
 Quorum assists a reviewer; it does not replace human review of untrusted changes. The [Threat model](./30-security/10-threat-model.md) says why, and what it does protect.
 
@@ -27,7 +27,7 @@ Nothing needs reading in order. Pick what you came to do: each track lists its p
 
 ### B. Use it from code, or review something else
 
-1. [Profiles](./20-using/40-profiles.md) — the security profile, writing your own, running several in one review, gating and guidelines.
+1. [Profiles](./20-using/40-profiles.md) — the security, code-review, best-practices and performance profiles, writing your own, several in one review, gating and guidelines.
 2. [Lenses and policy](./20-using/50-lenses-and-policy.md) — the panel's questions, the rules that turn kept votes into a confidence, failed votes, and what a confidence level means.
 3. [Prompts](./20-using/60-prompts.md) — the layout of every request, the templates and their variables, the notices, and what is not configurable.
 4. [Library API](./95-reference/30-library-api.md) — `createQuorum`, its ports, the events, abort, the errors and every export.

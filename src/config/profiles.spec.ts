@@ -4,6 +4,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import { documentSha256 } from '../core/documents.ts'
 import { defaultPolicy } from '../core/policy.ts'
 import type { Profile } from '../core/types.ts'
+import { BUILT_IN, BUILT_IN_IDS } from '../profiles/index.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { parseFailOn, resolveProfiles } from './profiles.ts'
 import type { FailOnOverride } from './profiles.ts'
@@ -164,6 +165,86 @@ describe('resolveProfiles', () => {
     ])
   })
 
+  it.each(BUILT_IN_IDS.filter(id => id !== securityProfile.id))('refuses a profile named after the built-in %s that brings its own research template and lenses', (id) => {
+    const message = `is named after the built-in ${id} profile and brings its own research template and lenses: set extends: ${id} to start from the built-in, or rename the profile to keep it your own`
+    const prompts = { research: 'Find defects in this diff.', vote: 'Judge from {{lens.id}}: {{lens.question}}' }
+    const lenses = [
+      { id: 'breaks', question: 'Does it break a caller?' },
+    ]
+    const rows: Array<[string, NonNullable<ConfigInput['profiles']>[string]]> = [
+      [
+        'with no failOn and the template alone',
+        {
+          prompts: { research: prompts.research },
+          lenses,
+        },
+      ],
+      [
+        'with a failOn of high and both templates',
+        { failOn: 'high', prompts, lenses },
+      ],
+    ]
+    for (const [name, entry] of rows) {
+      const { profiles, issues } = resolve({ [id]: entry })
+      expect(issues, name).toEqual([
+        { path: `profiles.${id}`, message },
+      ])
+      expect(profiles, name).toEqual([])
+    }
+  })
+
+  it('keeps a profile named after a built-in that brings only its template, or only its lenses, or extends it, and a security entry with both', () => {
+    const prompts = { research: 'Find defects in this diff.' }
+    const lenses = [
+      { id: 'breaks', question: 'Does it break a caller?' },
+    ]
+    const rows: Array<[string, ConfigInput['profiles']]> = [
+      [
+        'its own research template alone',
+        {
+          'code-review': { prompts },
+        },
+      ],
+      [
+        'its own lenses alone',
+        {
+          'best-practices': { lenses },
+        },
+      ],
+      [
+        'its own template and lenses with extends of its own id',
+        {
+          performance: { extends: 'performance', prompts, lenses },
+        },
+      ],
+      [
+        'its own template and lenses with extends of another profile',
+        {
+          'code-review': { extends: 'security', prompts, lenses },
+        },
+      ],
+      [
+        'the security profile, which 0.14.0 already shipped',
+        {
+          security: { prompts, lenses },
+        },
+      ],
+      [
+        'an entry that brings neither',
+        { 'code-review': {} },
+      ],
+      [
+        'a profile of its own',
+        { team: TEAM },
+      ],
+    ]
+    for (const [name, profiles] of rows) {
+      const { issues, warnings } = resolve(profiles)
+      expect(issues, name).toEqual([])
+      expect(warnings, name).toEqual([])
+    }
+  })
+
   it('requires prompts and lenses of a profile that extends no built-in profile', () => {
     expect(resolve({
       team: { failOn: 'none' },
@@ -232,7 +313,58 @@ describe('resolveProfiles', () => {
       { path: 'QUORUM_PROFILES', message: 'unknown profile "tema" (did you mean "team"?)' },
     ])
     expect(resolve({ team: TEAM }, ['style']).issues).toEqual([
-      { path: 'QUORUM_PROFILES', message: 'unknown profile "style": the profiles are team and security' },
+      { path: 'QUORUM_PROFILES', message: 'unknown profile "style": the profiles are team, security, code-review, best-practices and performance' },
+    ])
+  })
+
+  it.each([...BUILT_IN_IDS])('runs the built-in %s when selected with no entry, as the registry holds it', (id) => {
+    const registry = BUILT_IN.get(id)!
+    const { profiles, issues } = resolveProfiles({
+      profiles: undefined,
+      selection: {
+        ids: [id],
+        path: '--profile',
+      },
+      roles,
+      providers,
+    })
+    expect(issues).toEqual([])
+    expect(profiles).toHaveLength(1)
+    const [{ profile }] = profiles
+    expect(profile.failOn).toBe(registry.failOn ?? 'high')
+    for (const field of [
+      'maxFindings',
+      'changedLinesOnly',
+      'doNotReport',
+      'rules',
+      'requireRule',
+    ] as const) {
+      expect(profile[field]).toEqual(registry[field])
+    }
+  })
+
+  it('names the four built-in profiles in an unknown profile\'s message', () => {
+    expect(resolveProfiles({
+      profiles: undefined,
+      selection: {
+        ids: ['code-reviw'],
+        path: '--profile',
+      },
+      roles,
+      providers,
+    }).issues).toEqual([
+      { path: '--profile', message: 'unknown profile "code-reviw" (did you mean "code-review"?)' },
+    ])
+    expect(resolveProfiles({
+      profiles: undefined,
+      selection: {
+        ids: ['style'],
+        path: '--profile',
+      },
+      roles,
+      providers,
+    }).issues).toEqual([
+      { path: '--profile', message: 'unknown profile "style": the profiles are security, code-review, best-practices and performance' },
     ])
   })
 

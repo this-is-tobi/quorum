@@ -161,7 +161,7 @@ profiles:
     - file: ./guidelines/skip.md
 ```
 
-`true` is the default. No built-in profile carries a do-not-report text yet, so the field changes nothing for the security profile today.
+`true` is the default. The `code-review`, `best-practices` and `performance` profiles each carry one ([The built-in profiles](./40-profiles.md#the-built-in-profiles)); the security profile carries none, so the field changes nothing for it.
 
 ## Review rules
 
@@ -214,7 +214,7 @@ A rules file is a list of rules, read as a config file is: YAML 1.2 or JSON, no 
 
 ### `builtInRules` and `requireRule`
 
-- **`builtInRules: false`** drops the rules of the built-in profile this one starts from. By default they come first, counted in the same caps, and an id of the config that repeats one of theirs is refused. A profile with no built-in profile has none to drop. No built-in profile lists a rule yet, so the field changes nothing for the security profile today.
+- **`builtInRules: false`** drops the rules of the built-in profile this one starts from. By default they come first, counted in the same caps, and an id of the config that repeats one of theirs is refused. A profile with no built-in profile has none to drop. `best-practices` lists four rules and `performance` six ([The built-in profiles](./40-profiles.md#the-built-in-profiles)); the security and `code-review` profiles list none, so the field changes nothing for them.
 - **`requireRule: true`** makes the profile report only what a rule asks for: a finding that cites no rule, or whose citation fails its check, is dropped and counted in `invalidRules`. `false` is the default, and the built-in profile's own value holds unless the entry sets one. With no rule sent for a change, such a profile asks its finder nothing: [The citation](./60-prompts.md#the-citation).
 
 ### Which rules a review sends, and the citation
