@@ -1,5 +1,5 @@
 ARG BUN_IMAGE=docker.io/oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18
-ARG RUNTIME_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:532c7a94f9e96ba9db75eb9388f4227751131c7cb0a411d1a8521af4096135de
+ARG RUNTIME_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:29ee70762214fe8190cea04ef1c0a84a8365879e047ce8f911ae5a5ab2355fa2
 
 # Build stage - compiles the binary for the platform it runs on, so the CD builds each architecture
 # on a native runner. Only what the compile reads is copied in, and no lifecycle script runs
