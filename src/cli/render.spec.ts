@@ -5,7 +5,7 @@ import type { Estimate } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import type { ResolvedConfig, ResolvedProvider } from '../config/resolve.ts'
 import { resolvedConfig } from '../testing/bench.ts'
-import { bannerLines, boundWarnings, estimateLines, EXACT_WORDS, findingsCapOf, PATH_FINDINGS_PER_PART, profileProviders, viewFacts } from './render.ts'
+import { bannerLines, boundWarnings, estimateLines, EXACT_WORDS, findingsCapOf, PATH_FINDINGS_PER_PART, PERSON_WORDS, profileProviders, viewFacts } from './render.ts'
 import type { Bounds } from './render.ts'
 
 /** A right-to-left override, which the sanitizer writes as text. */
@@ -39,6 +39,9 @@ describe('estimateLines', () => {
   const bounds: Bounds = { cap: 'config', deadline: 'config', findings: 'maxFindings' }
   const cost = 'estimate: research about 16.6k tokens expected, at most 1.85M with every vote and every part recovered, 50.0k of them reserved at once'
   const limits = 'bounds: the token cap 2.00M (maxReviewTokens); the deadline 30m00s (reviewTimeoutMs); the finding cap 50 (maxFindings)'
+  /** The same two lines when two profiles run: the cost counts them both, and the finding cap holds for each. */
+  const costOfTwo = cost.replace('estimate: ', 'estimate: for the 2 profiles in all, ')
+  const limitsOfTwo = `${limits}, for each of the 2 profiles`
 
   it('writes the estimate\'s lines, a profile\'s prefixed when several run', () => {
     expect(estimateLines(estimate, bounds)).toEqual([
@@ -63,8 +66,8 @@ describe('estimateLines', () => {
     }, bounds)).toEqual([
       '[security] estimate: 2 research part(s), about 16.6k tokens expected for them; then up to 150 vote(s), at most 1.85M tokens in all',
       '[team] estimate: 1 research part(s), about 2.66k tokens expected for them; then up to 100 vote(s), at most 608k tokens in all',
-      cost,
-      limits,
+      costOfTwo,
+      limitsOfTwo,
     ])
     // A profile's id is a caller's text: it is shown inert.
     const [first] = estimateLines({
@@ -107,7 +110,7 @@ describe('estimateLines', () => {
     }, bounds)
     expect(lines[0]).toBe(`[security] ${line}`)
     expect(lines[1]).toBe(`[naming] ${line}${clause('4.40k', '1.50k')}`)
-    expect(lines[2]).toBe(cost)
+    expect(lines[2]).toBe(costOfTwo)
     expect(lines.filter(entry => entry.includes('its documents add'))).toHaveLength(1)
   })
 
@@ -378,6 +381,100 @@ describe('estimateLines', () => {
     expect(boundWarnings(below, { cap: 'config', deadline: 'longest', findings: 'floor' })).toEqual([
       'warning: the token cap of 120k (maxReviewTokens) holds about 1 of the 2 research parts this estimate expects: the review runs to the cap, and what it cannot pay for is a token-cap gap; unset maxReviewTokens to let a path review\'s cap follow its estimate',
     ])
+  })
+
+  describe('when several profiles run', () => {
+    const profile = estimate.profiles.security
+    const profiles: Estimate['profiles'] = {
+      security: profile,
+      'code-review': {
+        ...profile,
+        parts: [30_000],
+        votes: 100,
+        vote: { real: 4000, introduced: 4000 },
+      },
+      'best-practices': {
+        ...profile,
+        parts: [30_000, 20_000, 10_000],
+        votes: 75,
+        vote: { absent: 4000 },
+      },
+    }
+    const three: Estimate = {
+      ...estimate,
+      profiles,
+      expected: 40_000,
+      worst: 5_550_000,
+      inFlight: 50_000,
+      findingsCap: 904,
+      maxReviewTokens: 5_550_000,
+      reviewTimeoutMs: 86_400_000,
+    }
+
+    it('says the whole review\'s estimate counts every profile, and the finding cap holds for each, when several run', () => {
+      const bounds: Bounds = { cap: 'estimate', deadline: 'longest', findings: 'parts' }
+      const whole = (words: Parameters<typeof estimateLines>[2]): string[] => estimateLines(three, bounds, words).slice(3)
+      expect(whole(PERSON_WORDS)).toEqual([
+        'estimate: for the 3 profiles in all, research about 40.0k tokens expected, at most 5.55M with every vote and every part recovered, 50.0k of them reserved at once',
+        'bounds: the token cap 5.55M, this estimate\'s worst case; the deadline 24h00m00s, the longest allowed; the finding cap 904, four per research part, for each of the 3 profiles; the config sets none of them',
+      ])
+      expect(whole(EXACT_WORDS)).toEqual([
+        'estimate: for the 3 profiles in all, research about 40000 tokens expected, at most 5550000 with every vote and every part recovered, 50000 of them reserved at once',
+        'bounds: the token cap 5550000, this estimate\'s worst case; the deadline 86400000 ms, the longest allowed; the finding cap 904, four per research part, for each of the 3 profiles; the config sets none of them',
+      ])
+      // Each profile's own line is as it was, and the count is the entries': two profiles say 2.
+      expect(estimateLines(three, bounds)[1]).toBe('[code-review] estimate: 1 research part(s), about 16.6k tokens expected for them; then up to 100 vote(s), at most 1.85M tokens in all')
+      expect(estimateLines({
+        ...three,
+        profiles: { security: profile, team: profile },
+      }, bounds).slice(2)).toEqual([
+        'estimate: for the 2 profiles in all, research about 40.0k tokens expected, at most 5.55M with every vote and every part recovered, 50.0k of them reserved at once',
+        'bounds: the token cap 5.55M, this estimate\'s worst case; the deadline 24h00m00s, the longest allowed; the finding cap 904, four per research part, for each of the 2 profiles; the config sets none of them',
+      ])
+    })
+
+    it.each([
+      [
+        'findingsCap',
+        'the finding cap 904 (findingsCap), for each of the 3 profiles',
+      ],
+      [
+        'maxFindings',
+        'the finding cap 904 (maxFindings), for each of the 3 profiles',
+      ],
+      [
+        'floor',
+        'the finding cap 904, the default, which holds four per research part, for each of the 3 profiles; the config sets none of them',
+      ],
+    ] as const)('ends the finding cap with the count of profiles, whatever sets it: %s', (findings, words) => {
+      const [bounds] = estimateLines(three, { cap: 'estimate', deadline: 'longest', findings }).slice(4)
+      expect(bounds).toBe(`bounds: the token cap 5.55M, this estimate's worst case; the deadline 24h00m00s, the longest allowed; ${words}`)
+    })
+
+    it('counts every profile\'s parts and votes in a large review\'s warning, across them', () => {
+      const large: Estimate = { ...three, expected: 1_950_001, worst: 9_864_619 }
+      const bounds: Bounds = { cap: 'estimate', deadline: 'longest', findings: 'parts' }
+      // 2 + 1 + 3 research parts, and 150 + 100 + 75 votes, over the 3 profiles.
+      expect(boundWarnings(large, bounds)).toEqual([
+        'warning: a large review: 6 research part(s) and up to 325 vote(s) across the 3 profiles, about 1.95M tokens expected and at most 9.86M: Ctrl-C stops it and keeps what it read',
+      ])
+      expect(boundWarnings(large, bounds, EXACT_WORDS)).toEqual([
+        'warning: a large review: 6 research part(s) and up to 325 vote(s) across the 3 profiles, about 1950001 tokens expected and at most 9864619: Ctrl-C stops it and keeps what it read',
+      ])
+      // One profile says nothing of profiles, and a cap the config sets writes its own warning, which already counts every part.
+      expect(boundWarnings({
+        ...large,
+        profiles: { security: profile },
+      }, bounds)).toEqual([
+        'warning: a large review: 2 research part(s) and up to 150 vote(s), about 1.95M tokens expected and at most 9.86M: Ctrl-C stops it and keeps what it read',
+      ])
+      expect(boundWarnings({
+        ...large,
+        maxReviewTokens: 120_000,
+        fits: false,
+        held: 2,
+      }, { ...bounds, cap: 'config' })[0]).toContain('holds about 2 of the 6 research parts this estimate expects')
+    })
   })
 })
 

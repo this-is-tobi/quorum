@@ -4273,7 +4273,48 @@ describe('the sources', () => {
     expect(cap).toBeGreaterThan(50)
     expect(entries.security.votes).toBe(3 * cap)
     expect(entries.naming.votes).toBe(cap)
-    expect(estimateOf(stderr()).lines.find(line => line.startsWith('bounds: '))).toMatch(new RegExp(`; the finding cap ${cap}, four per research part; the config sets none of them$`))
+    expect(estimateOf(stderr()).lines.find(line => line.startsWith('bounds: '))).toMatch(new RegExp(`; the finding cap ${cap}, four per research part, for each of the 2 profiles; the config sets none of them$`))
+  })
+
+  it('derives a path review\'s token cap from every profile that runs, and says the finding cap holds for each', async () => {
+    /** A path review of the tree under `profiles`, on `--progress` `progress`: the whole review's lines of its estimate, each as written (a profile's own start with its id). */
+    async function estimating(profiles: string, progress: 'plain' | 'json'): Promise<string[]> {
+      const config = write(`every-profile-${progress}.yaml`, `${TEAM_YAML}profiles:\n${profiles}`)
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => chatReply(JSON.stringify({ findings: [] }))))
+      const { io, stderr } = harness({
+        argv: [
+          '--config',
+          config,
+          '--path',
+          'src',
+          '--progress',
+          progress,
+        ],
+        git: pathGit().seam,
+        platform: 'linux',
+      })
+      expect(await runCli(io)).toBe(EXIT.ok)
+      vi.unstubAllGlobals()
+      return estimateOf(stderr()).lines
+    }
+    const both = '  security: {}\n  code-review: {}\n'
+
+    // For a person, the whole line and the bounds line say they count both profiles, and the finding cap holds for each.
+    const plain = await estimating(both, 'plain')
+    expect(plain).toHaveLength(2)
+    expect(plain[0]).toMatch(/^estimate: for the 2 profiles in all, research about \S+ tokens expected, at most \S+ with every vote and every part recovered, \S+ of them reserved at once$/)
+    expect(plain[1]).toMatch(/^bounds: the token cap \S+, this estimate's worst case; the deadline 24h00m00s, the longest allowed; the finding cap 50, the default, which holds four per research part, for each of the 2 profiles; the config sets none of them$/)
+
+    // For a program, the cap the bounds line names is the whole line's worst case, and the worst case of both profiles is more than security's alone.
+    const exact = await estimating(both, 'json')
+    const whole = /^estimate: for the 2 profiles in all, research about \d+ tokens expected, at most (\d+) with every vote and every part recovered, \d+ of them reserved at once$/.exec(exact[0])
+    expect(whole).not.toBeNull()
+    expect(exact[1]).toMatch(new RegExp(`^bounds: the token cap ${whole?.[1]}, this estimate's worst case; the deadline 86400000 ms, the longest allowed; the finding cap 50, the default, which holds four per research part, for each of the 2 profiles; the config sets none of them$`))
+    const alone = await estimating('  security: {}\n', 'json')
+    expect(alone).toHaveLength(3)
+    expect(alone[1]).toMatch(/^estimate: research about /)
+    expect(alone[2]).not.toContain('for each of')
+    expect(Number(whole?.[1])).toBeGreaterThan(Number(/at most (\d+) with every vote/.exec(alone[1])?.[1]))
   })
 
   it('reads a config\'s findingsCap as a path review\'s finding cap, and its bounds line says so', async () => {

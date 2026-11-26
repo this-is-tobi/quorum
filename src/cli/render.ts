@@ -59,7 +59,9 @@ export const EXACT_WORDS: NumberWords = {
  * spend, the worst case with every vote and every part recovered, and what its calls in flight reserve) and its
  * bounds (the review's token cap, deadline and finding cap, where each came from, and that the config sets none of
  * them when it sets none). The expected figure is the research's alone, as the votes are in the worst case only, and
- * the worst counts every part recovered. When research alone expects over half of the token cap, one line follows that
+ * the worst counts every part recovered. When several profiles run, the two lines say they count every profile: the cost opens
+ * `for the <n> profiles in all, ` and the finding cap ends `, for each of the <n> profiles`, since each profile's panel reads up
+ * to it; with one profile they say nothing of profiles. When research alone expects over half of the token cap, one line follows that
  * says what cap the review needs (`needed`, always exact, as it is the value to set), and then one for each research
  * provider whose reply asks for fewer findings than its profile's `maxFindings`, since the parts with more split. Each count and
  * duration is written by `words`, scaled for a person unless a program is to parse it. Each line is inert.
@@ -78,13 +80,27 @@ export function estimateLines(estimate: Estimate, bounds: Bounds, words: NumberW
         : ''
       return `${prefix}estimate: ${parts.length} research part(s), about ${words.tokens(expected)} tokens expected for them; then up to ${votes} vote(s), at most ${words.tokens(worst)} tokens in all${added}`
     }),
-    `estimate: research about ${words.tokens(estimate.expected)} tokens expected, at most ${words.tokens(estimate.worst)} with every vote and every part recovered, ${words.tokens(estimate.inFlight)} of them reserved at once`,
-    `bounds: the token cap ${capWords(estimate, bounds, words)}; the deadline ${deadlineWords(estimate, bounds, words)}; the finding cap ${findingsWords(estimate, bounds)}${noneSet
+    `estimate: ${allWords(entries.length)}research about ${words.tokens(estimate.expected)} tokens expected, at most ${words.tokens(estimate.worst)} with every vote and every part recovered, ${words.tokens(estimate.inFlight)} of them reserved at once`,
+    `bounds: the token cap ${capWords(estimate, bounds, words)}; the deadline ${deadlineWords(estimate, bounds, words)}; the finding cap ${findingsWords(estimate, bounds)}${eachWords(entries.length)}${noneSet
       ? '; the config sets none of them'
       : ''}`,
     ...capLine(estimate, words),
     ...findingsLines(estimate),
   ].map(inertLine)
+}
+
+/** What the whole review's cost line opens with when several profiles run, for it counts them all; nothing for one. */
+function allWords(profiles: number): string {
+  return profiles > 1
+    ? `for the ${profiles} profiles in all, `
+    : ''
+}
+
+/** What the finding cap ends with when several profiles run, for it holds for each of them; nothing for one. */
+function eachWords(profiles: number): string {
+  return profiles > 1
+    ? `, for each of the ${profiles} profiles`
+    : ''
 }
 
 function capWords({ maxReviewTokens: cap }: Estimate, { cap: origin }: Bounds, words: NumberWords): string {
@@ -110,7 +126,8 @@ function findingsWords({ findingsCap: cap }: Estimate, { findings: origin }: Bou
 /**
  * The warnings a path review's bounds call for, each inert and its counts written by `words`: for a cap that follows the
  * estimate (the config sets none), a large review when its research's expected spend and what its calls in flight reserve
- * pass the default cap, the review that 0.8.0 held at exit 2, which Ctrl-C stops and keeps what it read; a small review says
+ * pass the default cap, the review that 0.8.0 held at exit 2, which Ctrl-C stops and keeps what it read, its parts and votes
+ * those of every profile, said to be `across the <n> profiles` when several run; a small review says
  * nothing, though recovery's bound puts its worst case past the default too. For a cap the config sets that the estimate does
  * not fit under, the research parts it holds, since the review runs to the cap and the rest is a `token-cap` gap.
  */
@@ -118,9 +135,12 @@ export function boundWarnings(estimate: Estimate, bounds: Bounds, words: NumberW
   const profiles = Object.values(estimate.profiles)
   const parts = profiles.reduce((total, profile) => total + profile.parts.length, 0)
   const votes = profiles.reduce((total, profile) => total + profile.votes, 0)
+  const across = profiles.length > 1
+    ? ` across the ${profiles.length} profiles`
+    : ''
   if (bounds.cap !== 'config' && estimate.expected + estimate.inFlight > DEFAULT_MAX_REVIEW_TOKENS) {
     return [
-      inertLine(`warning: a large review: ${parts} research part(s) and up to ${votes} vote(s), about ${words.tokens(estimate.expected)} tokens expected and at most ${words.tokens(estimate.worst)}: Ctrl-C stops it and keeps what it read`),
+      inertLine(`warning: a large review: ${parts} research part(s) and up to ${votes} vote(s)${across}, about ${words.tokens(estimate.expected)} tokens expected and at most ${words.tokens(estimate.worst)}: Ctrl-C stops it and keeps what it read`),
     ]
   }
   if (bounds.cap === 'config' && !estimate.fits) {
