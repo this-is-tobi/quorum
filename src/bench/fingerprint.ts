@@ -8,7 +8,9 @@
  * config names (each its cleaned text and the hash of the text as read, and no key when it has none, so a
  * profile with no document keeps the form it had), its review rules (each its id, text and paths, a rules
  * file's with the hash of its text as read) and `requireRule` when it is set, so a profile with no rule keeps
- * the form it had, and its research provider and each lens's provider written
+ * the form it had, its `maxFindings` and `changedLinesOnly` when it holds them (a built-in profile's own included), so a
+ * profile that sets neither keeps the form it had and a `code-review` that asks for another `maxFindings` is another
+ * configuration, and its research provider and each lens's provider written
  * out in place of their names; every field of a provider defined as data but its key, the values of
  * `headers`, `query` and `extraBody` and the whole base URL included, `timeoutMs` and `retries` among them;
  * a provider object as its config key, its model and the `timeoutMs` and `retries` it states, so one that

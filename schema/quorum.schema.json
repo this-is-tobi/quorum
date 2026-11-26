@@ -304,7 +304,10 @@
             "description": "The built-in profile this one starts from",
             "type": "string",
             "enum": [
-              "security"
+              "security",
+              "code-review",
+              "best-practices",
+              "performance"
             ]
           },
           "failOn": {
@@ -541,6 +544,16 @@
           },
           "requireRule": {
             "description": "true makes every finding cite a rule the review sent, and drops one that cites none or whose citation fails its check; false, the default, keeps a finding whose citation fails and drops the citation",
+            "type": "boolean"
+          },
+          "maxFindings": {
+            "description": "The findings each research request of this profile asks for, over the top-level maxFindings; the panel's cap is findingsCap",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "changedLinesOnly": {
+            "description": "true keeps a finding only within two rows of a row the change adds or removes",
             "type": "boolean"
           },
           "lenses": {

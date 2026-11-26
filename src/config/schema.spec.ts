@@ -83,6 +83,11 @@ const FULL: QuorumConfigFile = {
   ],
   profiles: {
     security: {},
+    'review-strict': {
+      extends: 'code-review',
+      maxFindings: 30,
+      changedLinesOnly: false,
+    },
     'security-strict': {
       extends: 'security',
       gating: true,
@@ -114,6 +119,8 @@ const FULL: QuorumConfigFile = {
       ],
       builtInRules: false,
       requireRule: true,
+      maxFindings: 20,
+      changedLinesOnly: true,
       lenses: [
         { id: 'grounded', question: 'Is it backed by a convention?' },
         { id: 'significant', question: 'Would a maintainer block on it?', provider: 'x-api' },
@@ -350,6 +357,32 @@ describe('configFileSchema', () => {
     expect(issuesOf({ findingsCap: '300' })).toEqual([
       at('findingsCap', 'must be a number'),
     ])
+  })
+
+  it.each([
+    'security',
+    'code-review',
+    'best-practices',
+    'performance',
+  ])('accepts extends: %s', (id) => {
+    expect(issuesOf(profile({ extends: id }))).toEqual([])
+  })
+
+  it('refuses an extends that names no built-in profile, and a maxFindings or changedLinesOnly of the wrong shape, at the entry', () => {
+    expect(issuesOf({
+      profiles: {
+        team: { extends: 'style' },
+        'code-review': { maxFindings: 0, changedLinesOnly: 'yes' },
+      },
+    })).toEqual([
+      at('profiles.team.extends', 'must be one of security, code-review, best-practices or performance'),
+      at('profiles.code-review.maxFindings', 'must be at least 1'),
+      at('profiles.code-review.changedLinesOnly', 'must be true or false'),
+    ])
+    expect(issuesOf(profile({ maxFindings: 1.5 }))).toEqual([
+      at('profiles.team.maxFindings', 'must be an integer'),
+    ])
+    expect(issuesOf(profile({ maxFindings: 20, changedLinesOnly: true }))).toEqual([])
   })
 
   it('takes a partTokens from 1024', () => {
@@ -608,9 +641,9 @@ describe('configFileSchema', () => {
     ],
     [
       'extends',
-      profile({ extends: 'code-review' }),
+      profile({ extends: 'team-base' }),
       [
-        at('profiles.team.extends', 'must be security'),
+        at('profiles.team.extends', 'must be one of security, code-review, best-practices or performance'),
       ],
     ],
     [

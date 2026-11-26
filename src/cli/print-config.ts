@@ -11,6 +11,7 @@ import { thresholdsFor } from '../core/profile.ts'
 import { inertLine } from '../core/sanitize.ts'
 import { DEFAULT_MAX_FINDINGS } from '../core/stages/research.ts'
 import type { DocumentKind } from '../core/types.ts'
+import { UNMEASURED } from '../profiles/index.ts'
 
 /** A `{ repository }` entry as printed: its path, and `optional: true` when it is. */
 function repositoryView(entry: RepositoryEntry): Record<string, unknown> {
@@ -90,7 +91,7 @@ function rulesView({ profile, repository }: ResolvedProfile): unknown[] | undefi
     : listed
 }
 
-/** A profile that runs: the level its kept findings fail the review at (`none` for an advisory profile), its providers, the votes its policy needs, each prompt as its hash, each document as its hash or, for a `{ repository }` entry, its path, and its rules by their ids, with `builtInRules: false` and `requireRule: true` when it sets them. */
+/** A profile that runs: the level its kept findings fail the review at (`none` for an advisory profile), its providers, the votes its policy needs, each prompt as its hash, each document as its hash or, for a `{ repository }` entry, its path, and its rules by their ids, with `builtInRules: false` and `requireRule: true` when it sets them, then the `maxFindings` it holds, `changedLinesOnly: true` when it holds it, and `unmeasured: true` when the built-in profile it starts from is one no labelled set measures. */
 function profileView(resolved: ResolvedProfile): Record<string, unknown> {
   const { profile, research, voters } = resolved
   return {
@@ -107,6 +108,13 @@ function profileView(resolved: ResolvedProfile): Record<string, unknown> {
     rules: rulesView(resolved),
     builtInRules: resolved.builtInRules,
     requireRule: profile.requireRule === true
+      ? true
+      : undefined,
+    maxFindings: profile.maxFindings,
+    changedLinesOnly: profile.changedLinesOnly === true
+      ? true
+      : undefined,
+    unmeasured: resolved.base !== undefined && UNMEASURED.has(resolved.base)
       ? true
       : undefined,
   }
@@ -173,7 +181,8 @@ function budgetWarnings(config: ResolvedConfig, budgets: Readonly<Record<string,
  * SHA-256, as does each of a profile's guidelines and do-not-report documents (the hash of its text as read, and a built-in
  * profile's own text as `{ builtIn: <hash> }`), never a text; a `{ repository }` entry prints as its path, with `optional: true` when it is.
  * A profile's rules print as their ids, a rules file as the hash of its text and the ids it holds, never a rule's text, then
- * `builtInRules: false` and `requireRule: true` when the profile sets them. A provider's `timeoutMs`, `stallTimeoutMs` and `retries` print when it sets them, a provider object's when it states
+ * `builtInRules: false` and `requireRule: true` when the profile sets them, then its `maxFindings` when it holds one, `changedLinesOnly: true`
+ * when it holds it and `unmeasured: true` when it is, or extends, a built-in profile no labelled set measures. A provider's `timeoutMs`, `stallTimeoutMs` and `retries` print when it sets them, a provider object's when it states
  * them. A `claude-code` provider prints its protocol, command, model, context size, key (redacted), auth mode and args, and no origin:
  * the command and the args are the user's own config. The view is an allowlist, so a field added to the
  * config prints nothing until it is added here on purpose.

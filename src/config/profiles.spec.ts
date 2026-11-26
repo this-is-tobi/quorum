@@ -52,6 +52,7 @@ describe('resolveProfiles', () => {
           research: 'main',
           voters: all('main'),
           repository: [],
+          base: 'security',
         },
       ],
       issues: [],
@@ -99,11 +100,109 @@ describe('resolveProfiles', () => {
           research: 'main',
           voters: { reach: 'claude' },
           repository: [],
+          base: 'security',
         },
       ],
       issues: [],
       warnings: [],
     })
+  })
+
+  it('starts a profile that extends best-practices from its settings, and lets the entry override each', () => {
+    const base = BUILT_IN.get('best-practices')!
+    const [kept] = resolve({
+      team: { extends: 'best-practices' },
+    }).profiles
+    expect(kept.base).toBe('best-practices')
+    expect(kept.profile).toMatchObject({
+      maxFindings: 20,
+      changedLinesOnly: true,
+      requireRule: true,
+      failOn: 'none',
+      doNotReport: base.doNotReport,
+      rules: base.rules,
+    })
+    const { profiles, issues } = resolve({
+      team: {
+        extends: 'best-practices',
+        maxFindings: 40,
+        changedLinesOnly: false,
+        requireRule: false,
+        builtInRules: false,
+      },
+    })
+    expect(issues).toEqual([])
+    const [overridden] = profiles
+    expect(overridden.base).toBe('best-practices')
+    expect(overridden.profile.maxFindings).toBe(40)
+    expect(overridden.profile.doNotReport).toBe(base.doNotReport)
+    expect(overridden.profile.failOn).toBe('none')
+    for (const key of [
+      'changedLinesOnly',
+      'requireRule',
+      'rules',
+      'documents',
+    ]) {
+      expect(Object.hasOwn(overridden.profile, key), key).toBe(false)
+    }
+    // An entry turns changedLinesOnly on over a base that does not set it, and sets a smaller maxFindings.
+    const [narrowed] = resolve({
+      team: { extends: 'security', maxFindings: 5, changedLinesOnly: true },
+    }).profiles
+    expect(narrowed.profile).toMatchObject({ maxFindings: 5, changedLinesOnly: true })
+  })
+
+  it('sets the two fields on a profile of its own, and on an entry named after a built-in profile', () => {
+    const [team, review] = resolve({
+      team: { ...TEAM, maxFindings: 7, changedLinesOnly: true },
+      'code-review': { changedLinesOnly: false, maxFindings: 3 },
+    }).profiles
+    expect(team.profile).toMatchObject({ maxFindings: 7, changedLinesOnly: true })
+    expect(review.profile.maxFindings).toBe(3)
+    expect(Object.hasOwn(review.profile, 'changedLinesOnly')).toBe(false)
+    const [unset] = resolve({
+      team: { ...TEAM, changedLinesOnly: false },
+    }).profiles
+    expect(Object.hasOwn(unset.profile, 'changedLinesOnly')).toBe(false)
+  })
+
+  it('records the built-in profile each profile starts from, and none for a profile of its own', () => {
+    const [security] = resolve(undefined).profiles
+    expect(security.base).toBe('security')
+    const [review, strict, ofItsOwn, best] = resolve({
+      'code-review': {},
+      strict: { extends: 'performance' },
+      team: TEAM,
+      'best-practices': { guidelines: [] },
+    }).profiles
+    expect(review.base).toBe('code-review')
+    expect(strict.base).toBe('performance')
+    expect(Object.hasOwn(ofItsOwn, 'base')).toBe(false)
+    expect(best.base).toBe('best-practices')
+    // The profile a command-line override re-levels keeps its base.
+    const [relevelled] = resolve({ 'code-review': {} }, undefined, {
+      profiles: new Map([
+        ['code-review', 'high'],
+      ]),
+      path: '--fail-on',
+    }).profiles
+    expect(relevelled.profile.failOn).toBe('high')
+    expect(relevelled.base).toBe('code-review')
+  })
+
+  it('keeps a security profile with no new field free of the new keys', () => {
+    const [bare, entry, extended] = resolve({
+      security: {},
+      'security-strict': {
+        extends: 'security',
+        policy: { medium: 'unanimous' },
+      },
+      team: { ...TEAM, extends: 'security' },
+    }).profiles
+    for (const { profile } of [bare, entry, extended]) {
+      expect(Object.hasOwn(profile, 'maxFindings')).toBe(false)
+      expect(Object.hasOwn(profile, 'changedLinesOnly')).toBe(false)
+    }
   })
 
   it('builds a profile of its own from its prompts and lenses, with the default policy', () => {
@@ -453,6 +552,11 @@ describe('resolveProfiles', () => {
     })
     expect(resolved.profiles[0].profile.failOn).toBe('high')
     expect(resolved.warnings).toEqual([])
+    const fields = resolve({
+      'code-review': Object.create({ maxFindings: 3, changedLinesOnly: false }) as NonNullable<ConfigInput['profiles']>[string],
+    }).profiles[0].profile
+    expect(fields.maxFindings).toBe(20)
+    expect(fields.changedLinesOnly).toBe(true)
   })
 
   it('prints a profile id that is not a safe name as *, in every path', () => {
