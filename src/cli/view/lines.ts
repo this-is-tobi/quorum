@@ -10,7 +10,7 @@ import type { PartOutcome } from '../../core/parts.ts'
 import { MAX_TIMEOUT_MS } from '../../core/ports.ts'
 import { inertLine } from '../../core/sanitize.ts'
 import type { Adaptation, CallFailure, LeftOutFile, QuorumEvent, UnusableReply } from '../../core/types.ts'
-import { documentLine, durationText, flagWhere, leftOutEntry, ruleCountWords, tokenWords } from '../../report/lines.ts'
+import { documentLine, durationText, flagWhere, leftOutEntry, reportWords, ruleCountWords, tokenWords } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords, researchRuns, timeLeft } from './eta.ts'
 import type { ViewState } from './model.ts'
@@ -418,7 +418,8 @@ function estimateNoteLines(event: QuorumEvent, state: ViewState): Line[] {
  * The lines of `event`, read against the state that folded it: `renderEvent`'s line with its glyph, a research
  * retry's line, with its position from the call the state holds, the stopping line of the deadline or of the
  * interrupt, which has no glyph, and a line for each document of a `context` event, in its order, then one for each profile
- * that lists or requires a rule, the same under the public view and with no prefix, since each names its profile itself.
+ * that lists or requires a rule, then one for each scanner report (`context: report <words>`, its place from 1), the same under the public view and
+ * with no prefix, since each names its profile itself.
  * The `part` event that made the review's first time estimate is followed by its notes (`estimateNotes`), once, with no glyph and no prefix.
  * Each text is inert, and starts with `[<profile>] ` when several profiles run, but for those of a `context` event and the notes.
  */
@@ -437,6 +438,7 @@ export function logLines(event: QuorumEvent, state: ViewState, view: ReportView)
     return [
       ...event.context.documents.map(documentLine),
       ...ruleLines(event.rules),
+      ...event.context.reports.map((record, index) => `context: report ${reportWords(record, index + 1)}`),
     ].map(text => ({
       text: inertLine(text),
     }))

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { gapReason } from '../core/result-schema.ts'
 import { inertLine } from '../core/sanitize.ts'
-import type { ContextDocument, LensVote, ProfileMeta, ProviderCalls, PublicMeta, QuorumMeta, RoleCalls, Verdict, VoteFailure } from '../core/types.ts'
-import { cast, contextDocument, reportMeta, reportResult, SQL } from '../testing/report.ts'
-import { contextSummary, documentLine, documentLineParts, durationText, GAP_WORDS, modelLines, roleLine, roleTokens, ruleCountWords, ruleWords, tokenWords, voteFailureWords, votesWords } from './lines.ts'
+import type { ContextDocument, ContextReport, FoundBy, LensVote, ProfileMeta, ProviderCalls, PublicMeta, QuorumMeta, RoleCalls, Verdict, VoteFailure } from '../core/types.ts'
+import { cast, contextDocument, contextReport, reportMeta, reportResult, SQL, UPLOAD } from '../testing/report.ts'
+import { contextSummary, dismissedScanner, documentLine, documentLineParts, durationText, GAP_WORDS, modelLines, reportLineParts, reportWords, roleLine, roleTokens, ruleCountWords, ruleWords, scannerWords, tokenWords, voteFailureWords, votesWords } from './lines.ts'
 import { publicView } from './view.ts'
 
 /** A failed vote of the lens `angle`, which failed with `failure`. */
@@ -1225,5 +1225,312 @@ describe('contextSummary', () => {
       ],
       reports: [],
     }, {})).toEqual(['context: constructor: guidelines 1830 bytes'])
+  })
+})
+
+/** The counts of a report's issues, all 0 but `changes`, with `listed` the sum of the nine outcomes, as the core records them. */
+function issuesOf(changes: Partial<NonNullable<ContextReport['issues']>>): NonNullable<ContextReport['issues']> {
+  const counts = {
+    used: 0,
+    fileLevel: 0,
+    held: 0,
+    unmapped: 0,
+    notInChange: 0,
+    leftOut: 0,
+    unchanged: 0,
+    capped: 0,
+    skipped: 0,
+    unreadable: 0,
+    ...changes,
+  }
+  const { fileLevel: _part, ...outcomes } = counts
+  return {
+    ...counts,
+    listed: Object.values(outcomes).reduce((sum, count) => sum + count, 0),
+  }
+}
+
+/** What a scanner found, as a verdict records it. */
+function foundBy(changes: Partial<Extract<FoundBy, { kind: 'scanner' }>> = {}): FoundBy {
+  return {
+    kind: 'scanner',
+    report: 0,
+    scanner: 'Semgrep OSS',
+    ruleId: 'javascript.lang.security.audit.sqli.node-postgres-sqli',
+    level: 'error',
+    ...changes,
+  }
+}
+
+describe('reportWords', () => {
+  const unread = (changes: Partial<ContextReport>): ContextReport => contextReport({
+    status: 'unreadable',
+    problems: ['missing'],
+    issues: issuesOf({}),
+    ...changes,
+  })
+
+  it.each<[string, ContextReport, number]>([
+    [
+      '1 sarif "Trivy" for security: 1 of 14 issues used (1 file-level); 13 not in the change',
+      contextReport({
+        scanner: 'Trivy',
+        issues: issuesOf({ used: 1, fileLevel: 1, notInChange: 13 }),
+      }),
+      1,
+    ],
+    [
+      '2 sarif "Semgrep OSS" for security: 1 of 3 issues used; 2 unmapped; read in part',
+      contextReport({
+        scanner: 'Semgrep OSS',
+        status: 'partial',
+        problems: ['unmapped-paths'],
+        issues: issuesOf({ used: 1, unmapped: 2 }),
+      }),
+      2,
+    ],
+    [
+      '3 sarif for security: could not be read',
+      unread({ scanner: undefined }),
+      3,
+    ],
+    [
+      '4 sonarqube "SonarQube" for naming: 2 of 4 issues used; 1 skipped by the scanner or a person; 1 held as credentials; read in part',
+      contextReport({
+        format: 'sonarqube',
+        profile: 'naming',
+        scanner: 'SonarQube',
+        status: 'partial',
+        problems: ['held-text'],
+        issues: issuesOf({ used: 2, skipped: 1, held: 1 }),
+      }),
+      4,
+    ],
+    [
+      '5 sonarqube "SonarQube" for security: could not be read',
+      unread({
+        format: 'sonarqube',
+        scanner: 'SonarQube',
+        problems: ['not-the-format'],
+      }),
+      5,
+    ],
+    [
+      '6 sarif "Trivy": 0 of 0 issues used',
+      contextReport({
+        profile: undefined,
+        scanner: 'Trivy',
+        issues: issuesOf({}),
+      }),
+      6,
+    ],
+    [
+      '7 sarif: could not be read',
+      unread({ profile: undefined, scanner: undefined }),
+      7,
+    ],
+    [
+      '8 sarif "X" for security: 2 of 54 issues used (1 file-level); 3 not in the change; 4 on unchanged lines; 5 on files left out; 6 skipped by the scanner or a person; 7 unmapped; 8 held as credentials; 9 past the cap; 10 unreadable; read in part',
+      contextReport({
+        scanner: 'X',
+        status: 'partial',
+        problems: ['unmapped-paths'],
+        issues: issuesOf({
+          used: 2,
+          fileLevel: 1,
+          notInChange: 3,
+          unchanged: 4,
+          leftOut: 5,
+          skipped: 6,
+          unmapped: 7,
+          held: 8,
+          capped: 9,
+          unreadable: 10,
+        }),
+      }),
+      8,
+    ],
+    [
+      '9 sarif "Trivy" for security: 0 of 0 issues used',
+      contextReport({ scanner: 'Trivy', issues: undefined }),
+      9,
+    ],
+  ])('writes a report\'s record as %j', (words, record, place) => {
+    expect(reportWords(record, place)).toBe(words)
+  })
+
+  it('writes a scanner\'s name as a JSON string, so no quote or line break in it ends the name or the line', () => {
+    expect(reportWords(contextReport({ scanner: 'a" for naming: 9 of 9 issues used\nb' }), 1)).toBe('1 sarif "a\\" for naming: 9 of 9 issues used\\nb" for security: 2 of 4 issues used (1 file-level); 1 not in the change; 1 on unchanged lines')
+    expect(reportWords(unread({ scanner: 'a"b' }), 1)).toBe('1 sarif "a\\"b" for security: could not be read')
+  })
+
+  it('writes no word for an outcome of 0, and the counts a record holds in the order the words list them', () => {
+    expect(reportWords(contextReport({
+      issues: issuesOf({ used: 4 }),
+    }), 1)).toBe('1 sarif "Semgrep" for security: 4 of 4 issues used')
+    expect(reportWords(contextReport({
+      issues: issuesOf({ used: 1, capped: 1, notInChange: 1 }),
+    }), 1)).toBe('1 sarif "Semgrep" for security: 1 of 3 issues used; 1 not in the change; 1 past the cap')
+  })
+
+  it('writes an unreadable report with no counts, whatever its record holds of them', () => {
+    expect(reportWords(unread({
+      issues: issuesOf({ skipped: 2 }),
+    }), 1)).toBe('1 sarif "Semgrep" for security: could not be read')
+  })
+})
+
+describe('reportLineParts', () => {
+  it.each<[string, ContextReport, string, string]>([
+    [
+      'a report read, with a scanner and a profile',
+      contextReport({
+        scanner: 'Trivy',
+        issues: issuesOf({ used: 1, fileLevel: 1, notInChange: 13 }),
+      }),
+      '1 sarif "Trivy"',
+      'for security: 1 of 14 issues used (1 file-level); 13 not in the change',
+    ],
+    [
+      'a report that could not be read, with no scanner',
+      contextReport({
+        scanner: undefined,
+        status: 'unreadable',
+        problems: ['missing'],
+        issues: issuesOf({}),
+      }),
+      '1 sarif',
+      'for security: could not be read',
+    ],
+    [
+      'a report with no profile, whose tail starts with its colon',
+      contextReport({
+        profile: undefined,
+        scanner: 'Trivy',
+        issues: issuesOf({ used: 2 }),
+      }),
+      '1 sarif "Trivy"',
+      ': 2 of 2 issues used',
+    ],
+    [
+      'a report that could not be read and names no profile',
+      contextReport({
+        profile: undefined,
+        scanner: undefined,
+        status: 'unreadable',
+        problems: ['missing'],
+      }),
+      '1 sarif',
+      ': could not be read',
+    ],
+    [
+      'a scanner whose name holds spaces and a quote, which stays whole in the head as a JSON string',
+      contextReport({
+        scanner: 'Semgrep "OSS" edition',
+        issues: issuesOf({ used: 1 }),
+      }),
+      '1 sarif "Semgrep \\"OSS\\" edition"',
+      'for security: 1 of 1 issues used',
+    ],
+  ])('splits %s into its head and its tail', (_name, record, head, tail) => {
+    expect(reportLineParts(record, 1)).toEqual({ head, tail })
+    // The sentence is the head and the tail, a space between them but before a colon.
+    expect(reportWords(record, 1)).toBe(tail.startsWith(':')
+      ? `${head}${tail}`
+      : `${head} ${tail}`)
+  })
+})
+
+describe('scannerWords', () => {
+  const verdictFound = (by: FoundBy): Verdict => ({ ...SQL, foundBy: by })
+
+  it.each<[string, FoundBy]>([
+    [
+      '',
+      { kind: 'model' },
+    ],
+    [
+      'Trivy',
+      foundBy({ scanner: 'Trivy' }),
+    ],
+    [
+      'Trivy, file-level',
+      foundBy({ scanner: 'Trivy', fileLevel: true }),
+    ],
+    [
+      'Trivy, marked suppressed',
+      foundBy({ scanner: 'Trivy', suppressed: true }),
+    ],
+    [
+      'Trivy, file-level, marked suppressed',
+      foundBy({ scanner: 'Trivy', fileLevel: true, suppressed: true }),
+    ],
+  ])('writes a verdict\'s scanner words as %j', (words, by) => {
+    expect(scannerWords(verdictFound(by))).toBe(words)
+    // A public view's verdict says the same.
+    expect(scannerWords(publicView(reportResult({
+      kept: [
+        verdictFound(by),
+      ],
+      meta: {
+        context: {
+          documents: [],
+          reports: [
+            contextReport(),
+          ],
+        },
+      },
+    })).kept[0])).toBe(words)
+  })
+})
+
+describe('dismissedScanner', () => {
+  const dismissed = (file: string, by: FoundBy = foundBy()): Verdict => ({
+    ...UPLOAD,
+    file,
+    keptVotes: 0,
+    foundBy: by,
+  })
+
+  it('lists the discarded verdicts a scanner found, in order, and no other', () => {
+    const first = dismissed('a.js')
+    const second = dismissed('b.js', foundBy({ scanner: 'Trivy' }))
+    // A scanner's finding that was kept stays among the findings: only the panel's dismissals are listed.
+    const result = reportResult({
+      kept: [
+        {
+          ...SQL,
+          foundBy: foundBy(),
+        },
+      ],
+      discarded: [first, UPLOAD, second],
+    })
+    expect(dismissedScanner(result)).toEqual([first, second])
+    expect(dismissedScanner(reportResult({
+      discarded: [UPLOAD],
+    }))).toEqual([])
+    expect(dismissedScanner(reportResult({ discarded: [] }))).toEqual([])
+  })
+
+  it('lists the same of a public view, whose discarded holds those alone', () => {
+    const result = reportResult({
+      discarded: [
+        dismissed('a.js'),
+        UPLOAD,
+        dismissed('b.js'),
+      ],
+      meta: {
+        context: {
+          documents: [],
+          reports: [
+            contextReport(),
+          ],
+        },
+      },
+    })
+    const view = publicView(result)
+    expect(view.discarded).toHaveLength(2)
+    expect(dismissedScanner(view)).toEqual(view.discarded)
+    expect(dismissedScanner(view).map(verdict => verdict.file)).toEqual(dismissedScanner(result).map(verdict => verdict.file))
   })
 })

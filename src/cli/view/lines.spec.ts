@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { HIDDEN_CLASS, inertLine } from '../../core/sanitize.ts'
-import type { ContextDocument, Estimate, LeftOutFile, Position, QuorumEvent } from '../../core/types.ts'
+import type { ContextDocument, ContextReport, Estimate, LeftOutFile, Position, QuorumEvent } from '../../core/types.ts'
 import { durationText } from '../../report/lines.ts'
 import { resolvedConfig } from '../../testing/bench.ts'
 import { longReview, replay, slowResearch } from '../../testing/events.ts'
-import { contextDocument } from '../../testing/report.ts'
+import { contextDocument, contextReport } from '../../testing/report.ts'
 import { viewFacts } from '../render.ts'
 import { elapsedWords, heartbeatLine, logLines, renderEvent, STATE_NOTICE_MS } from './lines.ts'
 import { DEFAULT_FACTS, fold, startState } from './model.ts'
@@ -1583,6 +1583,85 @@ describe('logLines', () => {
       1000,
       rulesEvent(rules),
     ]), 'full')).toEqual(lines.map(text => ({ text })))
+  })
+
+  /** A `context` event holding the documents and the reports given. */
+  const reportsEvent = (reports: ContextReport[], documents: ContextDocument[] = []): QuorumEvent => ({
+    type: 'context',
+    context: { documents, reports },
+  })
+
+  const TRIVY_LINE = 'context: report 1 sarif "Trivy" for security: 1 of 14 issues used (1 file-level); 13 not in the change'
+
+  it('writes a context event\'s reports as lines above the block, after the documents\' and the rules\'', () => {
+    const trivy = contextReport({
+      scanner: 'Trivy',
+      issues: {
+        listed: 14,
+        used: 1,
+        fileLevel: 1,
+        held: 0,
+        unmapped: 0,
+        notInChange: 13,
+        leftOut: 0,
+        unchanged: 0,
+        capped: 0,
+        skipped: 0,
+        unreadable: 0,
+      },
+    })
+    const missing = contextReport({
+      scanner: undefined,
+      status: 'unreadable',
+      problems: ['missing'],
+    })
+    const event: QuorumEvent = {
+      type: 'context',
+      context: {
+        documents: [NAMING_RULES],
+        reports: [trivy, missing],
+      },
+      rules: {
+        naming: { listed: 5, sent: 3 },
+      },
+    }
+    const lines = [
+      'context: naming rules written in the config, 5 rule(s)',
+      'context: naming rules: 3 of 5 sent',
+      TRIVY_LINE,
+      'context: report 2 sarif for security: could not be read',
+    ]
+    // The same in the full and the public view, which both hold the records alone.
+    for (const view of ['full', 'public'] as const) {
+      expect(textsOf(event, undefined, view)).toEqual(lines)
+    }
+    // A report alone is a line of its own, with no glyph and no profile's prefix when several profiles run.
+    const several: Array<[number, QuorumEvent]> = [
+      [
+        0,
+        started(['security', 'naming']),
+      ],
+    ]
+    expect(logLines(reportsEvent([trivy]), folded(...several, [
+      1000,
+      reportsEvent([trivy]),
+    ]), 'full')).toEqual([
+      { text: TRIVY_LINE },
+    ])
+    // A review that reads no report writes no such line.
+    expect(textsOf(reportsEvent([], [NAMING_RULES]))).toEqual(['context: naming rules written in the config, 5 rule(s)'])
+  })
+
+  it('writes each word a report wrote of a context event\'s reports inert', () => {
+    const hostile = contextReport({ scanner: `a${RLO}b"c` })
+    expect(textsOf(reportsEvent([hostile]))).toEqual([
+      'context: report 1 sarif "a<U+202E>b\\"c" for security: 2 of 4 issues used (1 file-level); 1 not in the change; 1 on unchanged lines',
+    ])
+    const [line] = textsOf(reportsEvent([
+      contextReport({ scanner: `x${String.fromCharCode(0x1B)}[2J${RLO}` }),
+    ]))
+    expect(line).not.toMatch(new RegExp(`[${HIDDEN_CLASS}]`, 'u'))
+    expect(line).toContain('<U+202E>')
   })
 
   it('writes no rules line for an event that holds no rules, and one for each document alone', () => {

@@ -54,7 +54,7 @@ export const EXACT_WORDS: NumberWords = {
 
 /**
  * The lines a path review prints once its estimate is made, before any call: one per profile, starting with
- * `[<id>] ` when several run, and ending with what the profile's documents add to each research request and each vote when
+ * `[<id>] ` when several run, saying how many of its votes fall on scanner issues when it judges some, and ending with what the profile's documents add to each research request and each vote when
  * they add anything, then the whole review's two lines, never prefixed: its cost (the research's expected
  * spend, the worst case with every vote and every part recovered, and what its calls in flight reserve) and its
  * bounds (the review's token cap, deadline and finding cap, where each came from, and that the config sets none of
@@ -71,14 +71,18 @@ export function estimateLines(estimate: Estimate, bounds: Bounds, words: NumberW
   const prefixed = entries.length > 1
   const noneSet = bounds.cap !== 'config' && bounds.deadline === 'longest' && (bounds.findings === 'parts' || bounds.findings === 'floor')
   return [
-    ...entries.map(([id, { parts, expected, votes, worst, documents }]) => {
+    ...entries.map(([id, { parts, expected, votes, candidates, vote, worst, documents }]) => {
       const prefix = prefixed
         ? profilePrefix(id)
         : ''
       const added = documents.research > 0 || documents.vote > 0
         ? `; its documents add ${words.tokens(documents.research)} tokens to each research request and ${words.tokens(documents.vote)} to each vote`
         : ''
-      return `${prefix}estimate: ${parts.length} research part(s), about ${words.tokens(expected)} tokens expected for them; then up to ${votes} vote(s), at most ${words.tokens(worst)} tokens in all${added}`
+      // Each lens votes on each candidate, so a candidate adds a vote for each lens the profile's `vote` names.
+      const scanned = candidates > 0
+        ? `, ${candidates * Object.keys(vote).length} of them on ${candidates} scanner issue(s)`
+        : ''
+      return `${prefix}estimate: ${parts.length} research part(s), about ${words.tokens(expected)} tokens expected for them; then up to ${votes} vote(s)${scanned}, at most ${words.tokens(worst)} tokens in all${added}`
     }),
     `estimate: ${allWords(entries.length)}research about ${words.tokens(estimate.expected)} tokens expected, at most ${words.tokens(estimate.worst)} with every vote and every part recovered, ${words.tokens(estimate.inFlight)} of them reserved at once`,
     `bounds: the token cap ${capWords(estimate, bounds, words)}; the deadline ${deadlineWords(estimate, bounds, words)}; the finding cap ${findingsWords(estimate, bounds)}${eachWords(entries.length)}${noneSet
