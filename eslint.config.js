@@ -300,7 +300,9 @@ export default antfu(
   {
     // The context reader reads a review's documents from a commit of the repository, through the git runner and the one
     // module that opens a repository (sources/repository.ts), with the types of the sources' reader and none of its values: it
-    // never reads the working tree, the environment or the network, nor the global object. Only the CLI and the library import it.
+    // never reads the working tree, the environment or the network, nor the global object. It reads the scanner reports a review
+    // names through zod (each entry of a report is read alone against a schema) and node:crypto (the SHA-256 of a report's
+    // bytes). Only the CLI and the library import it.
     files: ['src/context/**/*.ts'],
     ignores: ['src/**/*.spec.ts'],
     rules: {
@@ -308,7 +310,7 @@ export default antfu(
         'error',
         {
           patterns: [
-            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./(core|git|config)/(?!.*\\.\\.)|\\.\\./sources/(repository|read)\\.ts$|node:(fs|fs/promises|path)$)', message: 'A context module imports only context modules, the core, the git runner, the config layer, the sources\' repository opener, the types of the sources\' reader, node:fs, node:fs/promises and node:path.' },
+            { regex: '^(?!\\./(?!.*\\.\\.)|\\.\\./(core|git|config)/(?!.*\\.\\.)|\\.\\./sources/(repository|read)\\.ts$|zod$|node:(fs|fs/promises|path|crypto)$)', message: 'A context module imports only context modules, the core, the git runner, the config layer, the sources\' repository opener, the types of the sources\' reader, zod, node:crypto, node:fs, node:fs/promises and node:path.' },
             { regex: '^\\.\\./sources/read\\.ts$', allowTypeImports: true, message: 'A context module imports only the types of the sources\' reader.' },
           ],
         },

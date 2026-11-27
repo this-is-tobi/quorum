@@ -1,0 +1,98 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "CodeQL",
+          "organization": "Example",
+          "semanticVersion": "0.0.0"
+        },
+        "extensions": [
+          {
+            "name": "example/javascript-queries",
+            "semanticVersion": "0.0.0",
+            "rules": [
+              {
+                "id": "js/sql-injection",
+                "name": "js/sql-injection",
+                "shortDescription": {
+                  "text": "Database query built from user-controlled sources"
+                },
+                "fullDescription": {
+                  "text": "Building a database query from user-controlled sources is vulnerable to insertion of malicious code by the user."
+                },
+                "defaultConfiguration": {
+                  "level": "error"
+                },
+                "help": {
+                  "text": "",
+                  "markdown": "# Database query built from user-controlled sources\nUse a parameterized query."
+                },
+                "properties": {
+                  "security-severity": "8.8",
+                  "precision": "high",
+                  "tags": [
+                    "security",
+                    "external/cwe/cwe-089"
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "artifacts": [
+        {
+          "location": {
+            "uri": "src/db.js",
+            "uriBaseId": "%SRCROOT%",
+            "index": 0
+          }
+        }
+      ],
+      "results": [
+        {
+          "ruleId": "js/sql-injection",
+          "ruleIndex": 0,
+          "rule": {
+            "id": "js/sql-injection",
+            "index": 0,
+            "toolComponent": {
+              "index": 0
+            }
+          },
+          "message": {
+            "text": "This query depends on a user-provided value."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/db.js",
+                  "uriBaseId": "%SRCROOT%",
+                  "index": 0
+                },
+                "region": {
+                  "startLine": 12,
+                  "startColumn": 10,
+                  "endColumn": 60
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primaryLocationLineHash": "fixture-hash:1"
+          }
+        }
+      ],
+      "versionControlProvenance": [
+        {
+          "repositoryUri": "https://scm.example.invalid/app",
+          "revisionId": "2222222222222222222222222222222222222222",
+          "branch": "refs/heads/main"
+        }
+      ]
+    }
+  ]
+}

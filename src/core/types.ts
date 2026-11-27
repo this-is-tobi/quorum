@@ -273,6 +273,72 @@ export interface ContextRecord {
   documents: ContextDocument[]
 }
 
+/** How severe a scanner's report calls an issue. `unknown` is a level the report does not state or quorum does not know, which is never read as ignorable. */
+export type IssueLevel = 'error' | 'warning' | 'note' | 'none' | 'unknown'
+
+/**
+ * What is wrong with a report as a whole, as far as its reader could tell: the file is `missing`, it `cannot-read`, it is
+ * `not-a-file` (a symbolic link, or other than a regular file) or it is `too-large`; its text is `not-the-format` its flag names;
+ * no run of a log holds a list of results (`no-results`); a run says its scanner failed (`scanner-failed`); a SonarQube response
+ * holds fewer issues than its search found (`truncated`); or a log or a response holds more than is read (`too-many`).
+ */
+export type ReaderProblem = 'missing' | 'cannot-read' | 'not-a-file' | 'too-large' | 'not-the-format' | 'no-results' | 'truncated' | 'too-many' | 'scanner-failed'
+
+/**
+ * One issue a scanner's report gives, as the reader of its format hands it to the core. Every text is cut to four times what the
+ * core keeps of it, and none is cleaned: a report is attacker-reachable text, and the core cleans and bounds it before any model reads it.
+ */
+export interface ScannerIssue {
+  /** The repository path after the path rules, absent when the issue is `unmapped` or sits on no file. */
+  readonly path?: string
+  /** The report named a path that quorum could not place in the repository. */
+  readonly unmapped?: true
+  /** A safe integer of at least 0; absent when the issue gives none. */
+  readonly line?: number
+  /** The scanner's name, as its report writes it. */
+  readonly scanner: string
+  /** The rule the issue breaks, as its report names it. */
+  readonly ruleId: string
+  /** The scanner's own description of the rule, when its report gives one. */
+  readonly ruleText?: string
+  readonly message: string
+  readonly level: IssueLevel
+  /** The report marks the issue as silenced, by the scanner or by a person: SARIF's accepted suppression (a `rejected` or `underReview` one marks nothing). */
+  readonly suppressed?: true
+  /** The code the report quotes for the issue. */
+  readonly snippet?: string
+}
+
+/** What a reader makes of one SARIF log or saved SonarQube response: the issues it holds and everything it could say about the report as a whole. */
+export interface ScannerReport {
+  readonly format: 'sarif' | 'sonarqube'
+  /** The id of the profile the report is read for. */
+  readonly profile: string
+  /** The SHA-256 of the file's bytes as read: 64 lowercase hexadecimal digits. */
+  readonly sha256?: string
+  /** The first run's tool, as the report names it. */
+  readonly scanner?: string
+  /** Each revision a run states, each cut at 64 units. */
+  readonly commits?: readonly string[]
+  readonly problems: readonly ReaderProblem[]
+  /** A SonarQube response's total of issues its search found, when it is above the issues the response holds. */
+  readonly total?: number
+  /** The entries the report holds that are not issues to review: a result of another kind, an issue that is not open. */
+  readonly skipped: number
+  /** The entries the reader could not read, each read alone. */
+  readonly unreadable: number
+  /**
+   * The entries the file held past the reader's caps, none of them read, so none is in `issues`, `skipped` or `unreadable`: the results
+   * (the issues, for a SonarQube response) a run holds past its 25000, and every result of each run past the 20th, which the reader
+   * counts from the length of the run's result list without reading an entry. A run past the 20th that holds no result list adds 0 here,
+   * and is counted in `runs`. 0 when absent.
+   */
+  readonly notRead?: number
+  /** A SARIF log's runs when it holds more than the 20 the reader reads, so the ones past them are `runs` minus 20. */
+  readonly runs?: number
+  readonly issues: readonly ScannerIssue[]
+}
+
 /** A confidence level a kept finding reaches; 'low' only when the policy enables it. */
 export type Confidence = 'high' | 'medium' | 'low'
 

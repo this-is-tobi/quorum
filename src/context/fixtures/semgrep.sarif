@@ -1,0 +1,134 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "toolExecutionNotifications": []
+        }
+      ],
+      "results": [
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "fixture-fingerprint-1"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/db.js",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 60,
+                  "endLine": 12,
+                  "snippet": {
+                    "text": "  return db.query('SELECT name FROM users WHERE id = ' + req.params.id)"
+                  },
+                  "startColumn": 10,
+                  "startLine": 12
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected string concatenation with a non-literal variable in a node-postgres JS query."
+          },
+          "properties": {},
+          "ruleId": "example.javascript.sqli.node-postgres-sqli"
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "fixture-fingerprint-2"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/app.js",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 30,
+                  "endLine": 30,
+                  "snippet": {
+                    "text": "  res.send(req.query.name)"
+                  },
+                  "startColumn": 3,
+                  "startLine": 30
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected directly writing to a response from user-controlled input."
+          },
+          "properties": {},
+          "ruleId": "example.javascript.xss.direct-response-write",
+          "suppressions": [
+            {
+              "kind": "inSource"
+            }
+          ]
+        }
+      ],
+      "tool": {
+        "driver": {
+          "name": "Semgrep OSS",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "A database query built by string concatenation can be injected into."
+              },
+              "help": {
+                "markdown": "A database query built by string concatenation can be injected into. Use a parameterized query.",
+                "text": "A database query built by string concatenation can be injected into. Use a parameterized query."
+              },
+              "id": "example.javascript.sqli.node-postgres-sqli",
+              "name": "example.javascript.sqli.node-postgres-sqli",
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "CWE-89: SQL Injection",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Semgrep Finding: example.javascript.sqli.node-postgres-sqli"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Writing user-controlled input to a response can allow cross-site scripting."
+              },
+              "help": {
+                "markdown": "Writing user-controlled input to a response can allow cross-site scripting. Encode the output.",
+                "text": "Writing user-controlled input to a response can allow cross-site scripting. Encode the output."
+              },
+              "id": "example.javascript.xss.direct-response-write",
+              "name": "example.javascript.xss.direct-response-write",
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "CWE-79: Cross-site Scripting",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Semgrep Finding: example.javascript.xss.direct-response-write"
+              }
+            }
+          ],
+          "semanticVersion": "0.0.0"
+        }
+      }
+    }
+  ]
+}
