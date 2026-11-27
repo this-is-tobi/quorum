@@ -1087,6 +1087,7 @@ describe('reviewSettings', () => {
       'partTokens',
       'maxFindings',
       'findingsCap',
+      'maxScannerIssues',
       'maxReviewTokens',
       'reviewTimeoutMs',
       'providers',
@@ -1229,6 +1230,23 @@ describe('reviewSettings', () => {
   ] as const)('records %s as %j with its origin', async (_what, more, setting, expected) => {
     const settings = await recorded(configOf(more))
     expect(settings[setting]).toEqual(expected)
+  })
+
+  it('records maxScannerIssues with its origin', async () => {
+    expect((await recorded(configOf({ maxScannerIssues: 20 }))).maxScannerIssues).toEqual({ value: 20, origin: 'config' })
+    expect((await recorded(configOf())).maxScannerIssues).toEqual({ value: 50, origin: 'default' })
+    // A path review derives three bounds, none of them this one: it stays the config's.
+    const bounds = {
+      maxReviewTokens: { value: 6_500_000, origin: 'derived' },
+      reviewTimeoutMs: { value: 86_400_000, origin: 'default' },
+      findingsCap: { value: 436, origin: 'derived' },
+    } as const
+    const derived = await recorded(configOf({ maxScannerIssues: 20 }), bounds)
+    expect(derived.maxScannerIssues).toEqual({ value: 20, origin: 'config' })
+    expect(settingsSchema.safeParse(derived).success).toBe(true)
+    // The record is required: one built by hand without it is refused.
+    const { maxScannerIssues: _left, ...without } = derived
+    expect(settingsSchema.safeParse(without).success).toBe(false)
   })
 
   it('records the bounds a path review derived, with their origins, over the config\'s and the defaults', async () => {

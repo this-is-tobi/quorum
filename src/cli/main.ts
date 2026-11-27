@@ -1,6 +1,6 @@
 import { resolve } from 'node:path'
 import { providerIdentity } from '../bench/fingerprint.ts'
-import { readEnv } from '../config/env.ts'
+import { PROFILE_ID, readEnv } from '../config/env.ts'
 import { fromConfig } from '../config/from-config.ts'
 import { loadConfig } from '../config/load.ts'
 import { parseFailOn } from '../config/profiles.ts'
@@ -8,12 +8,16 @@ import type { FailOnOverride } from '../config/profiles.ts'
 import type { ResolvedConfig } from '../config/resolve.ts'
 import { reviewSettings } from '../config/settings.ts'
 import type { SettingsFacts } from '../config/settings.ts'
+import { isScanRoot } from '../context/paths.ts'
 import { readContext } from '../context/read.ts'
+import { reportRequestIssues } from '../context/reports.ts'
+import type { ReportRequest } from '../context/reports.ts'
 import { systemClock } from '../core/clock.ts'
 import { ConfigError } from '../core/errors.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS } from '../core/limits.ts'
 import { MAX_TIMEOUT_MS } from '../core/ports.ts'
 import { DEFAULT_MAX_FINDINGS } from '../core/prompts.ts'
+import { MAX_REPORTS } from '../core/reports.ts'
 import { VERSION } from '../core/version.ts'
 import { outcome } from '../core/outcome.ts'
 import type { Estimate, Quorum, ReviewContext, RuntimeRecord } from '../core/types.ts'
@@ -67,6 +71,9 @@ const USAGE = [
   '      --no-default-skips   Review in --path the vendored, lockfile, minified, binary and test files too',
   '      --large              Does nothing, and goes in a later release: a --path review\'s token cap follows its estimate',
   '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
+  '      --sarif <path>       Read a SARIF log a scan wrote, written [<profile>=]<path>; its issues on the change are judged like findings; repeat it to read several',
+  '      --sonarqube <path>   Read a saved SonarQube api/issues/search response, written [<profile>=]<path>; repeat it to read several',
+  '      --scan-root <dir>    The absolute directory the scanners ran in, stripped from the absolute paths their reports name; the repository\'s top level by default',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
   '  -f, --format <format>    Write the report on stdout in this format: text, json, brief, markdown, payload or sarif; text on a terminal, else json',
@@ -94,6 +101,9 @@ const OPTIONS = {
   'no-default-skips': { type: 'boolean' },
   large: { type: 'boolean' },
   send: { type: 'string', multiple: true },
+  sarif: { type: 'string', multiple: true },
+  sonarqube: { type: 'string', multiple: true },
+  'scan-root': { type: 'string', multiple: true },
   'allow-incomplete': { type: 'boolean' },
   'fail-on': { type: 'string', multiple: true },
   format: { type: 'string', short: 'f', multiple: true },
@@ -148,7 +158,7 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * their size is the change's.
  *
  * Its flags are `--config`, `--profile`, `--range`, `--local`, `--staged`, `--trust-repo-config`, `--path`,
- * `--at`, `--no-default-skips`, `--large`, `--send`, `--allow-incomplete`, `--fail-on`, `--format`, `--output`,
+ * `--at`, `--no-default-skips`, `--large`, `--send`, `--sarif`, `--sonarqube`, `--scan-root`, `--allow-incomplete`, `--fail-on`, `--format`, `--output`,
  * `--color`, `--progress`, `--view`, `--state`, `--no-state`, `--print-config`, `--help` and `--version`; a usage error prints the usage after its message. Its
  * settings are the config file `--config` or `QUORUM_CONFIG`
  * names (`--config` resolved against `io.cwd`, `QUORUM_CONFIG` an absolute path), and the `QUORUM_*`
@@ -159,6 +169,14 @@ type Flags = ReturnType<typeof parseFlags<typeof OPTIONS>>
  * `--print-config` reads no diff and calls no model: it writes the resolved config as YAML on stdout
  * (see `printConfig`), warnings included, and returns 0; a diff argument or a git source with it is a usage error, and
  * a configuration the run refuses, one of its providers that cannot be built included, exits 2 as in a run.
+ *
+ * `--sarif [<profile>=]<path>` and `--sonarqube [<profile>=]<path>` name a SARIF log and a saved SonarQube response a scan job wrote, repeatable, at
+ * most 16 in all, and `--scan-root <dir>` the absolute directory the scanners ran in, once, and only beside a report (see `reportRequests`). Quorum reads
+ * them as data and never runs a scanner: `readContext` reads each file through the bounded reader for the profile it names, with the repository's top
+ * level as the scan root unless `--scan-root` says another, and the review judges the issues they list on the change as candidates. A malformed value
+ * is a usage error before any config, as every flag's is, and a report for a profile that does not run, or for none while several run, is a
+ * configuration error right after the config loads, before any git (`reportRequestIssues`). A report's file that is missing, a link, over 16 MiB or
+ * in no known format is never an exit 2: it is a gap of its profile. `--print-config` takes none of the three, and `quorum mcp` defines none.
  *
  * A file held back as a secret is sent all the same when `--send <path>` names it, repeatable, or the config's
  * `send` lists it: the path is the one the diff writes and the `left out:` line prints, matched exactly. The
@@ -271,6 +289,7 @@ export async function runCli(io: CliIO): Promise<number> {
   let mode: ProgressMode
   let state: string | undefined
   let noState: boolean
+  let reports: ReportFlags
   try {
     if (values.config === '') {
       throw new ConfigError([
@@ -289,6 +308,7 @@ export async function runCli(io: CliIO): Promise<number> {
     })
     state = stateDirectory(values)
     noState = values['no-state'] === true
+    reports = reportRequests(values)
     spec = await sourceSpec(io, values, positionals)
   } catch (error) {
     // The first signal ends the read of a diff at once: it is no usage error, and no usage follows it.
@@ -324,6 +344,9 @@ export async function runCli(io: CliIO): Promise<number> {
       selection,
       failOn,
     })
+    // A report for a profile that does not run, or for none while several run, is refused with the configuration, before any git: a typo never drops a report.
+    const unfit = reportRequestIssues(config, reports.requests)
+    if (unfit.length > 0) throw new ConfigError(unfit)
     // The profiles are checked first, the room accounting among them: a profile refused for room is refused before any diff is read.
     const built = await fromConfig(config, {
       env: io.env,
@@ -350,6 +373,7 @@ export async function runCli(io: CliIO): Promise<number> {
       return EXIT.ok
     }
     // The documents a profile reads from the repository come from the commit the source names, once the source is read and before any call: a source with no commit, or a file the commit lacks, is refused here.
+    // The scanner reports are read here too, as data: one that cannot be read is a report with its problem and a gap of its profile, never an exit 2.
     const context = await readContext(config, {
       source: read.source,
       cwd: io.cwd,
@@ -357,6 +381,8 @@ export async function runCli(io: CliIO): Promise<number> {
       platform: io.platform ?? process.platform,
       signal: io.signal,
       git: io.git,
+      reports: reports.requests,
+      scanRoot: reports.scanRoot,
     })
     // Only now is the review built: an error from the source or the context above still writes the environment's warnings, as before.
     quorum = built
@@ -563,6 +589,60 @@ function stateDirectory(values: Flags['values']): string | undefined {
   if (given[0] === '') throw refuse('--state', 'must name a directory')
   if (values['print-config']) throw refuse('--print-config', 'reads no diff and calls no model, so it takes no --state')
   return given[0]
+}
+
+/** What `reportRequests` makes of the report flags: the reports to read, in the order of the formats and then of the flags, and the scan root they were written at. */
+interface ReportFlags {
+  readonly requests: ReportRequest[]
+  readonly scanRoot?: string
+}
+
+/** The formats whose files a flag names, in the order the reports are read: the `--<format>` flags. */
+const REPORT_FORMATS = ['sarif', 'sonarqube'] as const
+
+/** A value of `--sarif` or `--sonarqube`: `<profile>=<path>` when it starts with a profile id and `=`, else the path alone. */
+function reportRequest(format: ReportRequest['format'], value: string): ReportRequest {
+  const split = value.indexOf('=')
+  const profile = split === -1
+    ? undefined
+    : value.slice(0, split)
+  return profile !== undefined && PROFILE_ID.test(profile)
+    ? {
+        format,
+        path: value.slice(split + 1),
+        profile,
+      }
+    : { format, path: value }
+}
+
+/**
+ * The reports `--sarif` and `--sonarqube` name, and the scan root `--scan-root` names, checked with the other flags: before the
+ * source, any git and any config, each naming the flag and never its value. A value that starts with a profile id and `=` names the
+ * profile (`security=trivy.sarif`), so a file whose name looks like one is written `./a=b.sarif`. The errors are an empty path, more
+ * than 16 reports in all (at the flag of the seventeenth, counting the `--sarif` reports first), a `--scan-root` given twice or that is
+ * no absolute directory (`isScanRoot`), a `--scan-root` with no report, and any of the three flags beside `--print-config`, which
+ * reads no report. That a profile a report names runs is the configuration's check (`reportRequestIssues`).
+ */
+function reportRequests(values: Flags['values']): ReportFlags {
+  const refuse = (path: string, message: string): ConfigError => new ConfigError([
+    { path, message },
+  ])
+  const roots = values['scan-root']
+  if (values['print-config'] && (roots !== undefined || REPORT_FORMATS.some(format => values[format] !== undefined))) throw refuse('--print-config', 'reads no report, so it takes no --sarif, --sonarqube or --scan-root')
+  const requests: ReportRequest[] = []
+  for (const format of REPORT_FORMATS) {
+    for (const value of values[format] ?? []) {
+      const request = reportRequest(format, value)
+      if (request.path === '') throw refuse(`--${format}`, 'must name a file')
+      if (requests.length === MAX_REPORTS) throw refuse(`--${format}`, `takes at most ${MAX_REPORTS} reports in all`)
+      requests.push(request)
+    }
+  }
+  if (roots === undefined) return { requests }
+  if (roots.length > 1) throw refuse('--scan-root', 'takes one directory')
+  if (!isScanRoot(roots[0])) throw refuse('--scan-root', 'must be an absolute directory')
+  if (requests.length === 0) throw refuse('--scan-root', 'needs --sarif or --sonarqube')
+  return { requests, scanRoot: roots[0] }
 }
 
 /**

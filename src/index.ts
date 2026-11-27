@@ -24,6 +24,7 @@ export type { ResolvedConfig, ResolvedProvider } from './config/resolve.ts'
 export type { ConfigInput, QuorumConfig, QuorumConfigFile } from './config/schema.ts'
 export { reviewSettings } from './config/settings.ts'
 export type { SettingsFacts } from './config/settings.ts'
+export type { ReportRequest } from './context/reports.ts'
 export type { ProfileBudgets, ReplyFacts, ThinkingLevel } from './core/budgets.ts'
 export { ConfigError, OutputError, ProviderDownError, ProviderError, QuorumError } from './core/errors.ts'
 export type { ConfigIssue, NoAnswer, ProviderErrorKind, ReplyLack } from './core/errors.ts'
@@ -209,22 +210,39 @@ export async function readSource(spec: SourceSpec, context: Omit<SourceContext, 
 }
 
 /**
- * Read the documents a review takes from the repository, as the CLI does: the `{ repository }` entries of the profiles of
- * `config` (`ResolvedProfile.repository`), each read from the commit `options.source` names, never from the working tree or the
- * change under review. `options.source` is `SourceRead.source`, the `source` the diff came from: a range's base, a path review's
- * commit, HEAD for local and staged changes. A config with no entry reads nothing, runs no git and gives `{}`. The result is the
- * `context` of `review` and `estimate`, which refuse an input without it when a profile lists such a document, and refuse a document
- * read at another commit than the source's. Every entry's problem is reported at once, before any call.
- * A git run is the system's git, on the platform of this process: it needs git 2.41 or later, and Linux or macOS.
+ * Read what a review takes from files besides its diff, as the CLI does: the documents of the repository and the scanner reports.
+ *
+ * The documents are the `{ repository }` entries of the profiles of `config` (`ResolvedProfile.repository`), each read from the commit
+ * `options.source` names, never from the working tree or the change under review. `options.source` is `SourceRead.source`, the
+ * `source` the diff came from: a range's base, a path review's commit, HEAD for local and staged changes. A config with no entry
+ * reads none, and the `context` of `review` and `estimate` refuses an input without them when a profile lists such a document, and
+ * a document read at another commit than the source's. Every entry's problem is reported at once, before any call.
+ *
+ * `options.reports` names the SARIF logs and saved SonarQube responses to read (`ReportRequest`: the `format`, the file's `path`,
+ * relative to `options.cwd` unless absolute, and the `profile` it feeds, which may be left out when one profile runs), at most 16.
+ * They are read as data and never run: each through the bounded reader, as a regular file and never through a link, at most 16 MiB.
+ * `options.scanRoot` is the absolute directory the scanners ran in, stripped from the absolute paths their reports name: the
+ * repository's top level when unset, and none for a diff source, whose reports place an absolute path only under a scan root. A
+ * report's file that is missing, a link, over 16 MiB or in no known format is no error: it is a report with its problem, which the
+ * review turns into a gap of its profile. A config with no entry and no report gives `{}` and runs no git.
+ *
+ * A git run is the system's git, on the platform of this process: it needs git 2.41 or later, and Linux or macOS. The repository is
+ * opened once, when a document is read or a report is named under a git source.
  *
  * @throws ConfigError, at each entry's `profiles.<id>.<field>.<n>.repository`, when the source names no commit to read from (a diff,
  * or local changes before a first commit) or a file is absent (unless optional), a link, a submodule, no UTF-8 text, over 64 KiB or
- * over its cap once cleaned
+ * over its cap once cleaned; at `--sarif` or `--sonarqube`, when a report names a profile that does not run or none while several
+ * run; at `reports`, when more than 16 are named; and at `scanRoot`, when it is no absolute directory
  * @throws GitError when a git command fails
  *
  * @example
  * const input = await readSource({ kind: 'range', range: 'main...feature' }, { cwd: process.cwd(), env: process.env })
- * const context = await readContext(config, { source: input.source, cwd: process.cwd(), env: process.env })
+ * const context = await readContext(config, {
+ *   source: input.source,
+ *   cwd: process.cwd(),
+ *   env: process.env,
+ *   reports: [{ format: 'sarif', path: 'trivy.sarif', profile: 'security' }],
+ * })
  * const result = await quorum.review({ ...input, context })
  */
 export async function readContext(config: ResolvedConfig, options: Omit<ContextOptions, 'platform' | 'git'>): Promise<ReviewContext> {
@@ -234,6 +252,8 @@ export async function readContext(config: ResolvedConfig, options: Omit<ContextO
     env: options.env,
     signal: options.signal,
     platform: process.platform,
+    reports: options.reports,
+    scanRoot: options.scanRoot,
   })
 }
 

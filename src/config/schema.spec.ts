@@ -359,6 +359,22 @@ describe('configFileSchema', () => {
     ])
   })
 
+  it('takes maxScannerIssues as a positive integer', () => {
+    for (const maxScannerIssues of [1, 50, 9_007_199_254_740_991]) {
+      expect(issuesOf({ maxScannerIssues })).toEqual([])
+    }
+    expect(issuesOf({ maxScannerIssues: 0 })).toEqual([
+      at('maxScannerIssues', 'must be at least 1'),
+    ])
+    expect(issuesOf({ maxScannerIssues: 1.5 })).toEqual([
+      at('maxScannerIssues', 'must be an integer'),
+    ])
+    expect(issuesOf({ maxScannerIssues: '50' })).toEqual([
+      at('maxScannerIssues', 'must be a number'),
+    ])
+    expect(issuesOf({ maxScannerIssues: 9_007_199_254_740_992 })).not.toEqual([])
+  })
+
   it.each([
     'security',
     'code-review',

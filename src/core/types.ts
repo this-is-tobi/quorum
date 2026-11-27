@@ -831,6 +831,8 @@ export interface ReviewSettings {
   maxFindings: SettingValue
   /** The most findings of the research each profile sends to its panel. */
   findingsCap: SettingValue
+  /** The most scanner issues on the change each profile's panel judges, beside the findings: a cap of its own. */
+  maxScannerIssues: SettingValue
   /** The most tokens the review may spend. */
   maxReviewTokens: SettingValue
   /** The deadline of the review, in milliseconds. */

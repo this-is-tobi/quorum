@@ -142,6 +142,7 @@ export async function fromConfig(config: ConfigInput | ResolvedConfig, options: 
     concurrency: resolved.concurrency,
     maxFindings: resolved.maxFindings,
     findingsCap: resolved.findingsCap,
+    maxScannerIssues: resolved.maxScannerIssues,
     partTokens: resolved.partTokens,
     maxReviewTokens: resolved.maxReviewTokens,
     reviewTimeoutMs: resolved.reviewTimeoutMs,

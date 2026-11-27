@@ -128,6 +128,7 @@ export const SETTINGS: ReviewSettings = {
   partTokens: { value: 32_768, origin: 'default' },
   maxFindings: { value: 50, origin: 'default' },
   findingsCap: { value: 50, origin: 'default' },
+  maxScannerIssues: { value: 50, origin: 'default' },
   maxReviewTokens: { value: 2_000_000, origin: 'default' },
   reviewTimeoutMs: { value: 1_800_000, origin: 'default' },
   providers: {

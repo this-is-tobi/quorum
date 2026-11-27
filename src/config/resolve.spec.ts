@@ -769,6 +769,7 @@ describe('resolveConfig', () => {
       concurrency: 99,
       maxFindings: 99,
       findingsCap: 99,
+      maxScannerIssues: 99,
       maxReviewTokens: 99,
       reviewTimeoutMs: 99,
       partTokens: 99,
@@ -788,6 +789,7 @@ describe('resolveConfig', () => {
         'concurrency',
         'maxFindings',
         'findingsCap',
+        'maxScannerIssues',
         'maxReviewTokens',
         'reviewTimeoutMs',
         'partTokens',
@@ -815,6 +817,16 @@ describe('resolveConfig', () => {
     expect(resolve({ findingsCap: 300 }, { ...env, QUORUM_FINDINGS_CAP: '40' })).toMatchObject({ findingsCap: 40 })
     expect(resolve({}, { ...env, QUORUM_FINDINGS_CAP: '40' })).toMatchObject({ findingsCap: 40 })
     expect(() => resolve({ findingsCap: 300 }, { ...env, QUORUM_FINDINGS_CAP: '0' })).toThrow('QUORUM_FINDINGS_CAP: must be a whole number of findings, from 1 to 999999999')
+  })
+
+  it('keeps the config\'s maxScannerIssues, which no variable sets', () => {
+    const env = { QUORUM_RESEARCH_MODEL: 'q', ...SIZE }
+    expect(resolve({ maxScannerIssues: 20 }, env)).toMatchObject({ maxScannerIssues: 20 })
+    expect(Object.hasOwn(resolve({}, env), 'maxScannerIssues')).toBe(false)
+    const variable = resolve({ maxScannerIssues: 20 }, { ...env, QUORUM_MAX_SCANNER_ISSUES: '5' })
+    expect(variable.maxScannerIssues).toBe(20)
+    expect(Object.hasOwn(resolve({}, { ...env, QUORUM_MAX_SCANNER_ISSUES: '5' }), 'maxScannerIssues')).toBe(false)
+    expect(variable.warnings).toContain('QUORUM_MAX_SCANNER_ISSUES is not a variable quorum reads')
   })
 
   it('keeps the config\'s partTokens, which no variable sets', () => {

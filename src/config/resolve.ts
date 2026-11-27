@@ -31,6 +31,8 @@ export interface ResolvedConfig {
   readonly maxFindings?: number
   /** The most findings of the research each profile sends to its panel in one review: `QUORUM_FINDINGS_CAP`, else the config's; absent when neither sets it, and then `maxFindings` is the cap. */
   readonly findingsCap?: number
+  /** The most scanner issues on the change each profile's panel judges in one review, beside its findings: the config's alone, no variable sets it; absent when the config does not. */
+  readonly maxScannerIssues?: number
   /** The most tokens of diff text one research request of a large change holds: the config's alone, no variable sets it; absent when the config does not. */
   readonly partTokens?: number
   /** The most tokens one review spends: `QUORUM_MAX_REVIEW_TOKENS`, else the config's; absent when neither sets it. */
@@ -450,7 +452,7 @@ function bindRoles(roles: ConfigInput['roles'], names: readonly string[]): { rea
  * command as it gets its key: `QUORUM_CLAUDE_CODE_COMMAND`, else the config's, else `claude` in an absolute
  * entry of `PATH`, found or refused here, and its billing warning. The review's limits, `maxReviewTokens`,
  * `reviewTimeoutMs` and `findingsCap`, come from `QUORUM_MAX_REVIEW_TOKENS`, `QUORUM_REVIEW_TIMEOUT_MS` and `QUORUM_FINDINGS_CAP`, else from the config,
- * and are kept only when one of them sets them. `strict` is on when the config's or `QUORUM_STRICT` is `true`, and then a key sent over plain http to another machine is an issue, not a warning. Its `warnings` are the environment layer's, then the providers',
+ * and are kept only when one of them sets them; `maxScannerIssues` is the config's alone. `strict` is on when the config's or `QUORUM_STRICT` is `true`, and then a key sent over plain http to another machine is an issue, not a warning. Its `warnings` are the environment layer's, then the providers',
  * then the profiles' (an entry that sets the deprecated `gating`). A resolved config is returned as it is. The
  * input must already have passed a config schema. `options.selection`, when given, names the profiles that
  * run, over `QUORUM_PROFILES`, which is still checked; its ids are checked before anything is resolved.
@@ -531,6 +533,7 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
   const concurrency = own(input, 'concurrency')
   const maxFindings = own(input, 'maxFindings')
   const findingsCap = own(layer, 'findingsCap') ?? own(input, 'findingsCap')
+  const maxScannerIssues = own(input, 'maxScannerIssues')
   const partTokens = own(input, 'partTokens')
   const maxReviewTokens = own(layer, 'maxReviewTokens') ?? own(input, 'maxReviewTokens')
   const reviewTimeoutMs = own(layer, 'reviewTimeoutMs') ?? own(input, 'reviewTimeoutMs')
@@ -548,6 +551,9 @@ export function resolveConfig(input: ConfigInput | ResolvedConfig, options: { re
     ...findingsCap === undefined
       ? {}
       : { findingsCap },
+    ...maxScannerIssues === undefined
+      ? {}
+      : { maxScannerIssues },
     ...partTokens === undefined
       ? {}
       : { partTokens },

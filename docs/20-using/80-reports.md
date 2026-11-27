@@ -286,4 +286,4 @@ Set `QUORUM_VERSION` to the release you run. The model variables are the example
 
 ## Next
 
-[Threat model](../30-security/10-threat-model.md) — the attacker, the assets, the residual risk stated plainly, the controls in place today, and what the panel's independence is worth.
+[Scanner reports](./85-scanner-reports.md) — the SARIF logs and SonarQube responses a scan job wrote, read as data: the flags, the paths, what the panel sees, and every limit that leaves a gap.
