@@ -77,6 +77,7 @@ const finding: Finding = {
   evidence: '-safe()\n+exec(cmd)',
   evidenceRow: 1,
   quoteMatched: true,
+  foundBy: { kind: 'model' },
 }
 
 /** What the `reply-cut-off` gap says after its counts. */
@@ -1550,6 +1551,7 @@ describe('meta and events', () => {
       'evidence',
       'evidenceRow',
       'quoteMatched',
+      'foundBy',
       'keptVotes',
       'totalVotes',
       'confidence',
@@ -10610,6 +10612,39 @@ describe('the security profile\'s requests through a review', () => {
     // The research request is the one `prompts.spec.ts` pins from its builder at 50 findings, one part. The vote carries the evidence
     // a review makes of this diff, `+exec(cmd)`, where that pin states `>    1 + exec(cmd)` of its own, so its digest is another
     // value, which the 0.12.0 sources give for the same review.
+    expect(looked).toContain(keyOf('research', '9332a0a8136fce260d587532024e35f86770b01eca89c4fbf8f5467d327ea63f', research!))
+    expect(looked).toContain(keyOf('vote', 'fe469cddd24059068c2f23e261a56dce57d0d262ba03bb18040463909015542d', reachability!))
+  })
+
+  it('keeps foundBy on every verdict of a review, and the security profile\'s requests key for key', async () => {
+    const unconvincing = { ...reported, category: 'CWE-79', summary: 'markup written unescaped' }
+    const both = fake('both', request => isVote(request)
+      ? vote(!request.messages[0].content.includes('[CWE-79]'))
+      : findings(reported, unconvincing))
+    const kept = memory()
+    const looked: string[] = []
+    const store: ReplyStore = {
+      get: async (entry) => {
+        looked.push(entry.key)
+        return kept.get(entry)
+      },
+      put: kept.put,
+    }
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, both)).review({ diff: pinned }, { store })
+    expect(result.kept.map(verdict => verdict.category)).toEqual(['CWE-78'])
+    expect(result.discarded.map(verdict => verdict.category)).toEqual(['CWE-79'])
+    for (const verdict of [
+      ...result.kept,
+      ...result.discarded,
+    ]) {
+      expect(verdict.foundBy).toEqual({ kind: 'model' })
+      const keys = Object.keys(verdict)
+      expect(keys.indexOf('foundBy')).toBe(keys.indexOf('quoteMatched') + 1)
+    }
+    const research = both.requests.find(request => !isVote(request))
+    const reachability = both.requests.find(request => isVote(request) && request.system.includes('Refutation angle: reachability.'))
     expect(looked).toContain(keyOf('research', '9332a0a8136fce260d587532024e35f86770b01eca89c4fbf8f5467d327ea63f', research!))
     expect(looked).toContain(keyOf('vote', 'fe469cddd24059068c2f23e261a56dce57d0d262ba03bb18040463909015542d', reachability!))
   })

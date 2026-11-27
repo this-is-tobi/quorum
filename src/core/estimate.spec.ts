@@ -859,6 +859,7 @@ describe('estimate', () => {
       summary: 'x'.repeat(500),
       evidence: 'x'.repeat(2000),
       quoteMatched: true,
+      foundBy: { kind: 'model' },
     }
     const whole = (lens: string): number => requestTokens(voteRequest(`Judge as ${lens}.`, cited, big)) + RESERVE
     const { vote } = quorum.estimate({ diff }).profiles.style

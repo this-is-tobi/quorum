@@ -4,8 +4,8 @@ import { excludeMatcher } from './exclude.ts'
 import { stripHidden } from './sanitize.ts'
 import type { Finding, FindingDetails, ReviewRule } from './types.ts'
 
-/** A finding as the harness verified it, before the research stage names it and tags its profile. */
-export type VerifiedFinding = Omit<Finding, 'id' | 'fingerprint' | 'profile'>
+/** A finding as the harness verified it, before the research stage names it, tags its profile and says what found it. */
+export type VerifiedFinding = Omit<Finding, 'id' | 'fingerprint' | 'profile' | 'foundBy'>
 
 /** The most characters of a finding's summary, which the finder writes, as the harness caps it. */
 export const MAX_SUMMARY = 500
@@ -390,5 +390,6 @@ export function longestFinding(file: string): Finding {
     summary: 'x'.repeat(MAX_SUMMARY),
     evidence: 'x'.repeat(MAX_EVIDENCE),
     quoteMatched: true,
+    foundBy: { kind: 'model' },
   }
 }

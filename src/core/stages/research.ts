@@ -416,6 +416,7 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
     fingerprint: rankedFingerprint(ranks, profile, finding),
     profile,
     ...finding,
+    foundBy: { kind: 'model' },
   }))
   const incomplete = unreadable.map((detail): IncompleteEntry => ({ profile, reason: 'finding-unreadable', detail }))
   const asks = saturated.length === 0

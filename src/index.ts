@@ -55,6 +55,7 @@ export type {
   Finding,
   Flag,
   FlagCode,
+  FoundBy,
   IncompleteEntry,
   IncompleteReason,
   LeftOutFile,

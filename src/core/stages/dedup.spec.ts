@@ -13,6 +13,7 @@ const finding: Finding = {
   summary: 'command injection',
   evidence: '-safe()\n+exec(cmd)',
   quoteMatched: true,
+  foundBy: { kind: 'model' },
 }
 
 describe('dedup', () => {

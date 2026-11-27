@@ -70,6 +70,7 @@ jq '.kept[0]' result.json
   "evidence": "-  return db.query('SELECT * FROM users WHERE id = $1', [id])\n+  const sql = `SELECT * FROM users WHERE id = ${id}`\n+  return db.query(sql)\n }",
   "evidenceRow": 2,
   "quoteMatched": true,
+  "foundBy": { "kind": "model" },
   "keptVotes": 3,
   "totalVotes": 3,
   "confidence": "high",
@@ -107,6 +108,7 @@ jq '.kept[0]' result.json
 
 - `confidence` is `high` because all three lenses kept the finding: `keptVotes` is 3 of `totalVotes` 3.
 - `evidence` is the diff's own lines around line 12, read by the harness, and `quoteMatched` says that the code the finder quoted appears in them.
+- `foundBy` says what proposed the finding: `model` for a finding the model's finder reported.
 - `votes` holds each lens's vote with its reasoning, in the profile's lens order. A failed vote would read `"vote": null` with its `error` and its `failure`, the kind it failed with, and `"failure": null` is what a cast vote carries.
 
 The other two findings of that run went elsewhere. The path traversal in `src/upload.js` was kept by one lens of three, which reaches no level: it is in `discarded`. The session token in `src/session.js` got one keep, one reject and one failed vote; had the failed vote been a keep, it would have reached `medium`, so the finding is neither kept nor cleared: it is in `unreviewed`. And `meta.incomplete` holds the finding the harness could not read:

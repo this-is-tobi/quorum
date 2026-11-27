@@ -86,6 +86,7 @@ function hostileFinding(text: string, index: number): Verdict {
     evidence: [` before ${text}`, `+cited ${text}`, ' after'].join('\n'),
     evidenceRow: 1,
     quoteMatched: true,
+    foundBy: { kind: 'model' },
     keptVotes: 3,
     totalVotes: 3,
     confidence: 'high',

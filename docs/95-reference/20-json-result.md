@@ -31,6 +31,7 @@ Each list keeps the order in which the finder listed its findings, the first pro
 | `evidence` | string | The diff's lines around `line`, up to two on each side within its hunk, each with its `+`, `-` or space marker, read from the diff by the harness and capped at 2,000 characters |
 | `evidenceRow` | number | The index, from 0, of the row of `evidence` that shows `line`: a reader marks it and numbers the rows around it, a `+` or space row counting a new-file line and a `-` row none. The key is absent when no row shows the line, as for a hunk that only deletes lines, or when the evidence's cap of 2,000 characters cut that row |
 | `quoteMatched` | boolean | Whether the code the finder quoted appears in the evidence, which is read at `line`, once each evidence line's marker is removed and whitespace is collapsed on both sides; a quote that keeps its own `+` or `-` does not match. It is `true` for a finding the harness moved to its quote. A measure of hallucinated citations |
+| `foundBy` | object | What proposed the finding: `{ "kind": "model" }` for a finding the model's finder reported in its reply to the research request. Code sets it where research reads the replies, so no word of a model's is in it, and no request reads it. It follows `quoteMatched` in every verdict, the public view's too. Required in every verdict of this release: a result of 0.15.0 has none, and `readResult` refuses it |
 | `keptVotes` | number | The votes that kept the finding |
 | `totalVotes` | number | The votes asked for, one per lens, failed ones included |
 | `confidence` | `"high"`, `"medium"` or `"low"` | The highest level the kept votes reach. A discarded or unreviewed verdict reached none: the JSON leaves the key out, and in the object `review` resolves with, the key is there with the value `undefined` |
@@ -490,6 +491,7 @@ Everything else is as in the full result: the findings with their evidence and t
       "evidence": "+  return db.query(sql)",
       "evidenceRow": 0,
       "quoteMatched": true,
+      "foundBy": { "kind": "model" },
       "keptVotes": 2,
       "totalVotes": 3,
       "confidence": "medium",
@@ -545,6 +547,7 @@ A review of a diff that touches three files, run on the one provider, named `def
       "evidence": "-  return db.query('SELECT * FROM users WHERE id = $1', [id])\n+  const sql = `SELECT * FROM users WHERE id = ${id}`\n+  return db.query(sql)\n }",
       "evidenceRow": 2,
       "quoteMatched": true,
+      "foundBy": { "kind": "model" },
       "keptVotes": 3,
       "totalVotes": 3,
       "confidence": "high",
@@ -591,6 +594,7 @@ A review of a diff that touches three files, run on the one provider, named `def
       "evidence": "   const name = path.basename(file.name)\n+  fs.writeFileSync(path.join(UPLOADS, name), file.data)\n }",
       "evidenceRow": 1,
       "quoteMatched": true,
+      "foundBy": { "kind": "model" },
       "keptVotes": 1,
       "totalVotes": 3,
       "votes": [
@@ -636,6 +640,7 @@ A review of a diff that touches three files, run on the one provider, named `def
       "evidence": "-  return crypto.randomBytes(32).toString('hex')\n+  return Math.random().toString(36).slice(2)\n }",
       "evidenceRow": 1,
       "quoteMatched": true,
+      "foundBy": { "kind": "model" },
       "keptVotes": 1,
       "totalVotes": 3,
       "votes": [
