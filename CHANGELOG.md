@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.16.0](https://github.com/this-is-tobi/quorum/compare/v0.15.0...v0.16.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* meta.settings holds a new required maxScannerIssues, so a settings record a program builds by hand without it is refused by review.
+* the payload's version is 2, each comment of the payload holds a new field, subject, and each finding of the MCP result a new field, foundBy: a strict reader must accept them.
+* meta.context holds a new required reports list, the gap reasons report-unreadable, report-partial and issues-capped are new, a public view's discarded may now list verdicts, and an estimate's profiles hold candidates: a strict reader of 0.15.0's results must accept them.
+* every finding of the JSON result holds a new required field, foundBy, so a strict reader of 0.15.0's results must accept it.
+
+### Features
+
+* judge a scanner's issues on the change with the same blind panel as the finder's findings ([f43b183](https://github.com/this-is-tobi/quorum/commit/f43b1835da4f065b9951171c751dc80e1b459515))
+* read SARIF logs and saved SonarQube responses as data, with the path rules ([fa849a4](https://github.com/this-is-tobi/quorum/commit/fa849a47fa587798a580ac8c68d8cf8dbbb85148))
+* read the SARIF and SonarQube reports CI wrote with --sarif, --sonarqube and --scan-root ([7395b3e](https://github.com/this-is-tobi/quorum/commit/7395b3e69e6abe1d546c1cea73b8f5c8bb0c9d32))
+* say what found each finding, in a foundBy field every verdict holds ([4768bdc](https://github.com/this-is-tobi/quorum/commit/4768bdc3d3ba54919db03df377af9f8df30a89f7))
+* show a scanner's findings and dismissed issues in the summary, the payload, SARIF and MCP ([545e32e](https://github.com/this-is-tobi/quorum/commit/545e32e07d0edec65a43306f33a20a0313c9c328))
+* show each scanner report's counts, a scanner's finding and the dismissed issues on a terminal ([f4a7276](https://github.com/this-is-tobi/quorum/commit/f4a7276d45192000eb3b21eb7de085a5fdc65220))
+* turn a scanner's issues into candidates on the change, each counted under one outcome ([a551bbb](https://github.com/this-is-tobi/quorum/commit/a551bbb34f9b3cfd1dfffd44de11ea921cce7a5f))
+
 ## [0.15.0](https://github.com/this-is-tobi/quorum/compare/v0.14.0...v0.15.0) (2026-11-26)
 
 
