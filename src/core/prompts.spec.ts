@@ -5,9 +5,9 @@ import { researchReplyJsonSchema, researchReplyWithRuleJsonSchema } from './outp
 import type { TemplatePart } from './prompts.ts'
 import { DO_NOT_REPORT_LINE, doNotReportInstructions, fence, FINDING_FIELDS, FINDING_FIELDS_WITH_RULE, renderTemplate, requestDigest, researchRequest, templateParts, UNTRUSTED_CONTENT_NOTICE, voteRequest } from './prompts.ts'
 import { ruleEntry, rulesBlock } from './rules.ts'
-import type { ReviewRule } from './types.ts'
+import type { Finding, ReviewRule } from './types.ts'
 
-const finding = {
+const finding: Finding = {
   id: '0123456789ab',
   fingerprint: '7e14f27a57f3c349:1',
   profile: 'security',
@@ -17,6 +17,7 @@ const finding = {
   summary: 'command injection',
   evidence: '+exec(cmd)',
   quoteMatched: true,
+  foundBy: { kind: 'model' },
 }
 
 describe('fence', () => {
@@ -601,7 +602,7 @@ describe('the digests of 0.12.0', () => {
     expect(requestDigest(researchRequest(securityProfile.prompts.research, diff, undefined, part, { findings: 50, replyTokens: 4096 }))).toBe('35141cc7686074ff0401d3151656abdc8a4d4b1ff97bd9c8bef3787e216c128d')
     const lens = securityProfile.lenses[0]
     const instructions = renderTemplate(securityProfile.prompts.vote, { 'lens.id': lens.id, 'lens.question': lens.question, 'panel.size': '3' })
-    const cited = {
+    const cited: Finding = {
       id: 'x',
       fingerprint: 'y',
       profile: 'security',
@@ -611,6 +612,7 @@ describe('the digests of 0.12.0', () => {
       summary: 'command injection',
       evidence: '>    1 + exec(cmd)',
       quoteMatched: true,
+      foundBy: { kind: 'model' },
     }
     expect(lens.id).toBe('reachability')
     expect(requestDigest(voteRequest(instructions, cited, diff, undefined, false, { replyTokens: 1024 }))).toBe('063c31adfa479898b3d30c174cd3a34654623b203d708ebedc9e71c7d9c644eb')

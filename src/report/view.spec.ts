@@ -587,6 +587,33 @@ describe('publicView', () => {
     expect(Object.hasOwn(moved.unreviewed[0], 'citedLine')).toBe(false)
   })
 
+  it('keeps a verdict\'s foundBy in the public view', () => {
+    const result = reportResult({
+      kept: [SQL],
+      unreviewed: [TOKEN],
+    })
+    const view = publicView(result)
+    for (const verdict of [
+      ...view.kept,
+      ...view.unreviewed,
+    ]) {
+      expect(verdict.foundBy).toEqual({ kind: 'model' })
+      const keys = Object.keys(verdict)
+      expect(keys.indexOf('foundBy')).toBe(keys.indexOf('quoteMatched') + 1)
+    }
+    expect(inertJson(view)).toContain('"foundBy": {')
+    // A kind quorum does not write is no view it writes.
+    expect(() => publicView({
+      ...result,
+      kept: [
+        {
+          ...SQL,
+          foundBy: { kind: 'tool' } as unknown as Verdict['foundBy'],
+        },
+      ],
+    })).toThrow('the public view is not one quorum writes, at kept.0.foundBy.kind')
+  })
+
   it('keeps a vote\'s lens, its keep, null when it failed, and its failure', () => {
     const votes: LensVote[] = [
       cast(true),

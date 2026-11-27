@@ -36,6 +36,7 @@ export const SQL: Verdict = {
   evidence: ' const sql = \'SELECT * FROM users WHERE id = \' + id\n+db.query(sql)\n return rows',
   evidenceRow: 1,
   quoteMatched: true,
+  foundBy: { kind: 'model' },
   keptVotes: 3,
   totalVotes: 3,
   confidence: 'high',
@@ -56,6 +57,7 @@ export const TOKEN: Verdict = {
   evidence: '-  return crypto.randomBytes(32).toString(\'hex\')\n+  return Math.random().toString(36).slice(2)\n }',
   evidenceRow: 1,
   quoteMatched: true,
+  foundBy: { kind: 'model' },
   keptVotes: 1,
   totalVotes: 3,
   votes: [

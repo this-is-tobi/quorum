@@ -102,6 +102,9 @@ function verdictOf<Votes extends z.ZodType>(votes: Votes) {
     evidence: z.string().max(MAX_EVIDENCE),
     evidenceRow: z.int().min(0).max(2).optional(),
     quoteMatched: z.boolean(),
+    foundBy: z.strictObject({
+      kind: z.literal('model'),
+    }),
     keptVotes: count,
     totalVotes: count,
     confidence: confidence.optional(),

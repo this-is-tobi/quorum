@@ -366,6 +366,7 @@ export function verdict(file: string, line: number, confidence?: Confidence): Ve
     summary: 'A command is built from input.',
     evidence: '+exec(cmd)',
     quoteMatched: true,
+    foundBy: { kind: 'model' },
     keptVotes: 1,
     totalVotes: 1,
     votes: [
@@ -824,6 +825,7 @@ export function largestVote(patch: string): number {
       summary: 's'.repeat(500),
       evidence: section.split('\n').toSorted((first, second) => utf8Length(second) - utf8Length(first)).slice(0, 5).join('\n').slice(0, 2000),
       quoteMatched: true,
+      foundBy: { kind: 'model' },
     }
     for (const text of instructions) largest = Math.max(largest, guardTokens(voteRequest(text, finding, section)))
   }

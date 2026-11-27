@@ -42,6 +42,7 @@ describe('checkReply', () => {
         evidence: '-safe()\n+exec(cmd)\n b()\n c()',
         evidenceRow: 1,
         quoteMatched: true,
+        foundBy: { kind: 'model' },
       },
     ])
     expect(outcome.invalid).toEqual(['missing.js:1 is not in the diff', 'a.js:99 is not in the diff'])
@@ -58,6 +59,13 @@ describe('checkReply', () => {
     expect(checkReply(reply([
       { ...reported, line: 2 },
     ]), sections, 'security').findings[0].id).toBe('ed67093bf6db')
+  })
+
+  it('says every finding the finder reported was found by the model', () => {
+    const { findings } = checkReply(reply([reported]), sections, 'security')
+    expect(findings[0].foundBy).toEqual({ kind: 'model' })
+    const keys = Object.keys(findings[0])
+    expect(keys.indexOf('foundBy')).toBe(keys.indexOf('quoteMatched') + 1)
   })
 
   it('gives different ids to findings whose fields only collide once joined with colons', () => {

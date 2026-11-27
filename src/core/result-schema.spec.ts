@@ -50,6 +50,38 @@ describe('the schemas of a result', () => {
     }
   })
 
+  it('reads a finding\'s foundBy, and refuses a verdict without one or with a kind it does not know', () => {
+    const full = saved(reportResult())
+    expect(full.kept[0].foundBy).toEqual({ kind: 'model' })
+    expect(resultSchema.safeParse(full).success).toBe(true)
+    const { foundBy: _none, ...bare } = full.kept[0]
+    const forged = (foundBy: unknown): Forged => ({
+      ...full,
+      kept: [
+        { ...full.kept[0], foundBy },
+      ],
+    })
+    const pathsOf = (input: Forged): string[] => resultSchema.safeParse(input).error?.issues.map(issue => issue.path.join('.')) ?? []
+    expect(pathsOf({
+      ...full,
+      kept: [bare],
+    })).toEqual(['kept.0.foundBy'])
+    expect(pathsOf(forged({ kind: 'tool' }))).toEqual(['kept.0.foundBy.kind'])
+    expect(pathsOf(forged({ kind: 'model', extra: 1 }))).toEqual(['kept.0.foundBy'])
+    expect(pathsOf(forged(undefined))).toEqual(['kept.0.foundBy'])
+    // The public view's verdicts hold it the same way.
+    const view = saved(publicView(reportResult()))
+    expect(publicViewSchema.safeParse({
+      ...view,
+      kept: [
+        {
+          ...view.kept[0],
+          foundBy: { kind: 'tool' },
+        },
+      ],
+    }).error?.issues.map(issue => issue.path.join('.'))).toEqual(['kept.0.foundBy.kind'])
+  })
+
   it('reads a file skipped with the rule test in meta.leftOut, in the public view too', () => {
     const result = reportResult({
       meta: {

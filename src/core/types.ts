@@ -13,6 +13,14 @@ import type { PolicyRules } from './policy.ts'
 import type { ReplyStore } from './ports.ts'
 import type { Removed } from './sanitize.ts'
 
+/** A finding the model's finder proposed, in its reply to the research request. */
+export interface ModelFound {
+  kind: 'model'
+}
+
+/** What proposed a finding: today only the model's finder. */
+export type FoundBy = ModelFound
+
 /**
  * A candidate issue after the harness checked it against the diff. The finder supplies the file,
  * line, category and claim; the evidence is read from the diff by code, never from the finder.
@@ -55,6 +63,11 @@ export interface Finding {
   evidenceRow?: number
   /** Whether the finder's quote appears in the evidence, which is read at the final `line`: a measure of hallucinated citations. */
   quoteMatched: boolean
+  /**
+   * What proposed the finding, set by code where research reads its replies and never read by a request, so it moves no digest and
+   * no store key: `{ kind: 'model' }` for a finding the model's finder reported.
+   */
+  foundBy: FoundBy
 }
 
 /**
