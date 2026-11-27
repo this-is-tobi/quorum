@@ -15,6 +15,7 @@
  */
 
 import type { ProfileBudgets } from '../core/budgets.ts'
+import { DEFAULT_MAX_SCANNER_ISSUES } from '../core/candidates.ts'
 import { documentSha256 } from '../core/documents.ts'
 import { DEFAULT_MAX_REVIEW_TOKENS, DEFAULT_REVIEW_TIMEOUT_MS } from '../core/limits.ts'
 import { DEFAULT_PART_TOKENS } from '../core/parts.ts'
@@ -382,7 +383,7 @@ function profileSettings({ profile, research, voters }: ResolvedProfile, budgets
 
 /**
  * The settings a review of `config` ran under, for a result to record (`ReviewInput.settings`): the runtime, the config's `strict`,
- * `concurrency` (`auto` when unset) and `exclude`, the review's bounds each with where it came from, each provider of the config as
+ * `concurrency` (`auto` when unset) and `exclude`, the review's bounds each with where it came from, `maxScannerIssues` (the config's or the default), each provider of the config as
  * `providerView` writes it for a result, and each profile it runs. The bounds are those of `facts.bounds` when the review derived
  * them, else the config's or the default: `findingsCap` is the config's `findingsCap`, else its `maxFindings`, else the default.
  * A prompt and a lens question are their hashes, as `--print-config` prints them. The record holds no base URL, origin, command, args or key, no header or query
@@ -403,6 +404,7 @@ export function reviewSettings(config: ResolvedConfig, facts: SettingsFacts): Re
     findingsCap: bounds === undefined
       ? configured(config.findingsCap ?? config.maxFindings, DEFAULT_MAX_FINDINGS)
       : { ...bounds.findingsCap },
+    maxScannerIssues: configured(config.maxScannerIssues, DEFAULT_MAX_SCANNER_ISSUES),
     maxReviewTokens: bounds === undefined
       ? configured(config.maxReviewTokens, DEFAULT_MAX_REVIEW_TOKENS)
       : { ...bounds.maxReviewTokens },

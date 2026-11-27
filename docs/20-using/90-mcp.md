@@ -48,7 +48,7 @@ The tool is `review`. Its description, its schema and its annotations are the sa
 | `at` | With `paths` alone: the commit to read, `HEAD` by default |
 | `profiles` | The profiles to run, among the server's own, none twice; all of them by default |
 
-An argument of another name is refused, `large`, `send` and `diff` included. The sources are the CLI's: [Sources](./15-sources.md).
+An argument of another name is refused, `large`, `send` and `diff` included. The sources are the CLI's: [Sources](./15-sources.md). The server reads no scanner report either: `--sarif`, `--sonarqube` and `--scan-root` are unknown options at launch, exit `2`, since a scan is the command line's: [Scanner reports](./85-scanner-reports.md).
 
 - **`profiles` narrows.** The server holds the config it read at the start, resolved again for the profiles a call names, and reads no file again.
 - **One review at a time.** A call made while a review runs is answered at once that a review is running, and so is one made right after a call was cancelled, until the cancelled review has stopped: the agent waits, then calls again.

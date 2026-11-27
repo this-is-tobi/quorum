@@ -1,7 +1,39 @@
 import { describe, expect, it } from 'vitest'
-import { reportPath, reportPathsOf } from './paths.ts'
+import { isScanRoot, reportPath, reportPathsOf } from './paths.ts'
 
 const CHECKOUT = '/home/runner/work/app/app'
+
+describe('isScanRoot', () => {
+  it.each([
+    '/',
+    '/src',
+    '/src/',
+    '/home/runner/work/app/app',
+    '/repo/packages/app//',
+    '/a...b/c',
+    '/a b/c',
+  ])('takes %j, an absolute directory with no empty, . or .. segment', (root) => {
+    expect(isScanRoot(root)).toBe(true)
+  })
+
+  it.each([
+    '',
+    'src',
+    './src',
+    '../src',
+    'C:/src',
+    '/a//b',
+    '//a',
+    '/a/./b',
+    '/./a',
+    '/a/../b',
+    '/a/..',
+    '/..',
+    '/.',
+  ])('refuses %j', (root) => {
+    expect(isScanRoot(root)).toBe(false)
+  })
+})
 
 describe('reportPathsOf', () => {
   it('takes the scan root, else the top level, with its trailing slash dropped', () => {

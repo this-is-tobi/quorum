@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as api from './index.ts'
-import { fileStore, readSource, runQuorum } from './index.ts'
+import { fileStore, readContext, readSource, runQuorum, securityProfile } from './index.ts'
+import type { ReportRequest, ResolvedConfig } from './index.ts'
 import { isolateEnv } from './testing/env.ts'
 import { chatReply, ollamaReply } from './testing/http.ts'
 
@@ -147,6 +148,94 @@ describe('readSource', () => {
         { path: 'kind', message: 'must be diff, range, local, staged or paths' },
       ],
     })
+  })
+})
+
+describe('readContext', () => {
+  const config: ResolvedConfig = {
+    providers: {},
+    profiles: [
+      {
+        profile: securityProfile,
+        research: 'p',
+        voters: Object.fromEntries(securityProfile.lenses.map(lens => [lens.id, 'p'])),
+        repository: [],
+      },
+    ],
+    warnings: [],
+  }
+
+  it('takes the reports to read and the scan root they were written at, and reads them as data', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'quorum-index-')))
+    try {
+      writeFileSync(join(root, 'scan.sarif'), JSON.stringify({
+        version: '2.1.0',
+        runs: [
+          {
+            tool: {
+              driver: { name: 'Semgrep' },
+            },
+            results: [
+              {
+                ruleId: 'js.exec',
+                message: { text: 'user input reaches a command' },
+                locations: [
+                  {
+                    physicalLocation: {
+                      artifactLocation: { uri: 'file:///scan/a.js' },
+                      region: { startLine: 1 },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }))
+      // The path is the working directory's own, and a diff has no repository to open.
+      const reports: ReportRequest[] = [
+        { format: 'sarif', path: 'scan.sarif' },
+      ]
+      const rooted = await readContext(config, {
+        source: { kind: 'diff' },
+        cwd: root,
+        env: {},
+        reports,
+        scanRoot: '/scan',
+      })
+      expect(rooted.reports?.map(report => [
+        report.profile,
+        report.scanner,
+        report.issues.map(issue => issue.path),
+      ])).toEqual([
+        [
+          'security',
+          'Semgrep',
+          ['a.js'],
+        ],
+      ])
+      const bare = await readContext(config, {
+        source: { kind: 'diff' },
+        cwd: root,
+        env: {},
+        reports,
+      })
+      expect(bare.reports?.[0].issues.map(issue => issue.unmapped)).toEqual([true])
+      await expect(readContext(config, {
+        source: { kind: 'diff' },
+        cwd: root,
+        env: {},
+        reports,
+        scanRoot: 'scan',
+      })).rejects.toMatchObject({
+        name: 'ConfigError',
+        issues: [
+          { path: 'scanRoot', message: 'must be an absolute directory' },
+        ],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 

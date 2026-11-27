@@ -615,6 +615,7 @@ export const settingsSchema = z.strictObject({
   partTokens: settingValue,
   maxFindings: settingValue,
   findingsCap: settingValue,
+  maxScannerIssues: settingValue,
   maxReviewTokens: settingValue,
   reviewTimeoutMs: settingValue,
   providers: table(providerSettings),

@@ -23,6 +23,16 @@ function withoutTrailingSlash(directory: string): string {
 }
 
 /**
+ * Whether `directory` can be a scan root: an absolute path whose segments are none empty, `.` or `..`, its trailing `/` aside, so `/`
+ * is one. `reportPathsOf` trusts the root it is given; the flag and the library check it here, and no file system is read.
+ */
+export function isScanRoot(directory: string): boolean {
+  if (!directory.startsWith('/')) return false
+  const root = withoutTrailingSlash(directory)
+  return root === '' || !BAD_SEGMENT.test(root.slice(1))
+}
+
+/**
  * The path rules' two facts, from the scan root a person gave and the repository's top level: the root is the scan root, else the top
  * level, and its place is its path below the top level. A scan root outside the top level (a container's `/src`) stands for the
  * top level itself, and the root is never resolved through the file system.

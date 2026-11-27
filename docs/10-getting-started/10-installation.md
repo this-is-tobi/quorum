@@ -183,6 +183,9 @@ Options:
       --no-default-skips   Review in --path the vendored, lockfile, minified, binary and test files too
       --large              Does nothing, and goes in a later release: a --path review's token cap follows its estimate
       --send <path>        Send a file held as a secret to the models all the same; repeat it to send several
+      --sarif <path>       Read a SARIF log a scan wrote, written [<profile>=]<path>; its issues on the change are judged like findings; repeat it to read several
+      --sonarqube <path>   Read a saved SonarQube api/issues/search response, written [<profile>=]<path>; repeat it to read several
+      --scan-root <dir>    The absolute directory the scanners ran in, stripped from the absolute paths their reports name; the repository's top level by default
       --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx
       --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile
   -f, --format <format>    Write the report on stdout in this format: text, json, brief, markdown, payload or sarif; text on a terminal, else json

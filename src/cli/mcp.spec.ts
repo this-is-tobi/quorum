@@ -126,6 +126,31 @@ describe('quorum mcp', () => {
   })
 
   it.each([
+    ['--sarif', 'a.sarif'],
+    ['--sonarqube', 'a.json'],
+    ['--scan-root', '/scan'],
+  ])('refuses %s at launch as an unknown option', async (flag, value) => {
+    const fetchMock = stubModels({})
+    const root = directory()
+    const git = fakeRepository(root)
+    const { io, stdout, stderr } = harness({
+      cwd: root,
+      git: git.seam,
+      env: {
+        QUORUM_CONFIG: join(root, 'missing.yaml'),
+      },
+    })
+
+    // The server reads no report: an agent's review runs over the changes it names, and a scan is the CLI's.
+    expect(await runMcp(io, [flag, value])).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr().startsWith(`Error: Unknown option '${flag}'`)).toBe(true)
+    expect(stderr().endsWith(`\n${MCP_USAGE}`)).toBe(true)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(git.calls).toEqual([])
+  })
+
+  it.each([
     [
       ['0'],
       'must be a whole number of tokens, from 1',

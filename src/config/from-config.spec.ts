@@ -5,7 +5,7 @@ import type { ConfigIssue } from '../core/errors.ts'
 import type { CompletionRequest, CompletionResponse } from '../core/ports.ts'
 import { researchRequest } from '../core/prompts.ts'
 import { requestTokens } from '../core/tokens.ts'
-import type { Quorum, QuorumEvent, ReviewDocument } from '../core/types.ts'
+import type { Quorum, QuorumEvent, ReviewDocument, ScannerIssue } from '../core/types.ts'
 import { securityProfile } from '../profiles/security.ts'
 import { isolateEnv } from '../testing/env.ts'
 import { chatReply, ollamaReply, sent } from '../testing/http.ts'
@@ -818,6 +818,44 @@ describe('fromConfig', () => {
     expect(result.meta.incomplete).toEqual([
       { profile: 'security', reason: 'findings-capped', detail: '1 of 2 reported findings were not reviewed, the last ones of the replies that listed the most (the cap is 1): raise findingsCap' },
     ])
+  })
+
+  it('gives the quorum the config\'s maxScannerIssues, the most issues of a report each profile\'s panel judges', async () => {
+    const complete = vi.fn<(request: CompletionRequest) => Promise<CompletionResponse>>()
+      .mockResolvedValue({ text: '{"findings":[]}', model: 'm' })
+    const twoLines = `${diff}\n+eval(x)`.replace('@@ -1 +1 @@', '@@ -1 +1,2 @@')
+    const issue = (line: number): ScannerIssue => ({
+      path: 'a.js',
+      line,
+      scanner: 'Semgrep',
+      ruleId: 'js.exec',
+      message: 'user input reaches a command',
+      level: 'warning',
+    })
+    const context = {
+      reports: [
+        {
+          format: 'sarif',
+          profile: 'security',
+          problems: [],
+          skipped: 0,
+          unreadable: 0,
+          issues: [
+            issue(1),
+            issue(2),
+          ],
+        },
+      ],
+    } as const
+    const quorumOf = (extra: Record<string, unknown>): Promise<Quorum> => fromConfig({
+      providers: {
+        mine: { model: 'm', complete },
+      },
+      ...extra,
+    }, { env: {} })
+
+    expect((await quorumOf({})).estimate({ diff: twoLines, context }).profiles.security.candidates).toBe(2)
+    expect((await quorumOf({ maxScannerIssues: 1 })).estimate({ diff: twoLines, context }).profiles.security.candidates).toBe(1)
   })
 
   it('hands exclude to the quorum it builds', async () => {

@@ -250,6 +250,12 @@
       "minimum": 1,
       "maximum": 9007199254740991
     },
+    "maxScannerIssues": {
+      "description": "The scanner issues on the change each profile's panel judges in one review; the rest is an issues-capped gap. 50 when unset",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
     "partTokens": {
       "description": "The most tokens of diff text, at one token per byte, one research request of a large change holds; 32768 when unset",
       "type": "integer",

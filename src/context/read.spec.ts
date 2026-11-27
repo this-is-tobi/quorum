@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { resolveProfiles } from '../config/profiles.ts'
 import type { ResolvedConfig } from '../config/resolve.ts'
 import type { ConfigInput } from '../config/schema.ts'
@@ -10,6 +13,7 @@ import { securityProfile } from '../profiles/security.ts'
 import { fakeGit, treeReply } from '../testing/git.ts'
 import { readContext } from './read.ts'
 import type { ContextOptions } from './read.ts'
+import type { ReportRequest } from './reports.ts'
 
 const BASE = 'b'.repeat(40)
 const MERGE_BASE = 'c'.repeat(40)
@@ -320,5 +324,231 @@ describe('readContext', () => {
     expect(await issuesOf(readContext(required, { ...options, source }))).toEqual([
       { path: 'profiles.naming.guidelines.0.repository', message: `"NOT-THERE.md" is not a file of the commit ${BASE.slice(0, 7)} the review reads it from` },
     ])
+  })
+})
+
+describe('readContext reports', () => {
+  const RANGE: ReviewSource = {
+    kind: 'range',
+    base: BASE,
+    mergeBase: MERGE_BASE,
+    head: HEAD,
+    objectFormat: SHA1,
+  }
+  const SECURITY = configOf({ security: {} })
+  const written = (uri: string): unknown => ({
+    ruleId: 'R',
+    message: { text: 'm' },
+    locations: [
+      {
+        physicalLocation: {
+          artifactLocation: { uri },
+          region: { startLine: 4 },
+        },
+      },
+    ],
+  })
+
+  /** A directory of its own for the report files, which every test names by their absolute paths. */
+  let dir = ''
+  let scan: ReportRequest
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'quorum-context-'))
+    writeFileSync(join(dir, 'scan.sarif'), JSON.stringify({
+      version: '2.1.0',
+      runs: [
+        {
+          tool: {
+            driver: { name: 'Scanner' },
+          },
+          results: [
+            written('file:///repo/src/a.js'),
+            written('src/b.js'),
+          ],
+        },
+      ],
+    }))
+    scan = {
+      format: 'sarif',
+      path: join(dir, 'scan.sarif'),
+      profile: 'security',
+    }
+  })
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  /** The calls of a fake git that asked for the repository's top level or its version: one each for each time the repository was opened. */
+  const openings = (calls: ReturnType<typeof git>['calls']): string[] => calls
+    .map(call => call.command.join(' '))
+    .filter(command => command === '--version' || command === 'rev-parse --show-toplevel')
+
+  it('reads the reports with the repository\'s top level as the scan root, opening the repository once', async () => {
+    const { options, calls } = git()
+
+    const context = await readContext(TWO, {
+      ...options,
+      source: RANGE,
+      reports: [scan],
+    })
+
+    // The documents and the reports share the one opening, and the listing and the blobs are read once.
+    expect(openings(calls)).toEqual(['--version', 'rev-parse --show-toplevel'])
+    expect(calls.filter(call => call.command[0] === 'ls-tree')).toHaveLength(1)
+    expect(context.documents).toHaveLength(3)
+    expect(context.reports).toHaveLength(1)
+    expect(context.reports?.[0]).toMatchObject({
+      format: 'sarif',
+      profile: 'security',
+      scanner: 'Scanner',
+      problems: [],
+    })
+    // An absolute path under the top level loses it, and a relative one is the repository's own.
+    expect(context.reports?.[0].issues.map(issue => issue.path)).toEqual(['src/a.js', 'src/b.js'])
+  })
+
+  it('opens the repository for a config that reads no document, to find the top level the reports name, and returns the reports alone', async () => {
+    const { options, calls } = git()
+
+    const context = await readContext(SECURITY, {
+      ...options,
+      source: RANGE,
+      reports: [scan],
+    })
+
+    expect(openings(calls)).toEqual(['--version', 'rev-parse --show-toplevel'])
+    expect(calls.some(call => call.command[0] === 'ls-tree')).toBe(false)
+    expect(Object.keys(context)).toEqual(['reports'])
+  })
+
+  it('puts a scan root below the top level in front of every path, and leaves an absolute path outside it unmapped', async () => {
+    const { options, calls } = git()
+
+    const context = await readContext(SECURITY, {
+      ...options,
+      source: RANGE,
+      reports: [scan],
+      scanRoot: '/repo/packages/app/',
+    })
+
+    expect(openings(calls)).toEqual(['--version', 'rev-parse --show-toplevel'])
+    expect(context.reports?.[0].issues.map(({ path, unmapped }) => [path, unmapped])).toEqual([
+      [undefined, true],
+      ['packages/app/src/b.js', undefined],
+    ])
+  })
+
+  it('reads a diff source\'s reports with no scan root, so absolute paths are unmapped', async () => {
+    const { options, calls } = git()
+    const source: ReviewSource = { kind: 'diff' }
+
+    const bare = await readContext(SECURITY, {
+      ...options,
+      source,
+      reports: [scan],
+    })
+    expect(bare.reports?.[0].issues.map(({ path, unmapped }) => [path, unmapped])).toEqual([
+      [undefined, true],
+      ['src/b.js', undefined],
+    ])
+    const rooted = await readContext(SECURITY, {
+      ...options,
+      source,
+      reports: [scan],
+      scanRoot: '/repo',
+    })
+    expect(rooted.reports?.[0].issues.map(issue => issue.path)).toEqual(['src/a.js', 'src/b.js'])
+    // A diff has no repository to open.
+    expect(calls).toEqual([])
+  })
+
+  it('reads a report file that is missing as a report with its problem, and never throws for it', async () => {
+    const { options } = git()
+    const missing: ReportRequest = {
+      format: 'sonarqube',
+      path: join(dir, 'missing.json'),
+      profile: 'security',
+    }
+
+    expect((await readContext(SECURITY, {
+      ...options,
+      source: RANGE,
+      reports: [missing],
+    })).reports).toEqual([
+      {
+        format: 'sonarqube',
+        profile: 'security',
+        problems: ['missing'],
+        skipped: 0,
+        unreadable: 0,
+        issues: [],
+      },
+    ])
+  })
+
+  it('refuses a profile a report names that does not run, and a report with no profile while several run, before any git', async () => {
+    const { options, calls } = git()
+    const reports: ReportRequest[] = [
+      { format: 'sarif', path: scan.path, profile: 'securty' },
+      { format: 'sonarqube', path: scan.path },
+    ]
+
+    expect(await issuesOf(readContext(TWO, { ...options, source: RANGE, reports }))).toEqual([
+      { path: '--sarif', message: 'names the profile "securty", which does not run' },
+      { path: '--sonarqube', message: 'must name a profile when several run' },
+    ])
+    expect(calls).toEqual([])
+  })
+
+  it.each([
+    ['a relative one', 'packages/app'],
+    ['one with a .. segment', '/repo/../etc'],
+    ['an empty one', ''],
+  ])('refuses a scan root that is no absolute directory (%s), before any git', async (_words, scanRoot) => {
+    const { options, calls } = git()
+
+    expect(await issuesOf(readContext(SECURITY, {
+      ...options,
+      source: RANGE,
+      reports: [scan],
+      scanRoot,
+    }))).toEqual([
+      { path: 'scanRoot', message: 'must be an absolute directory' },
+    ])
+    expect(calls).toEqual([])
+  })
+
+  it('refuses more than 16 reports before reading any, and takes 16', async () => {
+    const { options, calls } = git()
+    const many = (count: number): ReportRequest[] => Array.from<ReportRequest>({ length: count }).fill(scan)
+
+    expect(await issuesOf(readContext(SECURITY, {
+      ...options,
+      source: RANGE,
+      reports: many(17),
+    }))).toEqual([
+      { path: 'reports', message: 'takes at most 16 reports in all' },
+    ])
+    expect(calls).toEqual([])
+    expect((await readContext(SECURITY, {
+      ...options,
+      source: RANGE,
+      reports: many(16),
+    })).reports).toHaveLength(16)
+  })
+
+  it('refuses a repository document on a diff source before it reads a report', async () => {
+    const { options, calls } = git()
+
+    expect(await issuesOf(readContext(TWO, {
+      ...options,
+      source: { kind: 'diff' },
+      reports: [scan],
+    }))).toEqual([
+      { path: 'profiles.naming.guidelines.0.repository', message: `"REVIEW.md" ${NO_SOURCE_COMMIT}` },
+      { path: 'profiles.naming.doNotReport.0.repository', message: `".github/SKIP.md" ${NO_SOURCE_COMMIT}` },
+      { path: 'profiles.security.guidelines.0.repository', message: `"REVIEW.md" ${NO_SOURCE_COMMIT}` },
+    ])
+    expect(calls).toEqual([])
   })
 })

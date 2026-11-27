@@ -132,6 +132,9 @@ const USAGE = [
   '      --no-default-skips   Review in --path the vendored, lockfile, minified, binary and test files too',
   '      --large              Does nothing, and goes in a later release: a --path review\'s token cap follows its estimate',
   '      --send <path>        Send a file held as a secret to the models all the same; repeat it to send several',
+  '      --sarif <path>       Read a SARIF log a scan wrote, written [<profile>=]<path>; its issues on the change are judged like findings; repeat it to read several',
+  '      --sonarqube <path>   Read a saved SonarQube api/issues/search response, written [<profile>=]<path>; repeat it to read several',
+  '      --scan-root <dir>    The absolute directory the scanners ran in, stripped from the absolute paths their reports name; the repository\'s top level by default',
   '      --allow-incomplete   Exit 0 instead of 4 when every gap is a vote that failed in passing: a dropped connection, a timeout, or an HTTP 408, 409, 429 or 5xx',
   '      --fail-on <level>    Exit 1 for a kept finding at or above high, medium or low, or never with none; <profile>=<level> sets one profile',
   '  -f, --format <format>    Write the report on stdout in this format: text, json, brief, markdown, payload or sarif; text on a terminal, else json',
@@ -4658,7 +4661,7 @@ describe('the sources', () => {
       '       quorum mcp [options]',
     ])
     const options = lines.slice(lines.indexOf('Options:') + 1).filter(line => line !== '')
-    expect(options).toHaveLength(23)
+    expect(options).toHaveLength(26)
     for (const line of options) {
       expect(line.slice(0, 27).trim(), line).toMatch(/^(?:-\w, )?--[a-z-]+(?: <\w+>)?$/)
       expect(line.slice(25, 27), line).toBe('  ')
@@ -4709,6 +4712,486 @@ describe('the sources', () => {
     })
     expect(await runCli(reviewed.io)).toBe(EXIT.ok)
     expect(reviewed.stderr()).toContain('empty diff: nothing to review')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('scanner reports', () => {
+  const BASE = 'a'.repeat(40)
+  const HEAD = 'b'.repeat(40)
+  const MERGE = 'c'.repeat(40)
+  const TRIVY = new URL('../context/fixtures/trivy.sarif', import.meta.url)
+  const NO_FINDING = JSON.stringify({ findings: [] })
+
+  /** A fake git for the range `base...head`, whose change is `DIFF`, in a repository whose top level is `/repo`. */
+  function git(): { seam: { executable: string, spawn: ReturnType<typeof fakeGit>['spawn'] }, calls: GitCall[] } {
+    const fake = fakeGit(({ command }) => {
+      if (command[0] === 'config') return { code: 1 }
+      if (command[0] === 'rev-parse' && command[1] === '--verify') {
+        return {
+          stdout: command[4] === 'base^{commit}'
+            ? `${BASE}\n`
+            : `${HEAD}\n`,
+        }
+      }
+      if (command[0] === 'merge-base') return { stdout: `${MERGE}\n` }
+      if (command[1] === 'diff') return { stdout: DIFF }
+      if (command[0] === 'ls-files') return { stdout: '' }
+      return undefined
+    })
+    return {
+      seam: { executable: '/usr/bin/git', spawn: fake.spawn },
+      calls: fake.calls,
+    }
+  }
+
+  /** A SARIF log of one result of `Semgrep`, its rule `js.exec`, at line 1 of `uri`. */
+  const sarifAt = (uri: string): string => JSON.stringify({
+    version: '2.1.0',
+    runs: [
+      {
+        tool: {
+          driver: { name: 'Semgrep' },
+        },
+        results: [
+          {
+            ruleId: 'js.exec',
+            level: 'warning',
+            message: { text: 'user input reaches a command' },
+            locations: [
+              {
+                physicalLocation: {
+                  artifactLocation: { uri },
+                  region: { startLine: 1 },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  })
+
+  /** The words of the report's `context:` line in the plain progress mode, from stderr. */
+  const reportLines = (stderr: string): string[] => stderr.split('\n').filter(line => line.startsWith('context: report '))
+
+  it('reviews a range with --sarif security=<trivy>: the report line, the file-level finding, the record', async () => {
+    // The fixture's package-lock.json is a.js here, the file the change touches; its other two results are on the Dockerfile.
+    const text = readFileSync(TRIVY, 'utf8').replaceAll('package-lock.json', 'a.js')
+    const report = write('trivy-range.sarif', text)
+    const fetchMock = stubChat(NO_FINDING, vote(true), vote(true), vote(true))
+    const fake = git()
+    const { io, stdout, stderr } = harness({
+      argv: [
+        '--range',
+        'base...head',
+        '--sarif',
+        `security=${report}`,
+        '--progress',
+        'plain',
+        '--format',
+        'json',
+      ],
+      env: MODEL,
+      git: fake.seam,
+      platform: 'linux',
+    })
+
+    // The scanner's candidate goes through the panel as a finding does: three of three lenses keep it, so it fails the review.
+    expect(await runCli(io)).toBe(EXIT.finding)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(reportLines(stderr())).toEqual([
+      'context: report 1 sarif "Trivy" for security: 1 of 3 issues used (1 file-level); 2 not in the change',
+    ])
+    const result = JSON.parse(stdout())
+    expect(result.meta.context.reports).toEqual([
+      {
+        format: 'sarif',
+        profile: 'security',
+        scanner: 'Trivy',
+        sha256: createHash('sha256').update(text).digest('hex'),
+        status: 'read',
+        problems: [],
+        issues: {
+          listed: 3,
+          used: 1,
+          fileLevel: 1,
+          held: 0,
+          unmapped: 0,
+          notInChange: 2,
+          leftOut: 0,
+          unchanged: 0,
+          capped: 0,
+          skipped: 0,
+          unreadable: 0,
+        },
+      },
+    ])
+    expect(result.kept).toHaveLength(1)
+    expect(result.kept[0]).toMatchObject({
+      profile: 'security',
+      file: 'a.js',
+      line: 1,
+      category: 'CVE-0000-0001',
+      foundBy: {
+        kind: 'scanner',
+        report: 0,
+        scanner: 'Trivy',
+        ruleId: 'CVE-0000-0001',
+        level: 'error',
+        fileLevel: true,
+      },
+    })
+    expect(result.meta.settings.maxScannerIssues).toEqual({ value: 50, origin: 'default' })
+    // The report's path and the scan root are local names, which no line and no record holds.
+    expect(stderr()).not.toContain(report)
+    expect(stdout()).not.toContain(report)
+  })
+
+  it('reads a --sonarqube response the same way, and --scan-root names the directory a scan ran in', async () => {
+    const sonar = write('issues-range.json', JSON.stringify({
+      total: 1,
+      issues: [
+        {
+          component: 'app:a.js',
+          project: 'app',
+          rule: 'javascript:S2076',
+          message: 'Make sure this command is safe.',
+          line: 1,
+          status: 'OPEN',
+          issueStatus: 'OPEN',
+          severity: 'CRITICAL',
+        },
+      ],
+      components: [
+        { key: 'app:a.js', path: 'a.js' },
+      ],
+      rules: [
+        { key: 'javascript:S2076', name: 'OS commands should not be built from input' },
+      ],
+    }))
+    const container = write('container.sarif', sarifAt('file:///src/a.js'))
+    const run = async (argv: string[]): Promise<{ code: number, lines: string[], stdout: string }> => {
+      stubChat(NO_FINDING, vote(true), vote(true), vote(true))
+      const { io, stdout, stderr } = harness({
+        argv: [
+          '--range',
+          'base...head',
+          '--progress',
+          'plain',
+          '--format',
+          'json',
+          ...argv,
+        ],
+        env: MODEL,
+        git: git().seam,
+        platform: 'linux',
+      })
+      const code = await runCli(io)
+      return {
+        code,
+        lines: reportLines(stderr()),
+        stdout: stdout(),
+      }
+    }
+
+    const saved = await run(['--sonarqube', sonar])
+    expect(saved.code).toBe(EXIT.finding)
+    expect(saved.lines).toEqual(['context: report 1 sonarqube "SonarQube" for security: 1 of 1 issues used'])
+    expect(JSON.parse(saved.stdout).kept[0]).toMatchObject({
+      file: 'a.js',
+      foundBy: { kind: 'scanner', scanner: 'SonarQube', ruleId: 'javascript:S2076' },
+    })
+
+    // A path under a container's /src is placed under --scan-root, and without it names no file of the repository.
+    const rooted = await run([
+      '--sarif',
+      container,
+      '--scan-root',
+      '/src',
+    ])
+    expect(rooted.code).toBe(EXIT.finding)
+    expect(rooted.lines).toEqual(['context: report 1 sarif "Semgrep" for security: 1 of 1 issues used'])
+    const unrooted = await run(['--sarif', container])
+    expect(unrooted.code).toBe(EXIT.incomplete)
+    expect(unrooted.lines).toEqual(['context: report 1 sarif "Semgrep" for security: 0 of 1 issues used; 1 unmapped; read in part'])
+  })
+
+  it('runs a review whose SARIF file is missing, exits 4 with its gap, and --allow-incomplete lifts none', async () => {
+    for (const lifted of [false, true]) {
+      const fetchMock = stubChat(NO_FINDING)
+      const { io, stdout, stderr } = harness({
+        argv: [
+          '--range',
+          'base...head',
+          '--sarif',
+          join(dir, 'never-written.sarif'),
+          '--progress',
+          'plain',
+          '--format',
+          'json',
+          ...lifted
+            ? ['--allow-incomplete']
+            : [],
+        ],
+        env: MODEL,
+        git: git().seam,
+        platform: 'linux',
+      })
+
+      // A scan job that crashed costs its report, never the model's review: the research ran, and the gap is the report's.
+      expect(await runCli(io)).toBe(EXIT.incomplete)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const result = JSON.parse(stdout())
+      expect(result.meta.incomplete).toEqual([
+        { profile: 'security', reason: 'report-unreadable', detail: 'report 1 (sarif) could not be read: the file does not exist' },
+      ])
+      expect(result.meta.context.reports).toEqual([
+        {
+          format: 'sarif',
+          profile: 'security',
+          status: 'unreadable',
+          problems: ['missing'],
+          issues: {
+            listed: 0,
+            used: 0,
+            fileLevel: 0,
+            held: 0,
+            unmapped: 0,
+            notInChange: 0,
+            leftOut: 0,
+            unchanged: 0,
+            capped: 0,
+            skipped: 0,
+            unreadable: 0,
+          },
+        },
+      ])
+      expect(reportLines(stderr())).toEqual(['context: report 1 sarif for security: could not be read'])
+      expect(stderr()).not.toContain('never-written')
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it.each([
+    [
+      ['--sarif', ''],
+      '--sarif: must name a file',
+    ],
+    [
+      ['--sarif', 'security='],
+      '--sarif: must name a file',
+    ],
+    [
+      ['--sonarqube', ''],
+      '--sonarqube: must name a file',
+    ],
+    [
+      [
+        '--scan-root',
+        'rel',
+        '--sarif',
+        'a.sarif',
+      ],
+      '--scan-root: must be an absolute directory',
+    ],
+    [
+      ['--scan-root', 'rel'],
+      '--scan-root: must be an absolute directory',
+    ],
+    [
+      [
+        '--scan-root',
+        '/a/../b',
+        '--sarif',
+        'a.sarif',
+      ],
+      '--scan-root: must be an absolute directory',
+    ],
+    [
+      [
+        '--scan-root',
+        '',
+        '--sarif',
+        'a.sarif',
+      ],
+      '--scan-root: must be an absolute directory',
+    ],
+    [
+      [
+        '--scan-root',
+        '/a',
+        '--scan-root',
+        '/b',
+        '--sarif',
+        'a.sarif',
+      ],
+      '--scan-root: takes one directory',
+    ],
+    [
+      [
+        '--scan-root',
+        '/a',
+        '--scan-root',
+        '/b',
+      ],
+      '--scan-root: takes one directory',
+    ],
+    [
+      ['--scan-root', '/a'],
+      '--scan-root: needs --sarif or --sonarqube',
+    ],
+    [
+      Array.from({ length: 17 }, () => ['--sarif', 'a.sarif']).flat(),
+      '--sarif: takes at most 16 reports in all',
+    ],
+    [
+      [
+        ...Array.from({ length: 16 }, () => ['--sarif', 'a.sarif']).flat(),
+        '--sonarqube',
+        'b.json',
+      ],
+      '--sonarqube: takes at most 16 reports in all',
+    ],
+    [
+      ['--print-config', '--sarif', 'a.sarif'],
+      '--print-config: reads no report, so it takes no --sarif, --sonarqube or --scan-root',
+    ],
+    [
+      ['--print-config', '--sonarqube', 'a.json'],
+      '--print-config: reads no report, so it takes no --sarif, --sonarqube or --scan-root',
+    ],
+    [
+      ['--print-config', '--scan-root', '/a'],
+      '--print-config: reads no report, so it takes no --sarif, --sonarqube or --scan-root',
+    ],
+  ])('refuses %j before any git', async (argv, message) => {
+    const fetchMock = stubChat()
+    const fake = git()
+    // No model is configured, so the config would fail first if it were read.
+    const { io, stdout, stderr } = harness({
+      argv,
+      stdin: DIFF,
+      git: fake.seam,
+      platform: 'linux',
+    })
+
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe(`Error: ${message}\n${USAGE}`)
+    expect(fake.calls).toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('takes 16 reports in all, each read for the profile it names', async () => {
+    const report = write('sixteen.sarif', sarifAt('a.js'))
+    const fetchMock = stubChat(NO_FINDING).mockImplementation(async () => chatReply(vote(true)))
+    const argv = [
+      ...Array.from({ length: 8 }, () => ['--sarif', `security=${report}`]).flat(),
+      ...Array.from({ length: 8 }, () => ['--sarif', report]).flat(),
+    ]
+    const { io, stderr } = harness({
+      argv: [
+        '--range',
+        'base...head',
+        '--progress',
+        'plain',
+        ...argv,
+      ],
+      env: MODEL,
+      git: git().seam,
+      platform: 'linux',
+    })
+
+    expect(await runCli(io)).toBe(EXIT.finding)
+    expect(reportLines(stderr())).toEqual(Array.from({ length: 16 }, (_, index) => `context: report ${index + 1} sarif "Semgrep" for security: 1 of 1 issues used`))
+    expect(fetchMock).toHaveBeenCalled()
+  })
+
+  it('reads a value that starts with an id and = as a profile, so a file named like one is written with ./', async () => {
+    write('a=b.sarif', sarifAt('a.js'))
+    const named = harness({
+      argv: [
+        '--range',
+        'base...head',
+        '--sarif',
+        'a=b.sarif',
+      ],
+      cwd: dir,
+      env: MODEL,
+      git: git().seam,
+      platform: 'linux',
+    })
+    expect(await runCli(named.io)).toBe(EXIT.usage)
+    expect(named.stderr()).toBe('Error: --sarif: names the profile "a", which does not run\n')
+
+    stubChat(NO_FINDING, vote(true), vote(true), vote(true))
+    const path = harness({
+      argv: [
+        '--range',
+        'base...head',
+        '--sarif',
+        './a=b.sarif',
+        '--progress',
+        'plain',
+      ],
+      cwd: dir,
+      env: MODEL,
+      git: git().seam,
+      platform: 'linux',
+    })
+    // The relative path is the working directory's.
+    expect(await runCli(path.io)).toBe(EXIT.finding)
+    expect(reportLines(path.stderr())).toEqual(['context: report 1 sarif "Semgrep" for security: 1 of 1 issues used'])
+  })
+
+  it('refuses a report that names a profile that does not run, before any git', async () => {
+    const fetchMock = stubChat()
+    const fake = git()
+    const { io, stdout, stderr } = harness({
+      argv: [
+        '--range',
+        'base...head',
+        '--sarif',
+        'securty=a.sarif',
+      ],
+      env: MODEL,
+      git: fake.seam,
+      platform: 'linux',
+    })
+
+    // A configuration error, not a usage one: no usage follows it.
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe('Error: --sarif: names the profile "securty", which does not run\n')
+    expect(fake.calls).toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('refuses a report with no profile while several run, and takes one that names a running profile, before any git', async () => {
+    const config = write('reports-two.yaml', TWO_YAML)
+    const fetchMock = stubChat()
+    const fake = git()
+    const { io, stdout, stderr } = harness({
+      argv: [
+        '--range',
+        'base...head',
+        '--sarif',
+        'a.sarif',
+        '--sonarqube',
+        'team=b.json',
+        '--sonarqube',
+        'c.json',
+      ],
+      env: { ...MODEL, QUORUM_CONFIG: config },
+      git: fake.seam,
+      platform: 'linux',
+    })
+
+    expect(await runCli(io)).toBe(EXIT.usage)
+    expect(stdout()).toBe('')
+    expect(stderr()).toBe('Error: --sarif: must name a profile when several run\n--sonarqube: must name a profile when several run\n')
+    expect(fake.calls).toEqual([])
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })

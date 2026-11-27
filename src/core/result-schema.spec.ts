@@ -2125,6 +2125,7 @@ describe('meta.settings', () => {
       'partTokens',
       'maxFindings',
       'findingsCap',
+      'maxScannerIssues',
       'maxReviewTokens',
       'reviewTimeoutMs',
       'providers',
@@ -2217,6 +2218,18 @@ describe('settingsSchema', () => {
     ['a bound that is a number', 1024],
   ])('refuses %s', (_name, bound) => {
     expect(accepts(forged({ maxReviewTokens: bound }))).toBe(false)
+  })
+
+  it('requires maxScannerIssues, a bound read as the others are', () => {
+    const { maxScannerIssues: _left, ...without } = SETTINGS
+    expect(accepts(without)).toBe(false)
+    expect(accepts(forged({
+      maxScannerIssues: { value: 20, origin: 'config' },
+    }))).toBe(true)
+    expect(accepts(forged({
+      maxScannerIssues: { value: 0, origin: 'config' },
+    }))).toBe(false)
+    expect(accepts(forged({ maxScannerIssues: 50 }))).toBe(false)
   })
 
   it('refuses a field a record does not hold, at any level', () => {

@@ -174,7 +174,7 @@ function budgetWarnings(config: ResolvedConfig, budgets: Readonly<Record<string,
 /**
  * The resolved config as the YAML `--print-config` writes, for a CI log that anyone can read: the file it
  * came from (`null` for none), the providers, the profiles that run, the limits the review applies
- * (`concurrency`, `auto` when unset, `maxFindings`, `findingsCap` only when set, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs`, defaults filled in), `strict`, the
+ * (`concurrency`, `auto` when unset, `maxFindings`, `findingsCap` and `maxScannerIssues` only when set, `partTokens`, `maxReviewTokens` and `reviewTimeoutMs`, defaults filled in), `strict`, the
  * patterns it excludes, the files it sends though held as secrets, and the warnings. Every value of
  * `headers`, `query` and `extraBody` prints as `[redacted]`, and so does a key that is no safe string (it holds a credential,
  * an e-mail address, the provider's key or a long opaque run), the keys of one map that are none as one `[redacted]` entry, a base URL as its origin, and a prompt as its
@@ -219,6 +219,9 @@ export function printConfig(config: ResolvedConfig, source: string | undefined, 
     ...config.findingsCap === undefined
       ? {}
       : { findingsCap: config.findingsCap },
+    ...config.maxScannerIssues === undefined
+      ? {}
+      : { maxScannerIssues: config.maxScannerIssues },
     partTokens: config.partTokens ?? DEFAULT_PART_TOKENS,
     maxReviewTokens: config.maxReviewTokens ?? DEFAULT_MAX_REVIEW_TOKENS,
     reviewTimeoutMs: config.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,

@@ -59,6 +59,8 @@ quorum ./my.diff > result.json
 
 Requires Claude Code 2.1.311 or newer. [`claudeCode`](./docs/20-using/30-providers.md#claudecode) has the command line, the isolation and the auth modes, and [Claude Code](./docs/20-using/20-configuration.md#claude-code) the setup, in CI too.
 
+A scan job's reports can ride along: `--sarif [<profile>=]<path>` and `--sonarqube [<profile>=]<path>` name a SARIF log or a saved SonarQube response, which quorum reads as data and never runs, and the issues they list on the change are judged by the profile's panel like any finding: [Scanner reports](./docs/20-using/85-scanner-reports.md).
+
 The report goes to stdout: the text report on a terminal, the JSON result on a pipe or a file, or the format `-f` names. The exit code says what to do with it: `0` for a complete review in which no gating profile kept a finding at or above its fail-on level, `high` by default, `1` when one did, complete or not, `2` for a usage or configuration error, `3` when no research call answered, `4` when a gating profile's review is incomplete otherwise, and `130` when the run was interrupted. [Quick start](./docs/10-getting-started/20-quickstart.md) walks one review through, and [Start here](./docs/01-readme.md) lays out four tracks: review a diff, use it from code or review something else, know what it protects against, and measure configurations.
 
 ## Documentation
@@ -82,6 +84,7 @@ The report goes to stdout: the text report on a terminal, the JSON result on a p
 - [Prompts](./docs/20-using/60-prompts.md) *- The layout of every request, the templates and their variables, the notices, and what is not configurable*
 - [Benchmarks](./docs/20-using/70-bench.md) *- quorum bench: measure configurations on a suite of real bugs, write a suite, resume a run, and read the report and its intervals*
 - [Reports for GitHub](./docs/20-using/80-reports.md) *- The summary, the Action's payload and SARIF, each from the public view, quorum report and a GitHub workflow*
+- [Scanner reports](./docs/20-using/85-scanner-reports.md) *- The SARIF logs and SonarQube responses a scan job wrote, read as data: the flags, the paths, what the panel sees, and the gaps*
 - [The MCP server](./docs/20-using/90-mcp.md) *- quorum mcp: the review tool an agent such as Claude Code calls, its gates, its limits and what it returns*
 
 *Security*
