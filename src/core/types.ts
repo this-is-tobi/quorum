@@ -18,8 +18,29 @@ export interface ModelFound {
   kind: 'model'
 }
 
-/** What proposed a finding: today only the model's finder. */
-export type FoundBy = ModelFound
+/**
+ * A finding a scanner's report proposed, which the harness turned into a candidate: a scanner never decides a verdict, so the panel
+ * judges it like any finding. The texts are the report's own, cleaned and capped, and `report` is the place of its report in
+ * `meta.context.reports`, from 0.
+ */
+export interface ScannerFound {
+  kind: 'scanner'
+  /** The index of its report in `meta.context.reports`, from 0. */
+  report: number
+  /** The scanner's name as the report gives it, cleaned, at most 64 characters. */
+  scanner: string
+  /** The rule the issue breaks, cleaned, at most 256 characters. */
+  ruleId: string
+  /** How severe the report calls the issue; `unknown` is a level the report does not state or quorum does not know. */
+  level: IssueLevel
+  /** The issue had no usable line (none, 0, or a Trivy result's 1), so it stands on its file's first changed line. Absent, never `false`, otherwise. */
+  fileLevel?: true
+  /** The report marks the issue as suppressed, which quorum does not honour. Absent, never `false`, otherwise. */
+  suppressed?: true
+}
+
+/** What proposed a finding: the model's finder, or a scanner's report. */
+export type FoundBy = ModelFound | ScannerFound
 
 /**
  * A candidate issue after the harness checked it against the diff. The finder supplies the file,
@@ -64,8 +85,9 @@ export interface Finding {
   /** Whether the finder's quote appears in the evidence, which is read at the final `line`: a measure of hallucinated citations. */
   quoteMatched: boolean
   /**
-   * What proposed the finding, set by code where research reads its replies and never read by a request, so it moves no digest and
-   * no store key: `{ kind: 'model' }` for a finding the model's finder reported.
+   * What proposed the finding, set by code and never by a model: `{ kind: 'model' }` for a finding the model's finder reported
+   * (set where research reads its replies, and no request reads it, so it moves no digest and no store key), `{ kind: 'scanner', ... }`
+   * for a candidate a scanner's report gave.
    */
   foundBy: FoundBy
 }
@@ -337,6 +359,44 @@ export interface ScannerReport {
   /** A SARIF log's runs when it holds more than the 20 the reader reads, so the ones past them are `runs` minus 20. */
   readonly runs?: number
   readonly issues: readonly ScannerIssue[]
+}
+
+/**
+ * Where each issue of a scanner's report ended, each issue under exactly one: `held` (its text holds what reads as a credential, or
+ * does not settle under the cleaner, so no model was sent it), `unmapped` (its path is none quorum could place), `leftOut` (its file is
+ * one the review left out), `notInChange` (its path names no file of the diff, or none), `used` (a candidate the panel judges),
+ * `unchanged` (a line of a file of the change that is not near what the change touches), `capped` (a candidate past the profile's
+ * `maxScannerIssues`), and the reader's own `skipped` (an entry that is no open issue) and `unreadable` (an entry it could not read).
+ */
+export type IssueOutcome = 'used' | 'held' | 'unmapped' | 'notInChange' | 'leftOut' | 'unchanged' | 'capped' | 'skipped' | 'unreadable'
+
+/**
+ * What is wrong with a report as the review read it: a `ReaderProblem`, or one the core finds. `another-commit`: it states a commit
+ * other than the reviewed one, or a revision that is no commit id. `unreadable-entries`: the reader could not read some entries.
+ * `unmapped-paths`: some issue names a path quorum could not place. `held-text`: some issue holds what reads as a credential, or a
+ * text the cleaner cannot settle.
+ */
+export type ReportProblem = ReaderProblem | 'another-commit' | 'unreadable-entries' | 'unmapped-paths' | 'held-text'
+
+/**
+ * One report as `meta.context.reports` and the `context` event record it: counts, hashes, code words and a cleaned scanner name, and
+ * never a path, a file name or a text of the report. `unreadable` when nothing of it was used (`missing`, `cannot-read`, `not-a-file`,
+ * `too-large`, `not-the-format`, `no-results` or `another-commit`), `partial` when part of it was not read or not placed, else `read`.
+ */
+export interface ContextReport {
+  format: 'sarif' | 'sonarqube'
+  /** The id of the profile the report is read for. */
+  profile?: string
+  /** The scanner's name as the report gives it, cleaned, at most 64 characters. Absent when the report names none, or the name holds a credential. */
+  scanner?: string
+  /** The commit the report states, as a lower-case hexadecimal prefix of 7 to 64 digits; absent when it states none or states a text that is no such prefix. */
+  commit?: string
+  /** The SHA-256 of the file's bytes as read: 64 lowercase hexadecimal digits; absent when the file was not read. */
+  sha256?: string
+  status: 'read' | 'partial' | 'unreadable'
+  problems: ReportProblem[]
+  /** A scanner report's counts: `listed` is the sum of the nine outcomes, `fileLevel` a part of `used`. */
+  issues?: Record<IssueOutcome | 'listed' | 'fileLevel', number>
 }
 
 /** A confidence level a kept finding reaches; 'low' only when the policy enables it. */

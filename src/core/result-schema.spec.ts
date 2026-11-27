@@ -82,6 +82,74 @@ describe('the schemas of a result', () => {
     }).error?.issues.map(issue => issue.path.join('.'))).toEqual(['kept.0.foundBy.kind'])
   })
 
+  it('reads a scanner\'s foundBy within the caps the harness keeps, in the public view too, and refuses any other', () => {
+    const full = saved(reportResult())
+    const scanner = {
+      kind: 'scanner',
+      report: 0,
+      scanner: 'Semgrep',
+      ruleId: 'js.sql-injection',
+      level: 'warning',
+    }
+    const holding = (foundBy: unknown): Forged => ({
+      ...full,
+      kept: [
+        { ...full.kept[0], foundBy },
+      ],
+    })
+    const pathsOf = (input: Forged): string[] => resultSchema.safeParse(input).error?.issues.map(issue => issue.path.join('.')) ?? []
+    for (const found of [
+      scanner,
+      { ...scanner, fileLevel: true },
+      { ...scanner, suppressed: true },
+      {
+        ...scanner,
+        fileLevel: true,
+        suppressed: true,
+        level: 'unknown',
+        scanner: 'x'.repeat(64),
+        ruleId: 'x'.repeat(256),
+        report: 15,
+      },
+    ]) {
+      expect(resultSchema.parse(holding(found))).toEqual(holding(found))
+    }
+    const view = saved(publicView(reportResult()))
+    expect(publicViewSchema.safeParse({
+      ...view,
+      kept: [
+        { ...view.kept[0], foundBy: scanner },
+      ],
+    }).success).toBe(true)
+    expect(publicViewSchema.safeParse({
+      ...view,
+      kept: [
+        {
+          ...view.kept[0],
+          foundBy: { ...scanner, level: 'critical' },
+        },
+      ],
+    }).error?.issues.map(issue => issue.path.join('.'))).toEqual(['kept.0.foundBy.level'])
+    expect(pathsOf(holding({ ...scanner, level: 'critical' }))).toEqual(['kept.0.foundBy.level'])
+    expect(pathsOf(holding({
+      ...scanner,
+      scanner: 'x'.repeat(65),
+    }))).toEqual(['kept.0.foundBy.scanner'])
+    expect(pathsOf(holding({
+      ...scanner,
+      ruleId: 'x'.repeat(257),
+    }))).toEqual(['kept.0.foundBy.ruleId'])
+    expect(pathsOf(holding({ ...scanner, report: -1 }))).toEqual(['kept.0.foundBy.report'])
+    expect(pathsOf(holding({ ...scanner, report: 0.5 }))).toEqual(['kept.0.foundBy.report'])
+    expect(pathsOf(holding({ ...scanner, fileLevel: false }))).toEqual(['kept.0.foundBy.fileLevel'])
+    expect(pathsOf(holding({ ...scanner, suppressed: false }))).toEqual(['kept.0.foundBy.suppressed'])
+    expect(pathsOf(holding({ ...scanner, extra: 1 }))).toEqual(['kept.0.foundBy'])
+    expect(pathsOf(holding({ ...scanner, path: 'report.sarif' }))).toEqual(['kept.0.foundBy'])
+    const { report: _gone, ...unplaced } = scanner
+    expect(pathsOf(holding(unplaced))).toEqual(['kept.0.foundBy.report'])
+    expect(pathsOf(holding({ kind: 'model', scanner: 'Semgrep' }))).toEqual(['kept.0.foundBy'])
+  })
+
   it('reads a file skipped with the rule test in meta.leftOut, in the public view too', () => {
     const result = reportResult({
       meta: {
