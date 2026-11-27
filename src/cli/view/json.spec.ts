@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { QuorumEvent } from '../../core/types.ts'
-import { reportResult } from '../../testing/report.ts'
+import { contextReport, reportResult } from '../../testing/report.ts'
 import { DEFAULT_FACTS } from './model.ts'
 import { jsonWriter, quietWriter } from './json.ts'
 import type { LineLevel } from './writer.ts'
@@ -60,6 +60,27 @@ describe('jsonWriter', () => {
     }
     // The escape and the override are in the line as text, and the line feed as an escape.
     expect(lines[0]).toContain('\\u001b[31m\\u202e\\nurity')
+  })
+
+  it('writes a context event\'s reports as they are, a scanner\'s name escaped', () => {
+    const lines: string[] = []
+    const { sink } = jsonWriter(line => lines.push(line))
+    const trivy = contextReport({ scanner: 'Trivy' })
+    const hostile = contextReport({ scanner: `a${ESC}[31m${OVERRIDE}b` })
+    const event: QuorumEvent = {
+      type: 'context',
+      context: {
+        documents: [],
+        reports: [trivy, hostile],
+      },
+    }
+    sink(event)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).not.toMatch(ANY_HIDDEN)
+    expect(JSON.parse(lines[0])).toEqual(event)
+    // The escape and the override are in the line as JSON escapes, which are text.
+    const slash = String.fromCharCode(0x5C)
+    expect(lines[0]).toContain(`a${slash}u001b[31m${slash}u202eb`)
   })
 
   it('writes each line of the CLI as a cli:line of its level', () => {

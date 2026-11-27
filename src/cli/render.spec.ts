@@ -79,6 +79,40 @@ describe('estimateLines', () => {
     expect(first).toBe('[a<U+202E>b] estimate: 2 research part(s), about 16.6k tokens expected for them; then up to 150 vote(s), at most 1.85M tokens in all')
   })
 
+  it('says how many of a profile\'s votes fall on scanner issues', () => {
+    // 3 lenses and 3 candidates: 9 of the 159 votes are the candidates' (150 for the finder's findings, so the cap is read as before).
+    const scanning = (candidates: number, votes: number): Estimate => ({
+      ...estimate,
+      profiles: {
+        security: { ...estimate.profiles.security, candidates, votes },
+      },
+    })
+    expect(estimateLines(scanning(3, 159), bounds)[0]).toBe('estimate: 2 research part(s), about 16.6k tokens expected for them; then up to 159 vote(s), 9 of them on 3 scanner issue(s), at most 1.85M tokens in all')
+    // A program reads the same clause with exact counts, and a profile of two lenses counts its own.
+    expect(estimateLines(scanning(3, 159), bounds, EXACT_WORDS)[0]).toBe('estimate: 2 research part(s), about 16667 tokens expected for them; then up to 159 vote(s), 9 of them on 3 scanner issue(s), at most 1850000 tokens in all')
+    const two = {
+      ...estimate.profiles.security,
+      candidates: 4,
+      votes: 108,
+      vote: { naming: 3000, layout: 3000 },
+    }
+    expect(estimateLines({
+      ...estimate,
+      profiles: { security: estimate.profiles.security, team: two },
+    }, bounds)[1]).toBe('[team] estimate: 2 research part(s), about 16.6k tokens expected for them; then up to 108 vote(s), 8 of them on 4 scanner issue(s), at most 1.85M tokens in all')
+    // The clause comes before the documents', which end the line, and a profile that judges none has none.
+    expect(estimateLines({
+      ...estimate,
+      profiles: {
+        security: {
+          ...scanning(3, 159).profiles.security,
+          documents: { research: 4402, vote: 4402 },
+        },
+      },
+    }, bounds)[0]).toBe('estimate: 2 research part(s), about 16.6k tokens expected for them; then up to 159 vote(s), 9 of them on 3 scanner issue(s), at most 1.85M tokens in all; its documents add 4.40k tokens to each research request and 4.40k to each vote')
+    expect(estimateLines(scanning(0, 150), bounds)[0]).toBe('estimate: 2 research part(s), about 16.6k tokens expected for them; then up to 150 vote(s), at most 1.85M tokens in all')
+  })
+
   it('ends a profile\'s estimate line with what its documents add, when they add anything', () => {
     const clause = (research: string, vote: string): string => `; its documents add ${research} tokens to each research request and ${vote} to each vote`
     const profile = (documents: { research: number, vote: number }): Estimate['profiles'][string] => ({ ...estimate.profiles.security, documents })

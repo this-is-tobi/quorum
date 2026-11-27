@@ -1,8 +1,8 @@
 /**
  * The pieces of a line that the text report, the Markdown summary and the progress lines of the CLI write one
  * way: how many of a thing, a file left out, where a flag points, the words of a gap, the words of a verdict, a
- * source, a finding's level, votes and rule, its place among the findings and its evidence's rows, a document a review read
- * and each profile's summary of them, how many rules a profile sent, what each role cost (the by-role line and the tokens
+ * source, a finding's level, votes, rule and scanner, its place among the findings and its evidence's rows, a document a review read
+ * and each profile's summary of them, a scanner report a review read, the scanner issues the panel dismissed, how many rules a profile sent, what each role cost (the by-role line and the tokens
  * clause), and the numbers a person reads: a token count scaled and a duration in one form (past a minute in minutes). None makes its text inert: a file name is a diff's and a
  * flag's detail a diff's too, so the line that holds them passes through `inertLine` whole.
  */
@@ -12,7 +12,7 @@ import { elapsedWords } from '../core/duration.ts'
 import { ownData } from '../core/facts.ts'
 import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
 import { failsItsProfile } from '../core/outcome.ts'
-import type { ContextDocument, ContextRecord, CoverageEntry, CoverageStatus, DocumentKind, Flag, IncompleteReason, LeftOutFile, ProfileMeta, PublicMeta, PublicVerdict, PublicView, QuorumMeta, ResearchRecord, ReviewSource, StageName, Usage, Verdict, VoteFailure } from '../core/types.ts'
+import type { ContextDocument, ContextRecord, ContextReport, CoverageEntry, CoverageStatus, DocumentKind, Flag, IncompleteReason, IssueOutcome, LeftOutFile, ProfileMeta, PublicMeta, PublicVerdict, PublicView, QuorumMeta, QuorumResult, ResearchRecord, ReviewSource, ScannerFound, StageName, Usage, Verdict, VoteFailure } from '../core/types.ts'
 import { voteFailed } from './view.ts'
 
 /** A token count told in three significant digits at most, floored: `999`, `1.23k`, `12.3k`, `812k`, `9.86M`. */
@@ -279,6 +279,105 @@ export function contextSummary(record: ContextRecord, profiles: Readonly<Record<
       ? []
       : [`context: ${profile}: ${parts.join(', ')}`]
   })
+}
+
+/** The counts of a report's issues when its record holds none: a record a program wrote by hand, which says nothing of its issues. */
+const NO_ISSUES: NonNullable<ContextReport['issues']> = {
+  listed: 0,
+  used: 0,
+  fileLevel: 0,
+  held: 0,
+  unmapped: 0,
+  notInChange: 0,
+  leftOut: 0,
+  unchanged: 0,
+  capped: 0,
+  skipped: 0,
+  unreadable: 0,
+}
+
+/** What `reportWords` says of each outcome that left an issue aside, in the order it says them. */
+const OUTCOME_WORDS: ReadonlyArray<readonly [IssueOutcome, string]> = [
+  ['notInChange', 'not in the change'],
+  ['unchanged', 'on unchanged lines'],
+  ['leftOut', 'on files left out'],
+  ['skipped', 'skipped by the scanner or a person'],
+  ['unmapped', 'unmapped'],
+  ['held', 'held as credentials'],
+  ['capped', 'past the cap'],
+  ['unreadable', 'unreadable'],
+]
+
+/** A report's words in two parts: the `head`, `<n> <format>` and the scanner's name as a JSON string, which stays whole, and the `tail`, the rest, which starts with `for <profile>:` or with a colon when the record names no profile. */
+export interface ReportParts {
+  readonly head: string
+  readonly tail: string
+}
+
+/**
+ * A scanner report as the progress lines and the text report write it, at its place `place` from 1 among `meta.context.reports`, in two
+ * parts, so a report that wraps its tail keeps the scanner's name whole: the head is `<n> <format>` and `"<scanner>"` when the record has
+ * one, the tail `for <profile>: <used> of <listed> issues used`, then ` (<f> file-level)` when some of the used issues were, then each
+ * outcome above 0 after `; `, in a fixed order (`13 not in the change`, `2 unmapped`, `1 held as credentials`), then `; read in part`
+ * for a report that was. A report that could not be read has no count: the tail is `for <profile>: could not be read`. The scanner's name,
+ * which the report wrote and the core cleaned, is a JSON string, so no quote or line break in it ends the name; the profile is left out
+ * when the record has none, and the tail then starts with its colon. The words are not inert: the line that holds them passes `inertLine`
+ * whole.
+ */
+export function reportLineParts(record: ContextReport, place: number): ReportParts {
+  const scanner = record.scanner === undefined
+    ? ''
+    : ` ${JSON.stringify(record.scanner)}`
+  const profile = record.profile === undefined
+    ? ''
+    : `for ${record.profile}`
+  const head = `${place} ${record.format}${scanner}`
+  if (record.status === 'unreadable') return { head, tail: `${profile}: could not be read` }
+  const issues = record.issues ?? NO_ISSUES
+  return {
+    head,
+    tail: [
+      `${profile}: ${issues.used} of ${issues.listed} issues used${issues.fileLevel > 0
+        ? ` (${issues.fileLevel} file-level)`
+        : ''}`,
+      ...OUTCOME_WORDS.flatMap(([outcome, words]) => issues[outcome] > 0
+        ? [`${issues[outcome]} ${words}`]
+        : []),
+      ...record.status === 'partial'
+        ? ['read in part']
+        : [],
+    ].join('; '),
+  }
+}
+
+/** A scanner report as one sentence, `reportLineParts`' head and tail, a space between them but for a tail that starts with a colon: `1 sarif "Trivy" for security: 1 of 14 issues used (1 file-level); 13 not in the change`. */
+export function reportWords(record: ContextReport, place: number): string {
+  const { head, tail } = reportLineParts(record, place)
+  return tail.startsWith(':')
+    ? `${head}${tail}`
+    : `${head} ${tail}`
+}
+
+/** Which scanner gave a finding: the scanner's name, `, file-level` when the issue had no line of its own and `, marked suppressed` when its report marks it, or nothing (the empty text) for a finding a model reported. */
+export function scannerWords({ foundBy }: Verdict | PublicVerdict): string {
+  if (foundBy.kind !== 'scanner') return ''
+  return [
+    foundBy.scanner,
+    ...foundBy.fileLevel === true
+      ? ['file-level']
+      : [],
+    ...foundBy.suppressed === true
+      ? ['marked suppressed']
+      : [],
+  ].join(', ')
+}
+
+/** A verdict a scanner's report gave: its `foundBy` is the scanner's form. */
+export type ScannerVerdict = (Verdict | PublicVerdict) & { readonly foundBy: ScannerFound }
+
+/** The scanner issues the panel dismissed, in the order the result lists its discarded verdicts: those a scanner's report gave. The finder's discarded findings are only counted, and a public view lists these alone. */
+export function dismissedScanner(input: QuorumResult | PublicView): ScannerVerdict[] {
+  return (input.discarded as ReadonlyArray<Verdict | PublicVerdict>).filter((verdict): verdict is ScannerVerdict => verdict.foundBy.kind === 'scanner')
 }
 
 /**

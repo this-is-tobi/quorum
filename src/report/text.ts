@@ -3,16 +3,20 @@
  *
  * 1. a header, what was reviewed;
  * 2. the findings, kept and unreviewed together, grouped by file and then by line, each with its claim, its
- *    evidence rows and how its lenses voted, its head ending with the review rule it cites, and, under its head, the
- *    line its finder cited when the harness moved it to its quote; the discarded ones are only counted;
- * 3. each profile's level, counts, rules sent and citations refused, coverage and, in a full result, research counts;
- * 4. the documents the review read, one line each, as the log writes them, its tail wrapped as a flag's detail is;
- * 5. the files left out;
- * 6. the gaps;
- * 7. the flags;
- * 8. the time and the tokens, then what each role took (when a stage's time was recorded), then, in a full result, the
- *    models that answered when one is worth saying;
- * 9. the verdict, which says what the exit code says.
+ *    evidence rows and how its lenses voted, its head ending with the review rule it cites and the scanner that gave it,
+ *    and, under its head, the line its finder cited when the harness moved it to its quote; the finder's discarded
+ *    findings are only counted;
+ * 3. the scanner issues the panel dismissed, when there are some: their count and the first five, one line each, the votes of each wrapped as a
+ *    finding's are;
+ * 4. each profile's level, counts, rules sent and citations refused, coverage and, in a full result, research counts;
+ * 5. the scanner reports the review read, one line each, as the log writes them, its tail wrapped as a document's is, the scanner's name kept whole;
+ * 6. the documents the review read, one line each, as the log writes them, its tail wrapped as a flag's detail is;
+ * 7. the files left out;
+ * 8. the gaps;
+ * 9. the flags;
+ * 10. the time and the tokens, then what each role took (when a stage's time was recorded), then, in a full result, the
+ *     models that answered when one is worth saying;
+ * 11. the verdict, which says what the exit code says.
  *
  * The report of a public view (`publicView`) is the same but for five kinds of line: a gap is written in the fixed words of
  * its reason, as it has no detail, the time has no token count, as the view has no usage, the by-role line has the roles' times
@@ -22,17 +26,17 @@
  * The verdict is last because the end of the output is what stays on a terminal's screen, and it is the line
  * a person acts on.
  *
- * Every line is `inertLine` of its text (invariant I3): a claim, a category, a row of code, a file name and a
- * detail are text an attacker may have written. Color decorates only the words quorum wrote, never the text
+ * Every line is `inertLine` of its text (invariant I3): a claim, a category, a row of code, a file name, a
+ * detail and a scanner's name and rule id are text an attacker may have written. Color decorates only the words quorum wrote, never the text
  * around them: see `line`. No line is longer than 80 code points but for what is never cut: a path, a
- * category, a row of code and a word longer than a line, since a cut could hide code.
+ * category, a row of code, a rule id, a scanner's name and a word longer than a line, since a cut could hide code.
  */
 
 import { profileFailOn } from '../core/outcome.ts'
 import type { Outcome } from '../core/outcome.ts'
 import { inertLine, showHidden } from '../core/sanitize.ts'
-import type { ContextDocument, IncompleteEntry, LeftOutFile, PublicGap, PublicMeta, PublicVerdict, QuorumMeta, Verdict } from '../core/types.ts'
-import { byLocation, coverageWords, documentLineParts, durationText, evidenceRows, flagWhere, GAP_WORDS, leftOutEntry, levelWord, modelLines, plural, researchWords, roleLine, rowParts, ruleCountWords, ruleWords, sourcePhrase, tokenWords, verdictWhy, votesWords } from './lines.ts'
+import type { ContextDocument, ContextReport, IncompleteEntry, LeftOutFile, PublicGap, PublicMeta, PublicVerdict, QuorumMeta, Verdict } from '../core/types.ts'
+import { byLocation, coverageWords, dismissedScanner, documentLineParts, durationText, evidenceRows, flagWhere, GAP_WORDS, leftOutEntry, levelWord, modelLines, plural, reportLineParts, researchWords, roleLine, rowParts, ruleCountWords, ruleWords, scannerWords, sourcePhrase, tokenWords, verdictWhy, votesWords } from './lines.ts'
 import type { Reporter, ReportInput } from './reporter.ts'
 import { discardedOf, isPublicView } from './view.ts'
 
@@ -41,6 +45,9 @@ const COLUMNS = 80
 
 /** How many of the files left out the report names; the JSON result lists every one. */
 const LISTED_FILES = 5
+
+/** How many of the scanner issues the panel dismissed the report names; the JSON result lists every one. */
+const LISTED_DISMISSED = 5
 
 /** The longest id of a commit the header shows. */
 const SHORT_ID = 7
@@ -190,7 +197,17 @@ function rulePieces(verdict: Verdict | PublicVerdict): Piece[] {
       ]
 }
 
-/** A finding's block: its head, which ends with the rule it cites, where it was cited when it moved, its claim, its evidence rows, its votes and a blank line. */
+/** The scanner that gave a finding, as the end of its head: two spaces and its words in parentheses (`(Trivy, file-level)`), or no piece for a finding a model reported. The report's words are the scanner's, so no style marks them. */
+function scannerPieces(verdict: Verdict | PublicVerdict): Piece[] {
+  const words = scannerWords(verdict)
+  return words === ''
+    ? []
+    : [
+        { text: `  (${words})` },
+      ]
+}
+
+/** A finding's block: its head, which ends with the rule it cites and the scanner that gave it, where it was cited when it moved, its claim, its evidence rows, its votes and a blank line. */
 function findingLines(verdict: Verdict | PublicVerdict, kept: boolean, color: boolean): string[] {
   return [
     line([
@@ -199,6 +216,7 @@ function findingLines(verdict: Verdict | PublicVerdict, kept: boolean, color: bo
       { text: `${pathText(verdict.file)}:${verdict.line}`, style: 'bold' },
       { text: `  ${verdict.category}` },
       ...rulePieces(verdict),
+      ...scannerPieces(verdict),
     ], color),
     ...citedLines(verdict),
     ...wrap('  ', verdict.summary).map(inertLine),
@@ -230,6 +248,25 @@ function rulesClause({ rules, invalidRules, asksNothing }: QuorumMeta['profiles'
   return `; rules: ${ruleCountWords(rules, asksNothing === true)}${refused}`
 }
 
+/**
+ * The scanner issues the panel dismissed, when there are some: their count, the first five, one a line, then how many more. A line holds the file,
+ * the line, the rule id and the scanner's name, which stay whole, then how the lenses voted, which wraps after a comma as a finding's votes do:
+ * `  <file>:<line>  <rule id>  (<scanner>), kept by 0 of 3 lenses`. A finding a model reported and the panel dismissed is only counted, in its
+ * profile's line.
+ */
+function dismissedLines(input: ReportInput): string[] {
+  const dismissed = dismissedScanner(input)
+  if (dismissed.length === 0) return []
+  const more = dismissed.length > LISTED_DISMISSED
+    ? [`  and ${dismissed.length - LISTED_DISMISSED} more`]
+    : []
+  return [
+    `dismissed by the panel: ${plural(dismissed.length, 'scanner issue')}`,
+    ...dismissed.slice(0, LISTED_DISMISSED).flatMap(verdict => wrap(`  ${pathText(verdict.file)}:${verdict.line}  ${verdict.foundBy.ruleId}  (${verdict.foundBy.scanner}),`, votesWords(verdict))),
+    ...more,
+  ].map(inertLine)
+}
+
 /** Each profile in run order: its fail-on level and its counts, with the findings it dropped for citing code outside the diff, those a changed-lines profile dropped for standing away from the change, and the rules it sent and the citations refused, wrapped at 80 columns after its head, then its coverage and, in a full result, its research counts, wrapped at 80 columns too. A public view's discarded count is the one it records, and it has no research counts. */
 function profileLines(result: ReportInput): string[] {
   const full = isPublicView(result)
@@ -257,6 +294,27 @@ function profileLines(result: ReportInput): string[] {
 function documentLines(record: ContextDocument): string[] {
   const { head, tail } = documentLineParts(record)
   return wrap(head, tail).map(inertLine)
+}
+
+/**
+ * A report's line, as the log writes it: its head, which holds `<n> <format>` and the scanner's name whole, then its tail wrapped at spaces as a
+ * flag's detail is. A tail that starts with a colon, of a record that names no profile, goes on the head's last word.
+ */
+function reportWrapped(record: ContextReport, place: number): string[] {
+  const { head, tail } = reportLineParts(record, place)
+  return tail.startsWith(':')
+    ? wrap(`  ${head}:`, tail.slice(1))
+    : wrap(`  ${head}`, tail)
+}
+
+/** The reports the review read, when it read some: `reports:` and a line for each, indented by two spaces, as `reportLineParts` writes it, wrapped at 80 columns. */
+function reportLines(reports: readonly ContextReport[]): string[] {
+  return reports.length === 0
+    ? []
+    : [
+        'reports:',
+        ...reports.flatMap((record, index) => reportWrapped(record, index + 1)),
+      ].map(inertLine)
 }
 
 /** The files left out, when there are some: their count, the first five and how many more. */
@@ -326,8 +384,8 @@ function verdictLine(outcome: Outcome, color: boolean): string {
 }
 
 /**
- * The review as a person reads it on a terminal: the header, the findings with their evidence, the profiles'
- * counts and coverage, the documents read, what was left out, the gaps, the flags, the time, the tokens and what each role took, and last the verdict. See
+ * The review as a person reads it on a terminal: the header, the findings with their evidence, the scanner issues the panel
+ * dismissed, the profiles' counts and coverage, the scanner reports and the documents read, what was left out, the gaps, the flags, the time, the tokens and what each role took, and last the verdict. See
  * the module's comment for the order. With `color`, only the words quorum wrote are colored: the level, the
  * location, the marker of the cited row, a row's `+` or `-`, and the status word of the verdict. It reads a public
  * view as the result it came from, but for the lines the module's comment names.
@@ -342,7 +400,9 @@ export const text: Reporter = {
       headerLine(meta),
       '',
       ...orderedFindings(result).flatMap(({ verdict, kept }) => findingLines(verdict, kept, color)),
+      ...dismissedLines(result),
       ...profileLines(result),
+      ...reportLines(meta.context.reports),
       ...meta.context.documents.flatMap(documentLines),
       ...leftOutLines(meta.leftOut),
       ...gaps.map(inertLine),

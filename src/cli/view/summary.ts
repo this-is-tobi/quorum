@@ -9,7 +9,7 @@
 import { CUT_ADVICE, failureFix, QUOTA_FIX, STALL_FIX } from '../../core/errors.ts'
 import { inertLine } from '../../core/sanitize.ts'
 import type { ConcurrencyRecord } from '../../core/lanes.ts'
-import type { IncompleteReason, ProfileMeta, QuorumMeta, QuorumResult, StageName } from '../../core/types.ts'
+import type { ContextReport, IncompleteReason, ProfileMeta, QuorumMeta, QuorumResult, StageName } from '../../core/types.ts'
 import { contextSummary, durationText, listed, modelLines, roleTokens, tokenWords } from '../../report/lines.ts'
 import type { ReportView } from '../../report/view.ts'
 import { rangeWords } from './eta.ts'
@@ -44,6 +44,9 @@ const FIXES: Readonly<Partial<Record<IncompleteReason, string>>> = {
   'finding-unreadable': SEE_REPORT,
   'vote-failed': SEE_RESUME,
   interrupted: SEE_RESUME,
+  'report-unreadable': 'check the report\'s path, and that the scan job wrote it for the reviewed commit',
+  'report-partial': SEE_REPORT,
+  'issues-capped': 'raise maxScannerIssues',
 }
 
 /** A cause in words: its kind, then its status when it has one, or `stalled` for a timeout that was a stalled stream. */
@@ -293,6 +296,26 @@ function callsLine(state: ViewState, lanes: QuorumMeta['concurrency']): string |
   ].join('; ')}`
 }
 
+/** How a report's status reads in the reports line, in the order the line lists them. */
+const REPORT_STATUS_WORDS: ReadonlyArray<readonly [ContextReport['status'], string]> = [
+  ['read', 'read'],
+  ['partial', 'read in part'],
+  ['unreadable', 'could not be read'],
+]
+
+/** The reports line: `reports: <r> read, <p> read in part, <u> could not be read`, each count left out at 0, and no line for a review that read no report. */
+function reportsLine(reports: readonly ContextReport[]): string | undefined {
+  const counts = REPORT_STATUS_WORDS.flatMap(([status, words]) => {
+    const count = reports.filter(report => report.status === status).length
+    return count === 0
+      ? []
+      : [`${count} ${words}`]
+  })
+  return counts.length === 0
+    ? undefined
+    : `reports: ${counts.join(', ')}`
+}
+
 /** What a reason's entries count, each unit named: `5 part(s)`, `3 vote(s)`, and `2 gap(s)` for entries that count neither. */
 function quantityWords({ parts, votes, other }: GapCount): string {
   return [
@@ -382,7 +405,7 @@ function resultLine(facts: SummaryFacts, view: ReportView): string {
 /**
  * The summary's lines for a review whose events were folded into `state`, in this order, each left out when it has
  * nothing to say: the time, the tokens, by role too (not under the public view), the calls, the models that answered (not under the public view,
- * which names none), a line for each profile that has a document or a rule, the gaps with their fixes, where the report went and,
+ * which names none), a line for each profile that has a document or a rule, how many reports were read, read in part and unread, the gaps with their fixes, where the report went and,
  * when a rerun could fill what is missing, how to resume it. A review whose stages never started has no summary. `dash` is the glyph set's.
  */
 export function summaryLines(state: ViewState, facts: SummaryFacts, view: ReportView, dash: string): string[] {
@@ -397,6 +420,7 @@ export function summaryLines(state: ViewState, facts: SummaryFacts, view: Report
       ? []
       : modelLines(facts.result.meta.calls),
     ...contextSummary(facts.result.meta.context, facts.result.meta.profiles),
+    reportsLine(facts.result.meta.context.reports),
     gapsLine(state, view, facts.result.meta.profiles),
     resultLine(facts, view),
     resumeLine(facts),

@@ -3,7 +3,7 @@ import type { ConcurrencyRecord } from '../../core/lanes.ts'
 import type { IncompleteReason, ProviderCalls, QuorumEvent, RoleCalls, StageName } from '../../core/types.ts'
 import type { ReportView } from '../../report/view.ts'
 import { longReview, replay } from '../../testing/events.ts'
-import { contextDocument, reportMeta, reportResult, SQL, TOKEN } from '../../testing/report.ts'
+import { contextDocument, contextReport, reportMeta, reportResult, SQL, TOKEN } from '../../testing/report.ts'
 import { DEFAULT_FACTS, fold, startState } from './model.ts'
 import type { ViewFacts, ViewState } from './model.ts'
 import { cappedFix, rerunCouldFill, summaryLines } from './summary.ts'
@@ -1190,6 +1190,95 @@ describe('summaryLines', () => {
     ],
   ])('writes a %s gap with its fix', (_name, events, entry) => {
     expect(lines(reviewed(...events))).toContain(`gaps: ${entry}`)
+  })
+
+  it.each<[IncompleteReason, string]>([
+    ['report-unreadable', 'check the report\'s path, and that the scan job wrote it for the reviewed commit'],
+    ['report-partial', 'see the gap in the report'],
+    ['issues-capped', 'raise maxScannerIssues'],
+  ])('names %s as the fix of a %s gap', (reason, fix) => {
+    expect(lines(reviewed(incomplete(reason)))).toContain(`gaps: 1 gap(s) ${reason}: ${fix}`)
+    // The public view keeps it: the fix is words quorum wrote.
+    expect(lines(reviewed(incomplete(reason)), factsOf(), 'public')).toContain(`gaps: 1 gap(s) ${reason}: ${fix}`)
+  })
+
+  describe('the reports line', () => {
+    const unreadable = contextReport({
+      status: 'unreadable',
+      problems: ['missing'],
+    })
+    const partial = contextReport({
+      status: 'partial',
+      problems: ['unmapped-paths'],
+    })
+    const withReports = (...reports: ReturnType<typeof contextReport>[]): SummaryFacts => factsOf({
+      result: reportResult({
+        unreviewed: [],
+        meta: {
+          durationMs: 2_285_000,
+          usage: { inputTokens: 2_412_833, outputTokens: 312_094 },
+          context: {
+            documents: [
+              contextDocument(),
+            ],
+            reports,
+          },
+        },
+      }),
+    })
+
+    it.each<[string, ReturnType<typeof contextReport>[], string]>([
+      [
+        'a report read and one that could not be read',
+        [
+          contextReport(),
+          unreadable,
+        ],
+        'reports: 1 read, 1 could not be read',
+      ],
+      [
+        'a report read in part alone',
+        [partial],
+        'reports: 1 read in part',
+      ],
+      [
+        'each count, the zero ones left out',
+        [
+          contextReport(),
+          contextReport(),
+          partial,
+          unreadable,
+          unreadable,
+          unreadable,
+        ],
+        'reports: 2 read, 1 read in part, 3 could not be read',
+      ],
+      [
+        'a report read whole',
+        [
+          contextReport(),
+        ],
+        'reports: 1 read',
+      ],
+    ])('counts the reports read, read in part and unread: %s', (_name, reports, line) => {
+      const state = replay(longReview())
+      const written = lines(state, withReports(...reports))
+      // After the profile's context line, before the gaps and where the report went.
+      const context = written.findIndex(entry => entry.startsWith('context:'))
+      expect(written.slice(context, context + 3)).toEqual([
+        'context: security: guidelines 1830 bytes',
+        line,
+        'gaps: 1 part(s) research-failed (timeout): raise timeoutMs',
+      ])
+      expect(written.filter(entry => entry.startsWith('reports:'))).toEqual([line])
+      expect(lines(state, withReports(...reports), 'public').filter(entry => entry.startsWith('reports:'))).toEqual([line])
+    })
+
+    it('writes no line for a review that read no report', () => {
+      const state = replay(longReview())
+      expect(lines(state, withReports()).some(entry => entry.startsWith('reports:'))).toBe(false)
+      expect(lines(state)).toEqual(lines(state, withReports()).filter(entry => !entry.startsWith('context:')))
+    })
   })
 
   describe('a findings-capped gap\'s fix', () => {
