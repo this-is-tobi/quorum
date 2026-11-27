@@ -321,13 +321,13 @@ export interface ReportParts {
  * outcome above 0 after `; `, in a fixed order (`13 not in the change`, `2 unmapped`, `1 held as credentials`), then `; read in part`
  * for a report that was. A report that could not be read has no count: the tail is `for <profile>: could not be read`. The scanner's name,
  * which the report wrote and the core cleaned, is a JSON string, so no quote or line break in it ends the name; the profile is left out
- * when the record has none, and the tail then starts with its colon. The words are not inert: the line that holds them passes `inertLine`
- * whole.
+ * when the record has none, and the tail then starts with its colon. `name` writes the scanner's name, a JSON string by default; the Markdown
+ * summary passes `codeSpan`. The words are not inert: the line that holds them passes `inertLine` whole.
  */
-export function reportLineParts(record: ContextReport, place: number): ReportParts {
+export function reportLineParts(record: ContextReport, place: number, name: (scanner: string) => string = scanner => JSON.stringify(scanner)): ReportParts {
   const scanner = record.scanner === undefined
     ? ''
-    : ` ${JSON.stringify(record.scanner)}`
+    : ` ${name(record.scanner)}`
   const profile = record.profile === undefined
     ? ''
     : `for ${record.profile}`
@@ -350,9 +350,9 @@ export function reportLineParts(record: ContextReport, place: number): ReportPar
   }
 }
 
-/** A scanner report as one sentence, `reportLineParts`' head and tail, a space between them but for a tail that starts with a colon: `1 sarif "Trivy" for security: 1 of 14 issues used (1 file-level); 13 not in the change`. */
-export function reportWords(record: ContextReport, place: number): string {
-  const { head, tail } = reportLineParts(record, place)
+/** A scanner report as one sentence, `reportLineParts`' head and tail, a space between them but for a tail that starts with a colon: `1 sarif "Trivy" for security: 1 of 14 issues used (1 file-level); 13 not in the change`. `name` writes the scanner's name, as `reportLineParts` takes it. */
+export function reportWords(record: ContextReport, place: number, name?: (scanner: string) => string): string {
+  const { head, tail } = reportLineParts(record, place, name)
   return tail.startsWith(':')
     ? `${head}${tail}`
     : `${head} ${tail}`
@@ -370,6 +370,16 @@ export function scannerWords({ foundBy }: Verdict | PublicVerdict): string {
       ? ['marked suppressed']
       : [],
   ].join(', ')
+}
+
+/** Whether the issue a scanner gave had no line of its own, so the finding stands on its file's first changed line: always false for a finding a model reported. */
+export function isFileLevel({ foundBy }: Verdict | PublicVerdict): boolean {
+  return foundBy.kind === 'scanner' && foundBy.fileLevel === true
+}
+
+/** Whether the report that gave a finding marks its issue as suppressed, which quorum does not honour: always false for a finding a model reported. */
+export function isSuppressed({ foundBy }: Verdict | PublicVerdict): boolean {
+  return foundBy.kind === 'scanner' && foundBy.suppressed === true
 }
 
 /** A verdict a scanner's report gave: its `foundBy` is the scanner's form. */

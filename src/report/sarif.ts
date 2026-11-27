@@ -1,6 +1,8 @@
 /**
  * SARIF for GitHub's code scanning: one run of the public view, a result for each kept or unreviewed finding
- * that sits on a file of the diff, and a notification for each gap and each file left out.
+ * that sits on a file of the diff, and a notification for each gap and each file left out. A finding a scanner's
+ * report gave is a result of its profile's rule like any other, its message saying what reported it and its
+ * `properties.foundBy` `scanner`; the scanner issues the panel dismissed are no result, and one notification counts them.
  *
  * **The levels agree with the exit code.** A result is `error` exactly when it fails its profile
  * (`failsItsProfile`, the rule that sets exit 1), `warning` for another kept `high` or `medium` finding and for an
@@ -31,7 +33,7 @@ import { failsItsProfile, isIncomplete, isInterrupted, profileFailOn } from '../
 import { inertJson, inertPlain } from '../core/sanitize.ts'
 import { ownData } from '../core/facts.ts'
 import type { Confidence, FailOn, PublicGap, PublicProfileMeta, PublicVerdict, PublicView } from '../core/types.ts'
-import { commitOf, evidenceRows, GAP_WORDS, isCleanRelativePath, levelWord, placedFindings, plural, ruleWords, votesWords } from './lines.ts'
+import { commitOf, dismissedScanner, evidenceRows, GAP_WORDS, isCleanRelativePath, levelWord, placedFindings, plural, ruleWords, votesWords } from './lines.ts'
 import type { Reporter } from './reporter.ts'
 import { publicView } from './view.ts'
 
@@ -150,6 +152,19 @@ function ruleClause(verdict: PublicVerdict): string {
     : `, ${rule}`
 }
 
+/**
+ * The message of a finding's result: its level and its votes, then the claim, which for a finding a model reported is `. <category>[, rule <id>]: <summary>`,
+ * and for one a scanner gave `, reported by <scanner> rule <rule id>: <summary>`, so the scanner and its rule are named as the scanner's. The words
+ * a report or a model wrote pass `inertPlain`.
+ */
+function messageOf(verdict: PublicVerdict): string {
+  const { foundBy } = verdict
+  const claim = foundBy.kind === 'scanner'
+    ? `, ${inertPlain(`reported by ${foundBy.scanner} rule ${foundBy.ruleId}: ${verdict.summary}`)}`
+    : `. ${inertPlain(`${verdict.category}${ruleClause(verdict)}: ${verdict.summary}`)}`
+  return `${levelWord(verdict)}, ${votesWords(verdict)}${claim}`
+}
+
 /** The result of a finding on a file of the diff. */
 function resultOf(view: PublicView, ruleIds: readonly string[], verdict: PublicVerdict): object {
   const location: Location = {
@@ -164,15 +179,28 @@ function resultOf(view: PublicView, ruleIds: readonly string[], verdict: PublicV
     ruleId: `quorum/${verdict.profile}`,
     ruleIndex: ruleIds.indexOf(verdict.profile),
     level: levelOf(view, verdict),
-    message: { text: `${levelWord(verdict)}, ${votesWords(verdict)}. ${inertPlain(`${verdict.category}${ruleClause(verdict)}: ${verdict.summary}`)}` },
+    message: {
+      text: messageOf(verdict),
+    },
     locations: [location],
     partialFingerprints: { [FINGERPRINT_KEY]: verdict.fingerprint },
+    ...propertiesOf(verdict),
+  }
+}
+
+/** The properties of a result: `precision`, the confidence of a kept finding, then `foundBy` when a scanner gave it. A finding a model reported and left unreviewed has none. */
+function propertiesOf(verdict: PublicVerdict): { properties?: Record<string, string> } {
+  const properties = {
     ...isKept(verdict)
-      ? {
-          properties: { precision: verdict.confidence },
-        }
+      ? { precision: verdict.confidence }
+      : {},
+    ...verdict.foundBy.kind === 'scanner'
+      ? { foundBy: 'scanner' }
       : {},
   }
+  return Object.keys(properties).length === 0
+    ? {}
+    : { properties }
 }
 
 /** Whether a finding is kept: it has a confidence, which an unreviewed one never has. */
@@ -250,20 +278,26 @@ function leftOutNotifications(view: PublicView): Notification[] {
   })
 }
 
-/** The notifications of a run: the gaps in the order of `meta.incomplete`, the files left out with no gap, then the findings no result holds. */
+/** A note with `count`, for the findings and issues that no result holds: nothing when there are none. */
+function uncountedNote(count: number, words: string): Notification[] {
+  return count === 0
+    ? []
+    : [
+        {
+          level: 'note',
+          message: { text: `${words}, which no result holds: ${count}` },
+          properties: { count },
+        },
+      ]
+}
+
+/** The notifications of a run: the gaps in the order of `meta.incomplete`, the files left out with no gap, the findings no result holds, then the scanner issues the panel dismissed, which no result holds either. */
 function notificationsOf(view: PublicView, unplaced: number): Notification[] {
   return [
     ...view.meta.incomplete.map(gap => gapNotification(view, gap)),
     ...leftOutNotifications(view),
-    ...unplaced === 0
-      ? []
-      : [
-          {
-            level: 'note' as const,
-            message: { text: `findings that name no file of the diff, which no result holds: ${unplaced}` },
-            properties: { count: unplaced },
-          },
-        ],
+    ...uncountedNote(unplaced, 'findings that name no file of the diff'),
+    ...uncountedNote(dismissedScanner(view).length, 'scanner issues the panel dismissed'),
   ]
 }
 

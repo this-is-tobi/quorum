@@ -1,7 +1,7 @@
 /** The results the reporters' specs render: a review of a range with one kept, one unreviewed and one discarded finding, and a blank one. */
 
 import type { Outcome } from '../core/outcome.ts'
-import type { ContextDocument, ContextReport, LensVote, QuorumMeta, QuorumResult, ReviewSettings, ReviewSource, Verdict } from '../core/types.ts'
+import type { ContextDocument, ContextReport, LensVote, QuorumMeta, QuorumResult, ReviewSettings, ReviewSource, ScannerFound, Verdict } from '../core/types.ts'
 
 const id = (start: string, length = 40): string => start.padEnd(length, 'a')
 export function cast(keep: boolean): LensVote {
@@ -282,6 +282,111 @@ export function contextReport(changes: Partial<ContextReport> = {}): ContextRepo
     },
     ...changes,
   }
+}
+
+/** What a scanner found, as a verdict records it, over the fixture's finding `base`: Trivy's, report 0, rule `CVE-0000-0001`, level `error`; `changes` replaces the scanner's fields. */
+export function foundByScanner(base: Verdict, changes: Partial<ScannerFound> = {}): Verdict {
+  return {
+    ...base,
+    foundBy: {
+      kind: 'scanner',
+      report: 0,
+      scanner: 'Trivy',
+      ruleId: 'CVE-0000-0001',
+      level: 'error',
+      ...changes,
+    },
+  }
+}
+
+/** A finding Trivy gave on a lock file, which its report gives no line for, so it stands on the file's first changed line, 300. */
+export const TRIVY: Verdict = foundByScanner({
+  ...SQL,
+  id: 'd1e2f3040516',
+  fingerprint: 'd1e2f30405162738:1',
+  file: 'package-lock.json',
+  line: 300,
+  category: 'CVE-0000-0001',
+  summary: 'The locked version of a library is affected by CVE-0000-0001.',
+  evidence: ' a\n+b\n c',
+}, { fileLevel: true })
+
+export const SQLI = 'javascript.lang.security.audit.sqli.node-postgres-sqli'
+
+/** An issue Semgrep gave that the panel dismissed: no lens kept it. */
+export function dismissedAt(file: string, line: number, changes: Partial<Verdict> = {}, rule = SQLI): Verdict {
+  return foundByScanner({
+    ...UPLOAD,
+    file,
+    line,
+    category: rule,
+    keptVotes: 0,
+    totalVotes: 3,
+    votes: [
+      cast(false),
+      cast(false),
+      cast(false),
+    ],
+    ...changes,
+  }, {
+    report: 1,
+    scanner: 'Semgrep OSS',
+    ruleId: rule,
+    level: 'warning',
+  })
+}
+
+/** The two reports of the scanner fixtures: Trivy's, read whole, and Semgrep's, read in part. */
+export const SCANNER_REPORTS: ContextReport[] = [
+  contextReport({
+    scanner: 'Trivy',
+    issues: {
+      listed: 14,
+      used: 1,
+      fileLevel: 1,
+      held: 0,
+      unmapped: 0,
+      notInChange: 13,
+      leftOut: 0,
+      unchanged: 0,
+      capped: 0,
+      skipped: 0,
+      unreadable: 0,
+    },
+  }),
+  contextReport({
+    scanner: 'Semgrep OSS',
+    status: 'partial',
+    problems: ['unmapped-paths'],
+    issues: {
+      listed: 3,
+      used: 1,
+      fileLevel: 0,
+      held: 0,
+      unmapped: 2,
+      notInChange: 0,
+      leftOut: 0,
+      unchanged: 0,
+      capped: 0,
+      skipped: 0,
+      unreadable: 0,
+    },
+  }),
+]
+
+/** The context of a review that read the two reports, which a verdict a scanner found names by the place of its report. */
+export const SCANNED_CONTEXT: QuorumMeta['context'] = { documents: [], reports: SCANNER_REPORTS }
+
+/** A review of the two reports: Trivy's finding kept and `discarded`, by default Semgrep's issue at `src/db.js:12`, dismissed. */
+export function scannedResult(discarded: Verdict[] = [
+  dismissedAt('src/db.js', 12),
+]): QuorumResult {
+  return reportResult({
+    kept: [TRIVY],
+    unreviewed: [],
+    discarded,
+    meta: { context: SCANNED_CONTEXT },
+  })
 }
 
 /** A review of a blank diff: no finding, no file, no gap, no usage, 3 ms; `meta` replaces its fields. */

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
-import type { Flag, LeftOutFile, PublicView, QuorumResult, Verdict } from '../core/types.ts'
+import type { ContextReport, Flag, LeftOutFile, PublicView, QuorumResult, Verdict } from '../core/types.ts'
 import { expectCodeWritten as expectWritten, HOSTILE, RLO } from '../testing/markdown.ts'
-import { blankResult, cast, contextDocument, FINDINGS, INCOMPLETE, INTERRUPTED, PASS, reportResult, SERVED_AS_TWO, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
+import { blankResult, cast, contextDocument, contextReport, dismissedAt, FINDINGS, foundByScanner, INCOMPLETE, INTERRUPTED, PASS, reportResult, SCANNED_CONTEXT, scannedResult, SCANNER_REPORTS, SERVED_AS_TWO, SQL, TOKEN, TRIVY, UPLOAD } from '../testing/report.ts'
 import { LISTED, markdown, SUMMARY_BUDGET, summaryMarkdown } from './markdown.ts'
 import { renderReport } from './registry.ts'
 import { publicView } from './view.ts'
@@ -223,6 +223,268 @@ describe('markdown', () => {
     expect(render(watching({ awayFromChange: 0 }), PASS)[7]).toBe('| security | high | 0 | 0 | 0 | 0 | 1 of 1 file reviewed |')
     expect(render(watching({}), PASS)[7]).toBe('| security | high | 0 | 0 | 0 | 0 | 1 of 1 file reviewed |')
     expect(render(reportResult())).toEqual(MAIN)
+  })
+
+  it('names a scanner\'s finding\'s scanner and file-level in its head, after the rule, and leaves a model\'s head as it was', () => {
+    const result = reportResult({
+      kept: [
+        TRIVY,
+        foundByScanner({
+          ...SQL,
+          file: 'src/a.js',
+          line: 2,
+          rule: 'tests-for-new-code',
+        }, { scanner: 'Semgrep OSS', ruleId: 'r1' }),
+      ],
+      meta: { context: SCANNED_CONTEXT },
+    })
+    const lines = render(result)
+    expect(heads(lines)).toEqual([
+      'HIGH security package-lock.json:300',
+      'HIGH security src/a.js:2',
+      'UNREVIEWED security src/session.js:20',
+    ])
+    expect(lines).toContain('- **HIGH** security · `package-lock.json` line 300 · `CVE-0000-0001` · `Trivy` · file-level · kept by 3 of 3 lenses')
+    expect(lines).toContain('- **HIGH** security · `src/a.js` line 2 · `CWE-89` · rule `tests-for-new-code` · `Semgrep OSS` · kept by 3 of 3 lenses')
+    // The unreviewed model finding keeps the head it had, and a review with no report writes the summary it always wrote.
+    expect(lines).toContain('- **UNREVIEWED** security · `src/session.js` line 20 · `CWE-338` · kept by 1 of 3 lenses, 1 vote failed: a network error')
+    expect(render(reportResult())).toEqual(MAIN)
+    expect(render(publicView(result))).toEqual(lines)
+    expectCodeWritten(lines.join('\n'))
+  })
+
+  it('says a scanner\'s finding is marked suppressed in its head, after file-level, and says it of no other finding', () => {
+    const suppressed = (changes: Partial<Verdict>, found: Parameters<typeof foundByScanner>[1] = {}): Verdict => foundByScanner({
+      ...SQL,
+      ...changes,
+    }, { scanner: 'Semgrep OSS', suppressed: true, ...found })
+    const result = reportResult({
+      kept: [
+        suppressed({ file: 'src/a.js', line: 2 }),
+        suppressed({ file: 'src/b.js', line: 3, rule: 'no-any' }, { fileLevel: true }),
+        foundByScanner({ ...SQL, file: 'src/c.js', line: 4 }, { scanner: 'Semgrep OSS' }),
+        { ...SQL, file: 'src/d.js', line: 5 },
+      ],
+      meta: { context: SCANNED_CONTEXT },
+    })
+    const lines = render(result)
+    expect(lines).toContain('- **HIGH** security · `src/a.js` line 2 · `CWE-89` · `Semgrep OSS` · marked suppressed · kept by 3 of 3 lenses')
+    expect(lines).toContain('- **HIGH** security · `src/b.js` line 3 · `CWE-89` · rule `no-any` · `Semgrep OSS` · file-level · marked suppressed · kept by 3 of 3 lenses')
+    // A scanner's finding its report did not mark, and a model's, say neither.
+    expect(lines).toContain('- **HIGH** security · `src/c.js` line 4 · `CWE-89` · `Semgrep OSS` · kept by 3 of 3 lenses')
+    expect(lines).toContain('- **HIGH** security · `src/d.js` line 5 · `CWE-89` · kept by 3 of 3 lenses')
+    expect(lines.filter(line => line.includes('marked suppressed'))).toHaveLength(2)
+    expectCodeWritten(lines.join('\n'))
+    expect(render(publicView(result))).toEqual(lines)
+    // A review that read no report writes what it always wrote.
+    expect(render(reportResult()).join('\n')).not.toContain('suppressed')
+    expect(render(reportResult())).toEqual(MAIN)
+  })
+
+  it('puts a scanner\'s name in a code span, whatever it holds', () => {
+    const lines = render(reportResult({
+      kept: [
+        foundByScanner(SQL, { scanner: '@octocat `x` #1 :smile: |' }),
+      ],
+      meta: { context: SCANNED_CONTEXT },
+    }))
+    expect(lines).toContain('- **HIGH** security · `src/auth/login.ts` line 42 · `CWE-89` · ``@octocat `x` #1 :smile: |`` · kept by 3 of 3 lenses')
+    expectCodeWritten(lines.join('\n'))
+  })
+
+  it('lists the dismissed scanner issues, first 20 then a count, and drops them first under the budget', () => {
+    const heading = '#### Dismissed scanner issues'
+    const issues = (count: number): Verdict[] => Array.from({ length: count }, (_, index) => dismissedAt(`src/f${index}.js`, index + 1, {}, 'r1'))
+    const result = reportResult({
+      discarded: [
+        UPLOAD,
+        ...issues(21),
+      ],
+      meta: { context: SCANNED_CONTEXT },
+    })
+    const lines = render(result)
+    expect(listUnder(lines, heading)).toEqual([
+      ...Array.from({ length: 20 }, (_, index) => `- \`src/f${index}.js\` line ${index + 1} · \`r1\` · \`Semgrep OSS\` · kept by 0 of 3 lenses`),
+      `- and 1 more, ${MORE}`,
+    ])
+    // They come after the findings and before the gaps; the finder's discarded finding is counted, in the table, and never listed.
+    expect(lines.indexOf('#### Findings')).toBeLessThan(lines.indexOf(heading))
+    expect(lines.indexOf(heading)).toBeLessThan(lines.indexOf('#### Gaps'))
+    expect(lines.join('\n')).not.toContain(UPLOAD.file)
+    expect(lines).toContain('| security | high | 1 | 1 | 22 | 0 | 1 of 3 files reviewed, 1 in part, 1 not |')
+    expectCodeWritten(lines.join('\n'))
+    expect(render(publicView(result))).toEqual(lines)
+
+    // Every evidence block stays while the dismissed issues can still give room: one code unit short, they lose their last entry alone.
+    const view = publicView(result)
+    const full = summaryMarkdown(view, FINDINGS)
+    const fences = (summary: string): number => summary.split('\n').filter(line => line === '  ```text').length
+    expect(fences(full)).toBe(2)
+    const short = summaryMarkdown(view, FINDINGS, full.length - 1)
+    expect(listUnder(short.split('\n'), heading).at(-1)).toBe(`- and 2 more, ${MORE}`)
+    expect(fences(short)).toBe(2)
+    expect(short).not.toContain('is left out, to stay within')
+    // A budget that fits all but the dismissed issues keeps every evidence block and counts all 21; one less costs the last finding its evidence.
+    const base = summaryMarkdown(publicView(reportResult({
+      discarded: Array.from<Verdict>({ length: 22 }).fill(UPLOAD),
+      meta: { context: SCANNED_CONTEXT },
+    })), FINDINGS)
+    const fits = base.length + 2 + [heading, '', `- and 21 more, ${MORE}`].join('\n').length
+    const dismissed = summaryMarkdown(view, FINDINGS, fits)
+    expect(listUnder(dismissed.split('\n'), heading)).toEqual([`- and 21 more, ${MORE}`])
+    expect(fences(dismissed)).toBe(2)
+    expect(dismissed).not.toContain('is left out, to stay within')
+    const tight = summaryMarkdown(view, FINDINGS, fits - 1)
+    expect(fences(tight)).toBe(1)
+    expect(tight).toContain('The evidence of 1 finding is left out')
+    expect(tight.length).toBeLessThanOrEqual(fits - 1)
+  })
+
+  it('lists no dismissed section for a review whose panel dismissed only the finder\'s findings', () => {
+    const lines = render(reportResult({
+      discarded: [UPLOAD, UPLOAD],
+    }))
+    expect(lines.join('\n')).not.toContain('Dismissed scanner issues')
+    expect(lines.join('\n')).not.toContain('Scanner and coverage reports')
+  })
+
+  it('lists the reports read before the documents, each scanner in a code span', () => {
+    const unreadable: ContextReport = {
+      format: 'sonarqube',
+      status: 'unreadable',
+      problems: ['missing'],
+    }
+    const hostile = contextReport({
+      scanner: '@octocat `x` #1 |',
+      issues: {
+        listed: 1,
+        used: 1,
+        fileLevel: 0,
+        held: 0,
+        unmapped: 0,
+        notInChange: 0,
+        leftOut: 0,
+        unchanged: 0,
+        capped: 0,
+        skipped: 0,
+        unreadable: 0,
+      },
+    })
+    const result = reportResult({
+      meta: {
+        context: {
+          documents: [
+            contextDocument(),
+          ],
+          reports: [...SCANNER_REPORTS, unreadable, hostile],
+        },
+      },
+    })
+    const lines = render(result)
+    expect(lines.slice(lines.indexOf('#### Flags'))).toEqual([
+      '#### Flags',
+      '',
+      '- hidden-characters at `src/session.js` line 20: `U+202E on 1 added line(s)`',
+      '',
+      '#### Scanner and coverage reports',
+      '',
+      '- 1 sarif `Trivy` for security: 1 of 14 issues used (1 file-level); 13 not in the change',
+      '- 2 sarif `Semgrep OSS` for security: 1 of 3 issues used; 2 unmapped; read in part',
+      '- 3 sonarqube: could not be read',
+      '- 4 sarif ``@octocat `x` #1 |`` for security: 1 of 1 issues used',
+      '',
+      '#### Documents read',
+      '',
+      '- security guidelines of the profile, 1830 bytes',
+      '',
+      '---',
+      '',
+      TRAILER,
+      '',
+    ])
+    expectCodeWritten(lines.join('\n'))
+    expect(render(publicView(result))).toEqual(lines)
+  })
+
+  it('drops the reports after the documents and before the flags when the budget is short', () => {
+    // No finding holds evidence here, which the budget drops before the documents.
+    const view = publicView(reportResult({
+      kept: [],
+      unreviewed: [],
+      meta: {
+        context: {
+          documents: [
+            contextDocument(),
+            contextDocument({ kind: 'do-not-report' }),
+            contextDocument({ profile: 'naming' }),
+          ],
+          reports: SCANNER_REPORTS,
+        },
+      },
+    }))
+    const full = summaryMarkdown(view, FINDINGS)
+    const shown = (summary: string, heading: string): number => listUnder(summary.split('\n'), heading).filter(line => !line.startsWith('- and ')).length
+    const states = new Set<string>()
+    for (let budget = full.length; budget >= 0; budget -= 1) {
+      const summary = summaryMarkdown(view, FINDINGS, budget)
+      const documents = shown(summary, '#### Documents read')
+      const reports = shown(summary, '#### Scanner and coverage reports')
+      const flags = shown(summary, '#### Flags')
+      // A report is cut only once every document is, and a flag only once every report is.
+      if (reports < 2) expect(documents).toBe(0)
+      if (flags < 1) expect(reports).toBe(0)
+      states.add(`${documents} ${reports} ${flags}`)
+    }
+    expect(states).toContain('3 2 1')
+    expect(states).toContain('0 2 1')
+    expect(states).toContain('0 1 1')
+    expect(states).toContain('0 0 1')
+    expect(states).toContain('0 0 0')
+    // With no room at all the section keeps its heading and its count.
+    expect(listUnder(summaryMarkdown(view, FINDINGS, 0).split('\n'), '#### Scanner and coverage reports')).toEqual([`- and 2 more, ${MORE}`])
+  })
+
+  it('writes a scanned review whole: the finding, the dismissed issue and the reports', () => {
+    const lines = render(scannedResult())
+    expect(lines.slice(lines.indexOf('#### Findings'))).toEqual([
+      '#### Findings',
+      '',
+      '- **HIGH** security · `package-lock.json` line 300 · `CVE-0000-0001` · `Trivy` · file-level · kept by 3 of 3 lenses',
+      '',
+      '  `The locked version of a library is affected by CVE-0000-0001.`',
+      '',
+      '  ```text',
+      '        299   a',
+      '     >  300 + b',
+      '        301   c',
+      '  ```',
+      '',
+      '#### Dismissed scanner issues',
+      '',
+      '- `src/db.js` line 12 · `javascript.lang.security.audit.sqli.node-postgres-sqli` · `Semgrep OSS` · kept by 0 of 3 lenses',
+      '',
+      '#### Gaps',
+      '',
+      '- security, binary: the diff carries no content for a binary file',
+      '',
+      '#### Files left out',
+      '',
+      '- `assets/logo.png` (binary)',
+      '',
+      '#### Flags',
+      '',
+      '- hidden-characters at `src/session.js` line 20: `U+202E on 1 added line(s)`',
+      '',
+      '#### Scanner and coverage reports',
+      '',
+      '- 1 sarif `Trivy` for security: 1 of 14 issues used (1 file-level); 13 not in the change',
+      '- 2 sarif `Semgrep OSS` for security: 1 of 3 issues used; 2 unmapped; read in part',
+      '',
+      '---',
+      '',
+      TRAILER,
+      '',
+    ])
   })
 
   it('writes the verdict of an interrupted review', () => {

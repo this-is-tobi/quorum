@@ -22,13 +22,15 @@
  * so its finder was never asked and its empty list of findings is no review's) are code-checked fields: a rule's id matches a
  * fixed pattern, and `codeFieldsOnly` keeps all three. So is a profile's `awayFromChange` (how many findings a profile that
  * reviews changed lines only dropped for standing away from the change, counted apart from `outsideDiff`), present for such a
- * profile alone.
+ * profile alone. So are a finding's `foundBy` (`model`, or `scanner` for a finding a scanner's report gave) and its `fileLevel` (`true`
+ * when that scanner's issue had no line of its own): code sets both, and `codeFieldsOnly` keeps them.
  *
  * Text from the change reaches the agent in four places and no other. A file name, in a finding, a gap, a
  * file left out and a flag, passes `showHidden`, so a hidden character shows as `<U+XXXX>` and the agent can
  * still open the file. A category and a summary, the model's claims, pass `inertPlain` at `CLAIM_CAP` code
- * points, which also labels a link's or a mention's trigger. Everything else is a count, a code word quorum
- * wrote, or the notice.
+ * points, which also labels a link's or a mention's trigger. A scanner's name, which a report wrote, passes it
+ * too at the 64 code points the core keeps, and `codeFieldsOnly` leaves it out with the category and the summary.
+ * Everything else is a count, a code word quorum wrote, or the notice.
  */
 
 import type { Outcome } from '../core/outcome.ts'
@@ -40,7 +42,8 @@ import { flagCode, gapReason, leftOutFile } from '../core/result-schema.ts'
 import { RULE_ID } from '../core/rules.ts'
 import { inertPlain, showHidden } from '../core/sanitize.ts'
 import { utf8Length } from '../core/tokens.ts'
-import { isSecret, rankedFindings } from '../report/lines.ts'
+import { MAX_SCANNER } from '../core/verify.ts'
+import { isFileLevel, isSecret, rankedFindings } from '../report/lines.ts'
 
 /** The most bytes of UTF-8 JSON one copy of the result takes: Claude Code caps a tool's output at 25 000 tokens and warns at 10 000, and the result is sent twice, as structured content and as text. */
 export const RESULT_BUDGET = 10_000
@@ -115,8 +118,11 @@ const finding = z.strictObject({
   }),
   fingerprint: z.string(),
   rule: z.string().regex(RULE_ID).optional(),
+  foundBy: z.enum(['model', 'scanner']),
+  fileLevel: z.literal(true).optional(),
   category: z.string().optional(),
   summary: z.string().optional(),
+  scanner: z.string().optional(),
 })
 
 const gap = z.strictObject({
@@ -259,11 +265,20 @@ function findingOf(verdict: PublicVerdict, codeFieldsOnly: boolean): AgentResult
     ...verdict.rule === undefined
       ? {}
       : { rule: verdict.rule },
+    foundBy: verdict.foundBy.kind,
+    ...isFileLevel(verdict)
+      ? { fileLevel: true as const }
+      : {},
     ...codeFieldsOnly
       ? {}
       : {
           category: inertPlain(verdict.category, CLAIM_CAP),
           summary: inertPlain(verdict.summary, CLAIM_CAP),
+          ...verdict.foundBy.kind === 'scanner'
+            ? {
+                scanner: inertPlain(verdict.foundBy.scanner, MAX_SCANNER),
+              }
+            : {},
         },
   }
 }
