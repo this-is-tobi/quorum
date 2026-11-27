@@ -11,6 +11,10 @@ export type VerifiedFinding = Omit<Finding, 'id' | 'fingerprint' | 'profile' | '
 export const MAX_SUMMARY = 500
 /** The most characters of a finding's category, which the finder writes, as the harness caps it. */
 export const MAX_CATEGORY = 80
+/** The most characters of a scanner's rule id a candidate carries in its `foundBy`, which the report writes, as the harness caps it. */
+export const MAX_RULE_ID = 256
+/** The most characters of a scanner's name a candidate carries in its `foundBy`, which the report writes, as the harness caps it. */
+export const MAX_SCANNER = 64
 /** The most characters of the model a reply names as the one that answered, which the server writes, as the harness caps it. */
 export const MAX_MODEL = 100
 /** What a finding whose category is empty once cleaned is named: the finder gave none, and the panel judges it all the same. */
@@ -65,8 +69,12 @@ export const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim
  *
  * The rule a finding cites, when the finder wrote one that is not blank, is carried as it is, trimmed: it is the finder's text
  * and not yet a rule, until `checkCitations` has read it against the rules the review sent.
+ *
+ * With `anchor: false` no finding moves: each stays where it was cited and `quoteMatched` says whether its quote is in the evidence
+ * there, which is how a scanner's candidate is checked, a scanner's line being the scanner's own. `anchor` is true unless it is
+ * `false`.
  */
-export function verifyFindings(details: readonly FindingDetails[], sections: ReadonlyMap<string, string>): { findings: VerifiedFinding[], invalid: string[] } {
+export function verifyFindings(details: readonly FindingDetails[], sections: ReadonlyMap<string, string>, options: { readonly anchor?: boolean } = {}): { findings: VerifiedFinding[], invalid: string[] } {
   const findings: VerifiedFinding[] = []
   const invalid: string[] = []
   for (const detail of details) {
@@ -83,7 +91,7 @@ export function verifyFindings(details: readonly FindingDetails[], sections: Rea
       continue
     }
     const matched = quoteAppearsIn(located.evidence, detail.quote)
-    const anchor = matched
+    const anchor = matched || options.anchor === false
       ? undefined
       : anchorOf(sections, detail.file, detail.line, detail.quote)
     const read = anchor?.located ?? located
@@ -391,5 +399,24 @@ export function longestFinding(file: string): Finding {
     evidence: 'x'.repeat(MAX_EVIDENCE),
     quoteMatched: true,
     foundBy: { kind: 'model' },
+  }
+}
+
+/**
+ * A scanner's candidate as the harness leaves it at its longest, citing `file`: the longest finding with the longest `foundBy` a scanner's
+ * report gives, a scanner's name and a rule id at their caps and both optional marks set. The estimate sizes a candidate's vote by it.
+ */
+export function longestCandidate(file: string): Finding {
+  return {
+    ...longestFinding(file),
+    foundBy: {
+      kind: 'scanner',
+      report: 0,
+      scanner: 'x'.repeat(MAX_SCANNER),
+      ruleId: 'x'.repeat(MAX_RULE_ID),
+      level: 'unknown',
+      fileLevel: true,
+      suppressed: true,
+    },
   }
 }

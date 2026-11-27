@@ -22,6 +22,7 @@
  */
 
 import { z } from 'zod'
+import { LEVEL_ORDER } from './candidates.ts'
 import { COMMIT_ID, MAX_DOCUMENT_PATH, SHA256 } from './documents.ts'
 import { NO_ANSWERS, PROVIDER_ERROR_KINDS } from './errors.ts'
 import { SKIP_RULES, sourceIssues } from './inputs.ts'
@@ -29,7 +30,7 @@ import { FAIL_ON_LEVELS, PROFILE_ID_PATTERN } from './profile.ts'
 import { RULE_ID } from './rules.ts'
 import { SECRET_RULES } from './secrets.ts'
 import { FINGERPRINT_PATTERN } from './stages/research.ts'
-import { MAX_CATEGORY, MAX_EVIDENCE, MAX_MODEL, MAX_SUMMARY } from './verify.ts'
+import { MAX_CATEGORY, MAX_EVIDENCE, MAX_MODEL, MAX_RULE_ID, MAX_SCANNER, MAX_SUMMARY } from './verify.ts'
 
 /** The most models a provider's record lists in `served`: the calls of any further model are counted in `servedOthers`. */
 export const MAX_SERVED = 8
@@ -87,6 +88,21 @@ const publicVote = z.strictObject({
   keep: z.boolean().nullable(),
   failure: voteFailure.nullable(),
 })
+/** What proposed a finding: the model's finder, or a scanner's report, whose texts are within the caps the harness keeps. */
+const foundBy = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('model'),
+  }),
+  z.strictObject({
+    kind: z.literal('scanner'),
+    report: count,
+    scanner: z.string().max(MAX_SCANNER),
+    ruleId: z.string().max(MAX_RULE_ID),
+    level: z.enum(LEVEL_ORDER),
+    fileLevel: z.literal(true).optional(),
+    suppressed: z.literal(true).optional(),
+  }),
+])
 /** A verdict whose votes are `votes`: one shape for the full result and the public view. */
 function verdictOf<Votes extends z.ZodType>(votes: Votes) {
   return z.strictObject({
@@ -102,9 +118,7 @@ function verdictOf<Votes extends z.ZodType>(votes: Votes) {
     evidence: z.string().max(MAX_EVIDENCE),
     evidenceRow: z.int().min(0).max(2).optional(),
     quoteMatched: z.boolean(),
-    foundBy: z.strictObject({
-      kind: z.literal('model'),
-    }),
+    foundBy,
     keptVotes: count,
     totalVotes: count,
     confidence: confidence.optional(),

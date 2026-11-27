@@ -70,11 +70,12 @@ function publicVote(lensVote: LensVote): PublicVote {
   }
 }
 
-/** A verdict as the view keeps it: every field but the votes as they are, the votes reduced. A `votes` that is no array leaves none. */
+/** A verdict as the view keeps it: every field but the votes and `foundBy` as they are, the votes reduced and `foundBy` copied, so the view holds none of the result's objects. A `votes` that is no array leaves none. */
 function publicVerdict(verdict: Verdict): PublicVerdict {
   const votes: unknown = verdict.votes
   return {
     ...verdict,
+    foundBy: structuredClone(verdict.foundBy),
     votes: Array.isArray(votes)
       ? votes.map(publicVote)
       : [],

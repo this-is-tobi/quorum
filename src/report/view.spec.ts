@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { inertJson } from '../core/sanitize.ts'
-import type { LensVote, PublicView, QuorumResult, Verdict } from '../core/types.ts'
+import type { FoundBy, LensVote, PublicView, QuorumResult, Verdict } from '../core/types.ts'
 import { blankResult, RANGE, reportMeta, reportResult, SETTINGS, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
 import { discardedOf, isPublicView, publicView, voteFailed } from './view.ts'
 
@@ -614,6 +614,47 @@ describe('publicView', () => {
     })).toThrow('the public view is not one quorum writes, at kept.0.foundBy.kind')
   })
 
+  it('keeps a scanner\'s foundBy as a copy of the result\'s, so the view holds none of the result\'s objects', () => {
+    const found: FoundBy = {
+      kind: 'scanner',
+      report: 0,
+      scanner: 'Semgrep',
+      ruleId: 'js.sql-injection',
+      level: 'warning',
+      fileLevel: true,
+    }
+    const result = reportResult({
+      kept: [
+        { ...SQL, foundBy: found },
+      ],
+    })
+    const view = publicView(result)
+    expect(view.kept[0].foundBy).toEqual(found)
+    expect(view.kept[0].foundBy).not.toBe(found)
+    expect(result.kept[0].foundBy).toBe(found)
+    expect(Object.keys(view.kept[0]).indexOf('foundBy')).toBe(Object.keys(view.kept[0]).indexOf('quoteMatched') + 1)
+    expect(Object.keys(view.kept[0].foundBy)).toEqual([
+      'kind',
+      'report',
+      'scanner',
+      'ruleId',
+      'level',
+      'fileLevel',
+    ])
+    // The same schema refuses a scanner's text over its cap.
+    expect(() => publicView(reportResult({
+      kept: [
+        {
+          ...SQL,
+          foundBy: {
+            ...found,
+            scanner: 'x'.repeat(65),
+          },
+        },
+      ],
+    }))).toThrow('the public view is not one quorum writes, at kept.0.foundBy.scanner')
+  })
+
   it('keeps a vote\'s lens, its keep, null when it failed, and its failure', () => {
     const votes: LensVote[] = [
       cast(true),
@@ -730,6 +771,9 @@ describe('publicView', () => {
 
     expect(view.kept[0]).not.toBe(result.kept[0])
     expect(view.kept[0].votes).not.toBe(result.kept[0].votes)
+    expect(view.kept[0].foundBy).toEqual(result.kept[0].foundBy)
+    expect(view.kept[0].foundBy).not.toBe(result.kept[0].foundBy)
+    expect(view.unreviewed[0].foundBy).not.toBe(result.unreviewed[0].foundBy)
     expect(view.meta.source).not.toBe(result.meta.source)
     expect(view.meta.leftOut).not.toBe(result.meta.leftOut)
     expect(view.meta.flags).not.toBe(result.meta.flags)

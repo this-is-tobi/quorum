@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { locate, splitDiff } from './diff.ts'
 import type { FindingDetails, ReviewRule } from './types.ts'
-import { checkCitations, checkNearChange, MAX_ANCHOR_OCCURRENCES, MIN_ANCHOR_QUOTE, placeOf, UNCATEGORIZED, verifyFindings } from './verify.ts'
+import { checkCitations, checkNearChange, longestCandidate, longestFinding, MAX_ANCHOR_OCCURRENCES, MAX_RULE_ID, MAX_SCANNER, MIN_ANCHOR_QUOTE, placeOf, UNCATEGORIZED, verifyFindings } from './verify.ts'
 import type { VerifiedFinding } from './verify.ts'
 
 const diff = [
@@ -342,6 +342,28 @@ describe('verifyFindings', () => {
   })
 })
 
+describe('longestCandidate', () => {
+  it('is the longest finding with a scanner\'s foundBy whose every text is at its cap', () => {
+    const candidate = longestCandidate('src/a.js')
+    expect(candidate).toEqual({
+      ...longestFinding('src/a.js'),
+      foundBy: candidate.foundBy,
+    })
+    expect(candidate.foundBy).toEqual({
+      kind: 'scanner',
+      report: 0,
+      scanner: 'x'.repeat(64),
+      ruleId: 'x'.repeat(256),
+      level: 'unknown',
+      fileLevel: true,
+      suppressed: true,
+    })
+    expect(longestFinding('src/a.js').foundBy).toEqual({ kind: 'model' })
+    expect(MAX_SCANNER).toBe(64)
+    expect(MAX_RULE_ID).toBe(256)
+  })
+})
+
 describe('placeOf', () => {
   const shown = splitDiff([
     'diff --git a/a.js b/a.js',
@@ -397,6 +419,34 @@ describe('a finding anchored on its quote', () => {
     })
     expect(finding.evidence).toBe(locate(sinkAt30, 'a.js', 30)?.evidence)
     expect(finding.evidence.split('\n')[2]).toBe(`+${SINK}`)
+  })
+
+  it('leaves a finding where it was cited when told not to anchor it', () => {
+    const details = [
+      {
+        ...reported,
+        file: 'a.js',
+        line: 11,
+        quote: SINK,
+      },
+    ]
+    const [left] = verifyFindings(details, sinkAt30, { anchor: false }).findings
+    expect(left).toMatchObject({ line: 11, quoteMatched: false })
+    expect(Object.hasOwn(left, 'citedLine')).toBe(false)
+    expect(left.evidence).toBe(locate(sinkAt30, 'a.js', 11)?.evidence)
+    expect(verifyFindings(details, sinkAt30, { anchor: false }).invalid).toEqual([])
+    // The default, and `anchor: true`, move it to its quote.
+    for (const options of [
+      undefined,
+      {},
+      { anchor: true },
+    ]) {
+      expect(verifyFindings(details, sinkAt30, options).findings[0]).toMatchObject({ line: 30, citedLine: 11, quoteMatched: true })
+    }
+    // A quote the evidence shows is matched, anchored or not.
+    expect(verifyFindings([
+      { ...details[0], line: 30 },
+    ], sinkAt30, { anchor: false }).findings[0]).toMatchObject({ line: 30, quoteMatched: true })
   })
 
   it('moves a finding to the nearer of two occurrences of its quote, whichever side of the cited line it stands', () => {
