@@ -1,0 +1,133 @@
+{
+  "paging": {
+    "pageIndex": 1,
+    "pageSize": 100,
+    "total": 12000
+  },
+  "issues": [
+    {
+      "key": "fixture-javascript:S1481",
+      "project": "app",
+      "hash": "fixture-hash",
+      "flows": [],
+      "tags": [],
+      "creationDate": "2026-01-01T00:00:00+0000",
+      "updateDate": "2026-01-01T00:00:00+0000",
+      "scope": "MAIN",
+      "rule": "javascript:S1481",
+      "component": "app:src/a.js",
+      "line": 3,
+      "textRange": {
+        "startLine": 3,
+        "endLine": 3,
+        "startOffset": 6,
+        "endOffset": 12
+      },
+      "status": "OPEN",
+      "issueStatus": "OPEN",
+      "message": "Remove the declaration of the unused variable.",
+      "type": "CODE_SMELL",
+      "cleanCodeAttribute": "CLEAR",
+      "cleanCodeAttributeCategory": "INTENTIONAL",
+      "impacts": [
+        {
+          "softwareQuality": "MAINTAINABILITY",
+          "severity": "HIGH"
+        }
+      ]
+    },
+    {
+      "key": "fixture-javascript:S1066",
+      "project": "app",
+      "hash": "fixture-hash",
+      "flows": [],
+      "tags": [],
+      "creationDate": "2026-01-01T00:00:00+0000",
+      "updateDate": "2026-01-01T00:00:00+0000",
+      "scope": "MAIN",
+      "rule": "javascript:S1066",
+      "component": "app:src/b.js",
+      "line": 9,
+      "textRange": {
+        "startLine": 9,
+        "endLine": 9,
+        "startOffset": 2,
+        "endOffset": 20
+      },
+      "status": "RESOLVED",
+      "issueStatus": "ACCEPTED",
+      "message": "Merge this if statement with the enclosing one.",
+      "type": "CODE_SMELL",
+      "cleanCodeAttribute": "CLEAR",
+      "cleanCodeAttributeCategory": "INTENTIONAL",
+      "impacts": [
+        {
+          "softwareQuality": "MAINTAINABILITY",
+          "severity": "MEDIUM"
+        }
+      ]
+    },
+    {
+      "key": "fixture-javascript:S4423",
+      "project": "app",
+      "hash": "fixture-hash",
+      "flows": [],
+      "tags": [],
+      "creationDate": "2026-01-01T00:00:00+0000",
+      "updateDate": "2026-01-01T00:00:00+0000",
+      "scope": "MAIN",
+      "rule": "javascript:S4423",
+      "component": "app:src/b.js",
+      "status": "CONFIRMED",
+      "issueStatus": "CONFIRMED",
+      "message": "Use a stronger protocol version.",
+      "type": "VULNERABILITY",
+      "cleanCodeAttribute": "COMPLETE",
+      "cleanCodeAttributeCategory": "ADAPTABLE",
+      "impacts": [
+        {
+          "softwareQuality": "SECURITY",
+          "severity": "MEDIUM"
+        },
+        {
+          "softwareQuality": "RELIABILITY",
+          "severity": "LOW"
+        }
+      ]
+    }
+  ],
+  "components": [
+    {
+      "key": "app:src/a.js",
+      "enabled": true,
+      "qualifier": "FIL",
+      "name": "a.js",
+      "longName": "src/a.js",
+      "path": "src/a.js"
+    },
+    {
+      "key": "app:src/b.js",
+      "enabled": true,
+      "qualifier": "FIL",
+      "name": "b.js",
+      "longName": "src/b.js",
+      "path": "src/b.js"
+    },
+    {
+      "key": "app",
+      "enabled": true,
+      "qualifier": "TRK",
+      "name": "app",
+      "longName": "app"
+    }
+  ],
+  "rules": [
+    {
+      "key": "javascript:S1481",
+      "name": "Unused local variables should be removed",
+      "lang": "js",
+      "langName": "JavaScript",
+      "status": "READY"
+    }
+  ]
+}

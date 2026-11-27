@@ -1,0 +1,115 @@
+{
+  "total": 3,
+  "p": 1,
+  "ps": 100,
+  "paging": {
+    "pageIndex": 1,
+    "pageSize": 100,
+    "total": 3
+  },
+  "issues": [
+    {
+      "key": "fixture-javascript:S2068",
+      "project": "app",
+      "hash": "fixture-hash",
+      "flows": [],
+      "tags": [],
+      "creationDate": "2026-01-01T00:00:00+0000",
+      "updateDate": "2026-01-01T00:00:00+0000",
+      "scope": "MAIN",
+      "rule": "javascript:S2068",
+      "severity": "BLOCKER",
+      "component": "app:src/config.js",
+      "line": 7,
+      "textRange": {
+        "startLine": 7,
+        "endLine": 7,
+        "startOffset": 6,
+        "endOffset": 30
+      },
+      "status": "OPEN",
+      "message": "Review this potentially hard-coded value.",
+      "effort": "30min",
+      "debt": "30min",
+      "type": "VULNERABILITY"
+    },
+    {
+      "key": "fixture-javascript:S1481",
+      "project": "app",
+      "hash": "fixture-hash",
+      "flows": [],
+      "tags": [],
+      "creationDate": "2026-01-01T00:00:00+0000",
+      "updateDate": "2026-01-01T00:00:00+0000",
+      "scope": "MAIN",
+      "rule": "javascript:S1481",
+      "severity": "MINOR",
+      "component": "app:src/a.js",
+      "line": 2,
+      "textRange": {
+        "startLine": 2,
+        "endLine": 2,
+        "startOffset": 6,
+        "endOffset": 12
+      },
+      "status": "RESOLVED",
+      "resolution": "FIXED",
+      "message": "Remove the declaration of the unused variable.",
+      "effort": "5min",
+      "debt": "5min",
+      "type": "CODE_SMELL"
+    },
+    {
+      "key": "fixture-javascript:S1135",
+      "project": "app",
+      "hash": "fixture-hash",
+      "flows": [],
+      "tags": [],
+      "creationDate": "2026-01-01T00:00:00+0000",
+      "updateDate": "2026-01-01T00:00:00+0000",
+      "scope": "MAIN",
+      "rule": "javascript:S1135",
+      "severity": "INFO",
+      "component": "app",
+      "status": "OPEN",
+      "message": "Complete the task associated to this comment.",
+      "effort": "0min",
+      "debt": "0min",
+      "type": "CODE_SMELL"
+    }
+  ],
+  "components": [
+    {
+      "key": "app:src/config.js",
+      "enabled": true,
+      "qualifier": "FIL",
+      "name": "config.js",
+      "longName": "src/config.js",
+      "path": "src/config.js"
+    },
+    {
+      "key": "app:src/a.js",
+      "enabled": true,
+      "qualifier": "FIL",
+      "name": "a.js",
+      "longName": "src/a.js",
+      "path": "src/a.js"
+    },
+    {
+      "key": "app",
+      "enabled": true,
+      "qualifier": "TRK",
+      "name": "app",
+      "longName": "app"
+    }
+  ],
+  "rules": [
+    {
+      "key": "javascript:S2068",
+      "name": "Credentials should not be hard-coded",
+      "lang": "js",
+      "langName": "JavaScript",
+      "status": "READY"
+    }
+  ]
+}

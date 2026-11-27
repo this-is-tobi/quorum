@@ -1,0 +1,155 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "fullName": "Example Vulnerability Scanner",
+          "informationUri": "https://scanner.example.invalid/trivy",
+          "name": "Trivy",
+          "rules": [
+            {
+              "id": "CVE-0000-0001",
+              "name": "LanguageSpecificPackageVulnerability",
+              "shortDescription": {
+                "text": "example-lib: an example advisory"
+              },
+              "fullDescription": {
+                "text": "An example advisory written for a test fixture."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://scanner.example.invalid/cve/CVE-0000-0001",
+              "help": {
+                "text": "Vulnerability CVE-0000-0001\nSeverity: HIGH\nPackage: example-lib\nFixed Version: 1.0.1\nLink: [CVE-0000-0001](https://scanner.example.invalid/cve/CVE-0000-0001)",
+                "markdown": "**Vulnerability CVE-0000-0001**\n| Severity | Package | Fixed Version |\n| --- | --- | --- |\n| HIGH | example-lib | 1.0.1 |"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "7.5",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "DS002",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Image user should not be root"
+              },
+              "fullDescription": {
+                "text": "Running containers with the root user is a risk."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://scanner.example.invalid/misconfig/DS002",
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            }
+          ],
+          "version": "0.0.0"
+        }
+      },
+      "originalUriBaseIds": {
+        "ROOTPATH": {
+          "uri": "file:///"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "CVE-0000-0001",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Package: example-lib\nInstalled Version: 1.0.0\nVulnerability CVE-0000-0001\nSeverity: HIGH\nFixed Version: 1.0.1"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "package-lock.json",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "package-lock.json: example-lib@1.0.0"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "DS002",
+          "ruleIndex": 1,
+          "level": "error",
+          "message": {
+            "text": "Artifact: Dockerfile\nType: dockerfile\nVulnerability DS002\nSeverity: HIGH\nMessage: Specify at least 1 USER command in Dockerfile with non-root user as argument"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "Dockerfile",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "Dockerfile"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "DS026",
+          "ruleIndex": 2,
+          "level": "error",
+          "message": {
+            "text": "Artifact: Dockerfile\nType: dockerfile\nVulnerability DS026\nSeverity: LOW\nMessage: Add HEALTHCHECK instruction in your Dockerfile"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "Dockerfile",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 3,
+                  "startColumn": 1,
+                  "endLine": 3,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "Dockerfile"
+              }
+            }
+          ]
+        }
+      ],
+      "columnKind": "utf16CodeUnits"
+    }
+  ]
+}

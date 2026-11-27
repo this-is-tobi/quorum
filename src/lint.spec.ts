@@ -343,6 +343,24 @@ const CASES: Array<[string, string, string, string[]]> = [
     [],
   ],
   [
+    'a context module imports zod',
+    'src/context/probe.ts',
+    'import { z } from \'zod\'\n\nexport const probe = z.string()\n',
+    [],
+  ],
+  [
+    'a context module imports node:crypto',
+    'src/context/probe.ts',
+    'import { createHash } from \'node:crypto\'\n\nexport const probe = createHash\n',
+    [],
+  ],
+  [
+    'a context module refuses another package',
+    'src/context/probe.ts',
+    'import { parse } from \'yaml\'\n\nexport const probe = parse\n',
+    ['ts/no-restricted-imports'],
+  ],
+  [
     'a context module imports the types of the sources\' reader',
     'src/context/probe.ts',
     'import type { GitSeam } from \'../sources/read.ts\'\n\nexport const probe: GitSeam | undefined = undefined\n',
