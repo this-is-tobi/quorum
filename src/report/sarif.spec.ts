@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
 import type { FailOn, LeftOutFile, PublicView, QuorumResult, Verdict } from '../core/types.ts'
 import { HOSTILE, RLO } from '../testing/markdown.ts'
-import { blankResult, FINDINGS, LIFTED, reportMeta, reportResult, SERVED_AS_TWO, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
+import { blankResult, dismissedAt, FINDINGS, foundByScanner, LIFTED, reportMeta, reportResult, SCANNED_CONTEXT, SERVED_AS_TWO, SQL, TOKEN, TRIVY, UPLOAD } from '../testing/report.ts'
 import { githubSarif } from '../testing/sarif.ts'
 import { artifactUri, DOCS_URL, FINGERPRINT_KEY, MAX_LOCATIONS, sarif, SARIF_SCHEMA } from './sarif.ts'
 import { publicView } from './view.ts'
@@ -25,7 +25,7 @@ interface Region {
 
 interface Run {
   invocations: Array<{ executionSuccessful: boolean, toolExecutionNotifications: Notification[] }>
-  results: Array<{ level: string, message: { text: string }, locations: Array<{ physicalLocation: { artifactLocation: { uri: string }, region: Region } }> }>
+  results: Array<{ level: string, message: { text: string }, properties?: Record<string, unknown>, locations: Array<{ physicalLocation: { artifactLocation: { uri: string }, region: Region } }> }>
 }
 
 function render(result: QuorumResult | PublicView, outcome: Outcome = FINDINGS): string {
@@ -89,6 +89,13 @@ function reviewOf(kept: Verdict[], unreviewed: Verdict[] = [], failOn: FailOn = 
       flags: [],
     },
   })
+}
+
+/** `reviewOf`, for a review that read the two scanner reports, which a finding a scanner found names by the place of its report. */
+function scannedReview(kept: Verdict[], unreviewed: Verdict[] = []): QuorumResult {
+  const result = reviewOf(kept, unreviewed)
+  result.meta.context = SCANNED_CONTEXT
+  return result
 }
 
 const MAIN = {
@@ -221,6 +228,96 @@ describe('sarif', () => {
     expect(() => render(reviewOf([
       { ...SQL, rule: `a${RLO}b` },
     ]))).toThrow(TypeError)
+  })
+
+  it('writes a scanner\'s finding as its profile\'s result, saying what reported it', () => {
+    const unreviewed = foundByScanner(TOKEN, { scanner: 'Semgrep OSS', ruleId: 'r1', level: 'warning' })
+    const run = runOf(scannedReview([TRIVY], [unreviewed]))
+    expect(run.results).toEqual([
+      {
+        ruleId: 'quorum/security',
+        ruleIndex: 0,
+        level: 'error',
+        message: { text: 'HIGH, kept by 3 of 3 lenses, reported by Trivy rule CVE-0000-0001: The locked version of a library is affected by CVE-0000-0001.' },
+        locations: [
+          {
+            physicalLocation: {
+              artifactLocation: { uri: 'package-lock.json' },
+              region: {
+                startLine: 300,
+                startColumn: 1,
+                endLine: 300,
+                endColumn: 2,
+              },
+            },
+          },
+        ],
+        partialFingerprints: { 'quorumFingerprint/v1': TRIVY.fingerprint },
+        properties: { precision: 'high', foundBy: 'scanner' },
+      },
+      {
+        ruleId: 'quorum/security',
+        ruleIndex: 0,
+        level: 'warning',
+        message: { text: 'UNREVIEWED, kept by 1 of 3 lenses, 1 vote failed: a network error, reported by Semgrep OSS rule r1: Session tokens come from Math.random, which is not a cryptographic generator.' },
+        locations: expect.any(Array),
+        partialFingerprints: { 'quorumFingerprint/v1': TOKEN.fingerprint },
+        // An unreviewed result has no precision, and a scanner's still says what reported it.
+        properties: { foundBy: 'scanner' },
+      },
+    ])
+    expect(Object.keys(run.results[0].properties ?? {})).toEqual(['precision', 'foundBy'])
+    // A model's result has the properties and the message it always had: no foundBy.
+    expect(runOf(reviewOf([SQL], [TOKEN])).results.map(result => result.properties)).toEqual([
+      { precision: 'high' },
+      undefined,
+    ])
+    expect(githubSarif.parse(JSON.parse(render(scannedReview([TRIVY], [unreviewed]))))).toBeDefined()
+  })
+
+  it('writes a scanner\'s name, rule id and claim through inertPlain', () => {
+    const [{ message }] = runOf(scannedReview([
+      foundByScanner({ ...SQL, summary: '@octocat #12 https://e.example' }, { scanner: `@octo${RLO}cat`, ruleId: '#1 https://e.example' }),
+    ])).results
+    expect(message.text).toBe('HIGH, kept by 3 of 3 lenses, reported by <U+0040>octo<U+202E>cat rule <U+0023>1 https<U+003A>//e.example: <U+0040>octocat <U+0023>12 https<U+003A>//e.example')
+  })
+
+  it('counts the dismissed scanner issues in a note, after the findings no result holds, and writes no result for one', () => {
+    const noted = (discarded: Verdict[]): QuorumResult => {
+      const result = scannedReview([TRIVY])
+      result.discarded = discarded
+      return result
+    }
+    const dismissed = noted([
+      UPLOAD,
+      dismissedAt('src/db.js', 12),
+      dismissedAt('src/f.js', 3),
+    ])
+    expect(notificationsOf(dismissed)).toEqual([
+      {
+        level: 'note',
+        message: { text: 'scanner issues the panel dismissed, which no result holds: 2' },
+        properties: { count: 2 },
+      },
+    ])
+    expect(runOf(dismissed).results).toHaveLength(1)
+    expect(render(dismissed)).not.toContain('src/db.js')
+    // The finder's dismissed findings are no scanner issue, and a review that dismissed none has no note.
+    expect(notificationsOf(noted([UPLOAD, UPLOAD]))).toEqual([])
+    expect(notificationsOf(noted([]))).toEqual([])
+    // A finding that names no file of the diff comes first.
+    const both = noted([
+      dismissedAt('src/db.js', 12),
+    ])
+    both.kept = [
+      TRIVY,
+      { ...SQL, file: 'the finder\'s name' },
+    ]
+    expect(notificationsOf(both).map(({ message }) => message.text)).toEqual([
+      'findings that name no file of the diff, which no result holds: 1',
+      'scanner issues the panel dismissed, which no result holds: 1',
+    ])
+    expect(githubSarif.parse(JSON.parse(render(both)))).toBeDefined()
   })
 
   it('passes the schema of the fields GitHub reads for every fixture', () => {

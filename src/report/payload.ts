@@ -13,12 +13,12 @@
 import type { Outcome, OutcomeStatus } from '../core/outcome.ts'
 import { codeSpan, inertJson, inertLine } from '../core/sanitize.ts'
 import type { Confidence, PublicVerdict, PublicView } from '../core/types.ts'
-import { commitOf, levelWord, placedFindings, votesWords } from './lines.ts'
-import { ruleSpan, summaryMarkdown } from './markdown.ts'
+import { commitOf, isFileLevel, levelWord, placedFindings, votesWords } from './lines.ts'
+import { ruleSpan, scannerSpan, summaryMarkdown, suppressedClause } from './markdown.ts'
 import type { Reporter } from './reporter.ts'
 import { publicView } from './view.ts'
 
-/** A line comment on a file of the diff: the finding's fingerprint, its level, where it sits and its body. */
+/** A line comment on a file of the diff: the finding's fingerprint, its level, where it sits, whether it is about a line or its file, and its body. */
 export interface ActionComment {
   readonly fingerprint: string
   readonly profile: string
@@ -27,12 +27,14 @@ export interface ActionComment {
   /** The line of the finding in the new file. 0 stays 0: GitHub refuses it, and the Action turns it into a comment on the file. */
   readonly line: number
   readonly side: 'RIGHT'
+  /** What the comment is about: `file` for a finding a scanner gave with no line of its own, which the Action posts as a comment on the file, keeping `line`, the file's first changed line, as its fallback; `line` for every other finding. */
+  readonly subject: 'line' | 'file'
   readonly body: string
 }
 
 /** The document `-f payload` writes. A change of its shape raises `version`. */
 export interface ActionPayload {
-  readonly version: 1
+  readonly version: 2
   /** The commit the changes sit on: a range's head, a local or staged review's head, a path review's commit; `null` for a diff, or before a first commit. */
   readonly head: string | null
   /** What the review came to, as the exit code says it. */
@@ -46,16 +48,16 @@ export interface ActionPayload {
 
 /**
  * The body of a finding's line comment: the marker, then its level, profile, category, the review rule it cites when it
- * cites one, and its votes, a blank line and its claim. The marker holds the fingerprint, which survives a push that moves the line, so the Action finds
+ * cites one, the scanner that gave it when one did and `marked suppressed` when its report marks the issue so, and its votes, a blank line and its claim. The marker holds the fingerprint, which survives a push that moves the line, so the Action finds
  * the comment it posted for a finding by that text, whatever the comment's line has become, and never posts it
- * twice. Only the first line holds raw HTML; the category, the rule's id and the claim are code spans, and no
+ * twice. Only the first line holds raw HTML; the category, the rule's id, the scanner's name and the claim are code spans, and no
  * evidence is written, since the comment sits on the code. Every line passes `inertLine`, and there is no line
  * feed after the last.
  */
 export function commentBody(verdict: PublicVerdict): string {
   return [
     `<!-- quorum:finding:v1 ${verdict.fingerprint} -->`,
-    `**${levelWord(verdict)}** ${verdict.profile} · ${codeSpan(verdict.category)}${ruleSpan(verdict)} · ${votesWords(verdict)}`,
+    `**${levelWord(verdict)}** ${verdict.profile} · ${codeSpan(verdict.category)}${ruleSpan(verdict)}${scannerSpan(verdict)}${suppressedClause(verdict)} · ${votesWords(verdict)}`,
     '',
     codeSpan(verdict.summary),
   ].map(inertLine).join('\n')
@@ -65,7 +67,7 @@ export function commentBody(verdict: PublicVerdict): string {
 function payloadOf(view: PublicView, outcome: Outcome): ActionPayload {
   const { placed, unplaced } = placedFindings(view)
   return {
-    version: 1,
+    version: 2,
     head: commitOf(view.meta.source),
     conclusion: outcome.status,
     summary: summaryMarkdown(view, outcome),
@@ -76,6 +78,9 @@ function payloadOf(view: PublicView, outcome: Outcome): ActionPayload {
       path: verdict.file,
       line: verdict.line,
       side: 'RIGHT',
+      subject: isFileLevel(verdict)
+        ? 'file'
+        : 'line',
       body: commentBody(verdict),
     })),
     unplaced,

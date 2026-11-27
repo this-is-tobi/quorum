@@ -3,7 +3,7 @@ import type { Confidence, Flag, IncompleteEntry, LeftOutFile, PublicView, Quorum
 import { describe, expect, it, vi } from 'vitest'
 import { utf8Length } from '../core/tokens.ts'
 import { publicView } from '../report/view.ts'
-import { blankResult, cast, FAILED, FINDINGS, INCOMPLETE, INTERRUPTED, PASS, reportMeta, reportResult, SERVED_AS_TWO, SQL, UPLOAD } from '../testing/report.ts'
+import { blankResult, cast, FAILED, FINDINGS, foundByScanner, INCOMPLETE, INTERRUPTED, PASS, reportMeta, reportResult, SCANNED_CONTEXT, SERVED_AS_TWO, SQL, TOKEN, TRIVY, UPLOAD } from '../testing/report.ts'
 import { agentResult, agentResultSchema, CLAIM_CAP, ITEM_CEILING, LISTED, NOTICE, RESULT_BUDGET } from './result.ts'
 
 const skew = vi.hoisted(() => ({ on: false, hits: 0 }))
@@ -98,6 +98,7 @@ describe('agentResult', () => {
         'confidence',
         'votes',
         'fingerprint',
+        'foundBy',
         'category',
         'summary',
       ])
@@ -109,6 +110,7 @@ describe('agentResult', () => {
       confidence: 'high',
       votes: { kept: 3, asked: 3 },
       fingerprint: 'a1b2c3d4e5f60718:1',
+      foundBy: 'model',
       category: 'CWE-89',
       summary: SQL.summary,
     })
@@ -337,10 +339,138 @@ describe('agentResult', () => {
         'confidence',
         'votes',
         'fingerprint',
+        'foundBy',
       ])
     }
     expect({ ...limited, findings: [] }).toEqual({ ...full, findings: [] })
     expect(limited.findings.map(({ file, fingerprint }) => ({ file, fingerprint }))).toEqual(full.findings.map(({ file, fingerprint }) => ({ file, fingerprint })))
+  })
+
+  it('says what found each finding, and withholds the scanner\'s name under codeFieldsOnly', () => {
+    const result = reportResult({
+      kept: [
+        TRIVY,
+        foundByScanner({
+          ...SQL,
+          file: 'src/a.js',
+          line: 2,
+          fingerprint: 'f1f1f1f1f1f1f1f1:1',
+        }, { scanner: 'Semgrep OSS' }),
+      ],
+      unreviewed: [TOKEN],
+      meta: { context: SCANNED_CONTEXT },
+    })
+    const full = received(result)
+    expect(full.findings.map(entry => [entry.foundBy, entry.fileLevel, entry.scanner])).toEqual([
+      ['scanner', true, 'Trivy'],
+      ['scanner', undefined, 'Semgrep OSS'],
+      ['model', undefined, undefined],
+    ])
+    // foundBy and fileLevel are code-checked, so they come before the model's text, and the scanner's name, which a report wrote, comes after it.
+    expect(full.findings.map(entry => Object.keys(entry))).toEqual([
+      [
+        'profile',
+        'file',
+        'line',
+        'confidence',
+        'votes',
+        'fingerprint',
+        'foundBy',
+        'fileLevel',
+        'category',
+        'summary',
+        'scanner',
+      ],
+      [
+        'profile',
+        'file',
+        'line',
+        'confidence',
+        'votes',
+        'fingerprint',
+        'foundBy',
+        'category',
+        'summary',
+        'scanner',
+      ],
+      [
+        'profile',
+        'file',
+        'line',
+        'confidence',
+        'votes',
+        'fingerprint',
+        'foundBy',
+        'category',
+        'summary',
+      ],
+    ])
+    expect(full.findings[0]).toEqual({
+      profile: 'security',
+      file: 'package-lock.json',
+      line: 300,
+      confidence: 'high',
+      votes: { kept: 3, asked: 3 },
+      fingerprint: TRIVY.fingerprint,
+      foundBy: 'scanner',
+      fileLevel: true,
+      category: 'CVE-0000-0001',
+      summary: TRIVY.summary,
+      scanner: 'Trivy',
+    })
+    expect(agentResultSchema.parse(full)).toEqual(full)
+    // Under codeFieldsOnly the agent keeps what code checked and loses the category, the summary and the scanner's name.
+    const limited = received(result, FINDINGS, { codeFieldsOnly: true })
+    expect(limited.findings.map(entry => Object.keys(entry))).toEqual([
+      [
+        'profile',
+        'file',
+        'line',
+        'confidence',
+        'votes',
+        'fingerprint',
+        'foundBy',
+        'fileLevel',
+      ],
+      [
+        'profile',
+        'file',
+        'line',
+        'confidence',
+        'votes',
+        'fingerprint',
+        'foundBy',
+      ],
+      [
+        'profile',
+        'file',
+        'line',
+        'confidence',
+        'votes',
+        'fingerprint',
+        'foundBy',
+      ],
+    ])
+    expect(limited.findings.map(entry => entry.foundBy)).toEqual(['scanner', 'scanner', 'model'])
+    expect(JSON.stringify(limited)).not.toContain('Trivy')
+    expect(JSON.stringify(limited)).not.toContain('Semgrep')
+    expect(agentResultSchema.parse(limited)).toEqual(limited)
+  })
+
+  it('passes the scanner\'s name through inertPlain at 64 code points, whatever a view holds', () => {
+    const view = publicView(reportResult({
+      kept: [
+        foundByScanner(SQL, { scanner: `a${BIDI}b https://e.example` }),
+      ],
+      unreviewed: [],
+      meta: { context: SCANNED_CONTEXT },
+    }))
+    expect(agentResult(view, FINDINGS).findings[0].scanner).toBe('a<U+202E>b https<U+003A>//e.example')
+    // The view's own schema caps a name at 64 already, so a view made by hand shows that the result keeps the cap too.
+    const [verdict] = view.kept
+    if (verdict.foundBy.kind !== 'scanner') throw new TypeError('the fixture is a scanner\'s finding')
+    verdict.foundBy.scanner = `@${'x'.repeat(100)}`
+    expect(agentResult(view, FINDINGS).findings[0].scanner).toBe(`<U+0040>${'x'.repeat(63)}…`)
   })
 
   it('gives the agent each finding\'s rule and each profile\'s invalidRules, with --code-fields-only too', () => {
@@ -370,6 +500,7 @@ describe('agentResult', () => {
       'votes',
       'fingerprint',
       'rule',
+      'foundBy',
       'category',
       'summary',
     ])
@@ -395,6 +526,7 @@ describe('agentResult', () => {
       'votes',
       'fingerprint',
       'rule',
+      'foundBy',
     ])
     expect(limited.findings[0].rule).toBe('tests-for-new-code')
     expect(limited.profiles).toEqual(full.profiles)

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Outcome } from '../core/outcome.ts'
 import type { Flag, IncompleteEntry, LeftOutFile, LensVote, PublicView, QuorumResult, ResearchRecord, ReviewSource, RoleCalls, Verdict, VoteFailure } from '../core/types.ts'
-import { blankResult, cast, contextDocument, contextReport, FAILED, FINDINGS, INCOMPLETE, INTERRUPTED, LIFTED, PASS, reportMeta, reportResult, SERVED_AS_TWO, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
+import { blankResult, cast, contextDocument, contextReport, dismissedAt, FAILED, FINDINGS, foundByScanner, INCOMPLETE, INTERRUPTED, LIFTED, PASS, reportMeta, reportResult, scannedResult, SCANNER_REPORTS, SERVED_AS_TWO, SQL, SQLI, TOKEN, UPLOAD } from '../testing/report.ts'
 import { documentLine } from './lines.ts'
 import { text } from './text.ts'
 import { publicView } from './view.ts'
@@ -1053,117 +1053,13 @@ describe('text', () => {
   /** The hidden characters of every class, which no line may hold. */
   const ANY_HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}]/u
 
-  /** What a scanner found, as a verdict records it, over the fixture's finding `base`. */
-  function foundByScanner(base: Verdict, changes: Partial<Extract<Verdict['foundBy'], { kind: 'scanner' }>> = {}): Verdict {
-    return {
-      ...base,
-      foundBy: {
-        kind: 'scanner',
-        report: 0,
-        scanner: 'Trivy',
-        ruleId: 'CVE-0000-0001',
-        level: 'error',
-        ...changes,
-      },
-    }
-  }
-
-  /** A finding Trivy gave on a lock file, which its report gives no line for, so it stands on the file's first changed line. */
-  const TRIVY: Verdict = foundByScanner({
-    ...SQL,
-    id: 'd1e2f3040516',
-    fingerprint: 'd1e2f30405162738:1',
-    file: 'package-lock.json',
-    line: 300,
-    category: 'CVE-0000-0001',
-    summary: 'The locked version of a library is affected by CVE-0000-0001.',
-    evidence: ' a\n+b\n c',
-  }, { fileLevel: true })
-
-  const SQLI = 'javascript.lang.security.audit.sqli.node-postgres-sqli'
-
-  /** An issue Semgrep gave that the panel dismissed: no lens kept it. */
-  function dismissedAt(file: string, line: number, changes: Partial<Verdict> = {}, rule = SQLI): Verdict {
-    return foundByScanner({
-      ...UPLOAD,
-      file,
-      line,
-      category: rule,
-      keptVotes: 0,
-      totalVotes: 3,
-      votes: [
-        cast(false),
-        cast(false),
-        cast(false),
-      ],
-      ...changes,
-    }, {
-      report: 1,
-      scanner: 'Semgrep OSS',
-      ruleId: rule,
-      level: 'warning',
-    })
-  }
-
-  /** The two reports of the scanner fixtures: Trivy's, read whole, and Semgrep's, read in part. */
-  const REPORTS = [
-    contextReport({
-      scanner: 'Trivy',
-      issues: {
-        listed: 14,
-        used: 1,
-        fileLevel: 1,
-        held: 0,
-        unmapped: 0,
-        notInChange: 13,
-        leftOut: 0,
-        unchanged: 0,
-        capped: 0,
-        skipped: 0,
-        unreadable: 0,
-      },
-    }),
-    contextReport({
-      scanner: 'Semgrep OSS',
-      status: 'partial',
-      problems: ['unmapped-paths'],
-      issues: {
-        listed: 3,
-        used: 1,
-        fileLevel: 0,
-        held: 0,
-        unmapped: 2,
-        notInChange: 0,
-        leftOut: 0,
-        unchanged: 0,
-        capped: 0,
-        skipped: 0,
-        unreadable: 0,
-      },
-    }),
-  ]
-
-  /** A review of the two reports: Trivy's finding kept and Semgrep's issue at `src/db.js:12` dismissed. */
-  function scanned(discarded: Verdict[] = [
-    dismissedAt('src/db.js', 12),
-  ]): QuorumResult {
-    return reportResult({
-      kept: [TRIVY],
-      unreviewed: [],
-      discarded,
-      meta: {
-        context: { documents: [], reports: REPORTS },
-      },
-    })
-  }
-
   const TRIVY_HEAD = 'HIGH  security  package-lock.json:300  CVE-0000-0001  (Trivy, file-level)'
   /** The dismissed issue at `src/db.js:12`: its place, rule and scanner, whole, are 86 columns, so the votes wrap onto a line of their own. */
   const DISMISSED_LINES = [
     `  src/db.js:12  ${SQLI}  (Semgrep OSS),`,
     '  kept by 0 of 3 lenses',
   ]
-  /** The reports of `REPORTS`, each wrapped at 80 columns after its head, which holds the scanner's name whole. */
+  /** The reports of `SCANNER_REPORTS`, each wrapped at 80 columns after its head, which holds the scanner's name whole. */
   const REPORT_LINES = [
     'reports:',
     '  1 sarif "Trivy" for security: 1 of 14 issues used (1 file-level); 13 not in',
@@ -1173,7 +1069,7 @@ describe('text', () => {
   ]
 
   it('ends a scanner\'s finding\'s head with its scanner and file-level, and lists the dismissed scanner issues and the reports', () => {
-    expect(render(scanned())).toEqual([
+    expect(render(scannedResult())).toEqual([
       MAIN[0],
       '',
       TRIVY_HEAD,
@@ -1205,7 +1101,7 @@ describe('text', () => {
       meta: {
         context: {
           documents: [],
-          reports: [REPORTS[0]],
+          reports: [SCANNER_REPORTS[0]],
         },
       },
     }))
@@ -1219,7 +1115,7 @@ describe('text', () => {
     const entry = (index: number): string => `  src/f${index}.js:${index + 1}  r1  (Semgrep OSS), kept by 0 of 3 lenses`
     /** The dismissed list: from its count to the line of the first profile. */
     const listing = (count: number): string[] => {
-      const lines = render(scanned(issues(count)))
+      const lines = render(scannedResult(issues(count)))
       return lines.slice(lines.findIndex(line => line.startsWith('dismissed by')), lines.findIndex(line => line.startsWith('security (')))
     }
     expect(listing(7)).toEqual([
@@ -1241,7 +1137,7 @@ describe('text', () => {
   })
 
   it('names how the lenses voted on a dismissed issue, a failed vote with its cause', () => {
-    const lines = render(scanned([
+    const lines = render(scannedResult([
       dismissedAt('src/db.js', 12, {
         keptVotes: 1,
         votes: [
@@ -1265,7 +1161,7 @@ describe('text', () => {
       error: 'x',
       failure,
     })
-    const lines = render(scanned([
+    const lines = render(scannedResult([
       dismissedAt('src/db.js', 12, {
         keptVotes: 0,
         votes: [
@@ -1283,7 +1179,7 @@ describe('text', () => {
     ])
     // A long path and rule id stay whole on the line that holds them, and the votes start the next.
     const path = `${'d/'.repeat(30)}x.js`
-    const long = render(scanned([
+    const long = render(scannedResult([
       dismissedAt(path, 12, {}, 'r'.repeat(90)),
     ]))
     const first = long.findIndex(line => line.startsWith(`  ${path}`))
@@ -1298,8 +1194,8 @@ describe('text', () => {
       dismissedAt('src/db.js', 12),
       dismissedAt('src/b.js', 3),
     ]
-    const full = render(scanned(issues))
-    const lines = render(publicView(scanned(issues)))
+    const full = render(scannedResult(issues))
+    const lines = render(publicView(scannedResult(issues)))
     expect(lines).toContain(TRIVY_HEAD)
     expect(lines.slice(lines.indexOf('dismissed by the panel: 2 scanner issues'), lines.indexOf('dismissed by the panel: 2 scanner issues') + 5)).toEqual([
       'dismissed by the panel: 2 scanner issues',
@@ -1347,7 +1243,7 @@ describe('text', () => {
         context: {
           documents: [],
           reports: [
-            REPORTS[0],
+            SCANNER_REPORTS[0],
             unread,
             everything,
             contextReport({ format: 'sonarqube', scanner: 'S', profile: undefined }),
@@ -1405,14 +1301,14 @@ describe('text', () => {
       ],
       discarded: [],
       meta: {
-        context: { documents: [], reports: REPORTS },
+        context: { documents: [], reports: SCANNER_REPORTS },
       },
     }))
     expect(lines[2]).toBe('UNREVIEWED  security  src/session.js:20  CWE-338  rule no-secrets  (Semgrep OSS, marked suppressed)')
   })
 
   it('leaves the scanner words of a head uncolored, and breaks no color of the line', () => {
-    const colored = render(scanned(), FINDINGS, true)
+    const colored = render(scannedResult(), FINDINGS, true)
     expect(colored[2].replaceAll(QUORUM_SEQUENCE, '')).toBe(TRIVY_HEAD)
     expect(colored[2].endsWith('  CVE-0000-0001  (Trivy, file-level)')).toBe(true)
     // The dismissed list and the reports are plain text, whatever the color.

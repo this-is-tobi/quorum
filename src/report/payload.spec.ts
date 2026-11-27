@@ -5,7 +5,7 @@ import { PROFILE_ID_PATTERN } from '../core/profile.ts'
 import { FINGERPRINT_PATTERN } from '../core/stages/research.ts'
 import type { PublicView, QuorumResult, ReviewSource, Verdict } from '../core/types.ts'
 import { codeFree, expectCodeWritten, HOSTILE, RLO } from '../testing/markdown.ts'
-import { blankResult, cast, FINDINGS, INCOMPLETE, INTERRUPTED, LIFTED, PASS, RANGE, reportResult, SERVED_AS_TWO, SQL, TOKEN } from '../testing/report.ts'
+import { blankResult, cast, FINDINGS, foundByScanner, INCOMPLETE, INTERRUPTED, LIFTED, PASS, RANGE, reportResult, SCANNED_CONTEXT, scannedResult, SERVED_AS_TWO, SQL, TOKEN, TRIVY } from '../testing/report.ts'
 import { summaryMarkdown } from './markdown.ts'
 import { commentBody, payload } from './payload.ts'
 import { publicView } from './view.ts'
@@ -17,7 +17,7 @@ const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
 
 /** The shape of the document, strict at every level: what `quorum-action` reads. */
 const payloadSchema = z.strictObject({
-  version: z.literal(1),
+  version: z.literal(2),
   head: z.string().regex(COMMIT).nullable(),
   conclusion: z.enum([
     'pass',
@@ -33,6 +33,7 @@ const payloadSchema = z.strictObject({
     path: z.string().min(1),
     line: z.number().int().min(0),
     side: z.literal('RIGHT'),
+    subject: z.enum(['line', 'file']),
     body: z.string(),
   })),
   unplaced: z.number().int().min(0),
@@ -65,7 +66,7 @@ function hostileResult(kept: Verdict[]): QuorumResult {
 describe('payload', () => {
   it('writes the payload of a review: the commit, the conclusion, the summary and a comment per finding on a file of the diff', () => {
     expect(document(reportResult())).toEqual({
-      version: 1,
+      version: 2,
       head: HEAD,
       conclusion: 'findings',
       summary: summaryMarkdown(publicView(reportResult()), FINDINGS),
@@ -77,6 +78,7 @@ describe('payload', () => {
           path: 'src/auth/login.ts',
           line: 42,
           side: 'RIGHT',
+          subject: 'line',
           body: expect.stringContaining(`<!-- quorum:finding:v1 ${SQL.fingerprint} -->\n`),
         },
         {
@@ -86,11 +88,165 @@ describe('payload', () => {
           path: 'src/session.js',
           line: 20,
           side: 'RIGHT',
+          subject: 'line',
           body: expect.stringContaining(`<!-- quorum:finding:v1 ${TOKEN.fingerprint} -->\n`),
         },
       ],
       unplaced: 0,
     })
+  })
+
+  it('writes a review that names no report as it was written but for the payload\'s version and each comment\'s subject', () => {
+    const { version, comments, ...rest } = document(reportResult())
+    expect(version).toBe(2)
+    expect(rest).toEqual({
+      head: HEAD,
+      conclusion: 'findings',
+      summary: summaryMarkdown(publicView(reportResult()), FINDINGS),
+      unplaced: 0,
+    })
+    expect(comments.map(({ subject, ...comment }) => [subject, comment])).toEqual([
+      [
+        'line',
+        {
+          fingerprint: SQL.fingerprint,
+          profile: 'security',
+          confidence: 'high',
+          path: 'src/auth/login.ts',
+          line: 42,
+          side: 'RIGHT',
+          body: '<!-- quorum:finding:v1 a1b2c3d4e5f60718:1 -->\n**HIGH** security · `CWE-89` · kept by 3 of 3 lenses\n\n`SQL built from the request\'s id parameter reaches db.query`',
+        },
+      ],
+      [
+        'line',
+        {
+          fingerprint: TOKEN.fingerprint,
+          profile: 'security',
+          confidence: 'unreviewed',
+          path: 'src/session.js',
+          line: 20,
+          side: 'RIGHT',
+          body: '<!-- quorum:finding:v1 b1c2d3e4f5061728:1 -->\n**UNREVIEWED** security · `CWE-338` · kept by 1 of 3 lenses, 1 vote failed: a network error\n\n`Session tokens come from Math.random, which is not a cryptographic generator.`',
+        },
+      ],
+    ])
+    // The subject sits after the side and before the body, in each comment and in the document the Action reads.
+    expect(Object.keys(JSON.parse(render(reportResult())).comments[0])).toEqual([
+      'fingerprint',
+      'profile',
+      'confidence',
+      'path',
+      'line',
+      'side',
+      'subject',
+      'body',
+    ])
+  })
+
+  it.each<[string, Verdict, 'line' | 'file']>([
+    ['file-level scanner', TRIVY, 'file'],
+    [
+      'scanner\'s line',
+      foundByScanner({ ...SQL, file: 'package-lock.json', line: 300 }, { scanner: 'Semgrep OSS' }),
+      'line',
+    ],
+    [
+      'model\'s line',
+      { ...SQL, file: 'package-lock.json', line: 300 },
+      'line',
+    ],
+  ])('gives a %s finding the subject %s, and keeps its line', (_name, verdict, subject) => {
+    const result = reportResult({
+      kept: [verdict],
+      unreviewed: [],
+      meta: { context: SCANNED_CONTEXT },
+    })
+    result.meta.profiles.security.coverage = [
+      { file: 'package-lock.json', status: 'reviewed' },
+    ]
+    const [comment] = document(result).comments
+    expect(comment.subject).toBe(subject)
+    expect(comment.line).toBe(300)
+    expect(comment.path).toBe('package-lock.json')
+  })
+
+  it('names a scanner\'s finding\'s scanner in its comment, after the rule, and says nothing of a file-level finding there', () => {
+    const result = reportResult({
+      kept: [
+        TRIVY,
+        foundByScanner({ ...SQL, rule: 'tests-for-new-code' }, { scanner: '@octocat `x` #1' }),
+      ],
+      unreviewed: [],
+      meta: { context: SCANNED_CONTEXT },
+    })
+    result.meta.profiles.security.coverage = [
+      { file: 'package-lock.json', status: 'reviewed' },
+      { file: 'src/auth/login.ts', status: 'reviewed' },
+    ]
+    const [trivy, other] = document(result).comments
+    expect(trivy.body).toBe([
+      `<!-- quorum:finding:v1 ${TRIVY.fingerprint} -->`,
+      '**HIGH** security · `CVE-0000-0001` · `Trivy` · kept by 3 of 3 lenses',
+      '',
+      '`The locked version of a library is affected by CVE-0000-0001.`',
+    ].join('\n'))
+    expect(other.body).toBe([
+      '<!-- quorum:finding:v1 a1b2c3d4e5f60718:1 -->',
+      '**HIGH** security · `CWE-89` · rule `tests-for-new-code` · ``@octocat `x` #1`` · kept by 3 of 3 lenses',
+      '',
+      '`SQL built from the request\'s id parameter reaches db.query`',
+    ].join('\n'))
+    expectCodeWritten(trivy.body, `<!-- quorum:finding:v1 ${TRIVY.fingerprint} -->`)
+    expectCodeWritten(other.body, '<!-- quorum:finding:v1 a1b2c3d4e5f60718:1 -->')
+    expect(commentBody(publicView(result).kept[0])).toBe(trivy.body)
+  })
+
+  it('says a scanner\'s finding is marked suppressed in its comment, after the scanner, with or without file-level, and says it of no other', () => {
+    const result = reportResult({
+      kept: [
+        foundByScanner({ ...SQL, file: 'src/a.js', line: 2 }, { scanner: 'Semgrep OSS', suppressed: true }),
+        {
+          ...TRIVY,
+          foundBy: { ...TRIVY.foundBy, suppressed: true } as Verdict['foundBy'],
+        },
+        foundByScanner({ ...SQL, file: 'src/c.js', line: 4 }, { scanner: 'Semgrep OSS' }),
+        { ...SQL, file: 'src/d.js', line: 5 },
+      ],
+      unreviewed: [],
+      meta: { context: SCANNED_CONTEXT },
+    })
+    result.meta.profiles.security.coverage = [
+      'src/a.js',
+      'package-lock.json',
+      'src/c.js',
+      'src/d.js',
+    ].map(file => ({ file, status: 'reviewed' }))
+    const comments = new Map(document(result).comments.map(comment => [comment.path, comment]))
+    const second = (path: string): string => comments.get(path)!.body.split('\n')[1]
+    expect(second('src/a.js')).toBe('**HIGH** security · `CWE-89` · `Semgrep OSS` · marked suppressed · kept by 3 of 3 lenses')
+    // The file-level finding's body still says nothing of its file: `subject` does.
+    expect(second('package-lock.json')).toBe('**HIGH** security · `CVE-0000-0001` · `Trivy` · marked suppressed · kept by 3 of 3 lenses')
+    expect(comments.get('package-lock.json')!.subject).toBe('file')
+    expect(second('src/c.js')).toBe('**HIGH** security · `CWE-89` · `Semgrep OSS` · kept by 3 of 3 lenses')
+    expect(second('src/d.js')).toBe('**HIGH** security · `CWE-89` · kept by 3 of 3 lenses')
+    expectCodeWritten(comments.get('src/a.js')!.body, `<!-- quorum:finding:v1 ${SQL.fingerprint} -->`)
+    // A review that read no report writes the comments it always wrote.
+    expect(document(reportResult()).comments.map(({ body }) => body).join('\n')).not.toContain('suppressed')
+  })
+
+  it('posts a scanned review\'s file-level finding as a comment on its file and lists the dismissed issue in its summary only', () => {
+    const result = scannedResult()
+    result.meta.profiles.security.coverage = [
+      { file: 'package-lock.json', status: 'reviewed' },
+    ]
+    const posted = document(result)
+    expect(posted.comments).toHaveLength(1)
+    expect(posted.comments[0].subject).toBe('file')
+    expect(posted.summary).toContain('#### Dismissed scanner issues')
+    expect(posted.summary).toContain('#### Scanner and coverage reports')
+    expect(posted.unplaced).toBe(0)
+    expect(payloadSchema.parse(JSON.parse(render(result)))).toBeDefined()
   })
 
   it('holds no served model', () => {

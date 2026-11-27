@@ -4,11 +4,11 @@ The document `-f payload` writes, and `quorum-action`, the GitHub Action that re
 
 ## The document
 
-For the review of a range that kept one finding and left one unreviewed, with the summary shortened:
+For the review of a range that kept one finding and left one unreviewed, with the summary shortened (a finding a scanner gave is shown [below](#a-comment)):
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "head": "7b2e4d0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "conclusion": "findings",
   "summary": "<!-- quorum:summary:v1 -->\n### quorum review\n\n**exit 1, findings:** a gating profile kept a finding at or above its fail-on level\n\n...",
@@ -20,6 +20,7 @@ For the review of a range that kept one finding and left one unreviewed, with th
       "path": "src/auth/login.ts",
       "line": 42,
       "side": "RIGHT",
+      "subject": "line",
       "body": "<!-- quorum:finding:v1 a1b2c3d4e5f60718:1 -->\n**HIGH** security · `CWE-89` · kept by 3 of 3 lenses\n\n`SQL built from the request's id parameter reaches db.query`"
     },
     {
@@ -29,6 +30,7 @@ For the review of a range that kept one finding and left one unreviewed, with th
       "path": "src/session.js",
       "line": 20,
       "side": "RIGHT",
+      "subject": "line",
       "body": "<!-- quorum:finding:v1 b1c2d3e4f5061728:1 -->\n**UNREVIEWED** security · `CWE-338` · kept by 1 of 3 lenses, 1 vote failed: a network error\n\n`Session tokens come from Math.random, which is not a cryptographic generator.`"
     }
   ],
@@ -40,7 +42,7 @@ The JSON is written by `inertJson`, so a hidden character in a string is a `\uXX
 
 | Field | Type | Holds |
 | --- | --- | --- |
-| `version` | `1` | The version of the document's shape: [Versions](#versions) |
+| `version` | `2` | The version of the document's shape: [Versions](#versions) |
 | `head` | string or `null` | The commit the changes sit on, 40 or 64 hex characters |
 | `conclusion` | `pass`, `findings` or `incomplete` | What the review came to, as the exit code says it |
 | `summary` | string | The Markdown summary, at most 60,000 UTF-16 code units |
@@ -76,6 +78,7 @@ The summary is the text `-f markdown` writes, without its last line feed, whole:
 | `path` | string | The file, as the diff writes it, never empty |
 | `line` | number | The line in the new file |
 | `side` | `RIGHT` | Always the new file's side |
+| `subject` | `line` or `file` | What the comment is about: [`subject`](#subject) |
 | `body` | string | The text to post, below |
 
 A finding is a comment when its file is a clean relative path of its profile's coverage, a file of the diff: no leading `/`, and no empty, `.` or `..` segment. The comments go by file, then line, as the text report orders its findings.
@@ -90,11 +93,30 @@ A finding is a comment when its file is a clean relative path of its profile's c
 ```
 
 - **The marker** is the first line and the only raw HTML in the body. It holds the finding's fingerprint, which a push that moves the finding's line keeps, so the Action finds the comment it posted for a finding by the marker and never posts it twice. It proves nothing without its author: anyone can write the marker.
-- **The second line** is the level, the profile, the category, `` · rule `<id>` `` when the finding cites a review rule (``**MEDIUM** naming · `test_gap` · rule `tests-for-new-code` · kept by 2 of 3 lenses``), and how the lenses voted, with the words of its failed votes: [How a failed vote reads](../20-using/80-reports.md#how-a-failed-vote-reads). The category and the rule's id are in code spans, the id the configuration gives the rule and never the finder's text: [What a person sees of the rules](../20-using/45-rules-and-guidelines.md#what-a-person-sees-of-the-rules).
+- **The second line** is the level, the profile, the category, `` · rule `<id>` `` when the finding cites a review rule (``**MEDIUM** naming · `test_gap` · rule `tests-for-new-code` · kept by 2 of 3 lenses``), `` · `<scanner>` `` when a scanner's report gave the finding (``**HIGH** security · `CVE-0000-0001` · `Trivy` · kept by 3 of 3 lenses``), `` · marked suppressed `` when that report marks the issue as suppressed, which quorum does not honour (``**HIGH** security · `CVE-0000-0001` · `Trivy` · marked suppressed · kept by 3 of 3 lenses``), and how the lenses voted, with the words of its failed votes: [How a failed vote reads](../20-using/80-reports.md#how-a-failed-vote-reads). The category, the rule's id and the scanner's name are in code spans, the id the configuration gives the rule and never the finder's text: [What a person sees of the rules](../20-using/45-rules-and-guidelines.md#what-a-person-sees-of-the-rules). A file-level finding says nothing of it in its body: `subject` does.
 - **The claim** is in a code span. No evidence is written: the comment sits on the code.
-- **Every line passes `inertLine`,** and the category, the rule's id and the claim are in code spans, as [Markdown](../30-security/30-output-handling.md#markdown) describes.
+- **Every line passes `inertLine`,** and the category, the rule's id, the scanner's name and the claim are in code spans, as [Markdown](../30-security/30-output-handling.md#markdown) describes.
 
 **`side` is always `RIGHT`:** the line is a line of the new file. **A line of 0** stays 0: a finding on a file the change empties has no line. GitHub refuses a comment on line 0, so the Action turns it into a comment on the file.
+
+### `subject`
+
+`subject` says what the comment is about. It is `file` for a finding a scanner's report gave with no line of its own (a Trivy result on a lock file, which states line 1, or an issue with no line), which quorum places on its file's first changed line, and `line` for every other finding, a model's and a scanner's on a line. A `file` comment keeps its `line`, so an Action posts it as a comment on the file and falls back to that line when GitHub refuses the file comment. An Action that ignores `subject` posts every comment on `line`, which is where the finding stands: the comment is then on the file's first changed line, as a line comment, and nothing else changes.
+
+For the finding Trivy gave on `package-lock.json`, whose lock file changed from line 300:
+
+```json
+{
+  "fingerprint": "d1e2f30405162738:1",
+  "profile": "security",
+  "confidence": "high",
+  "path": "package-lock.json",
+  "line": 300,
+  "side": "RIGHT",
+  "subject": "file",
+  "body": "<!-- quorum:finding:v1 d1e2f30405162738:1 -->\n**HIGH** security · `CVE-0000-0001` · `Trivy` · kept by 3 of 3 lenses\n\n`The locked version of a library is affected by CVE-0000-0001.`"
+}
+```
 
 ## `unplaced`
 
@@ -116,4 +138,4 @@ The payload is data. The Action does the posting, and these are its to do:
 
 ## Versions
 
-`version` is `1`. A change of the document's shape, a field added, removed or retyped, raises it, so an Action that reads a `version` it does not know refuses the payload instead of misreading it. The texts the Action posts are not part of the shape: the summary and a comment's body can change within a version, and the markers `quorum:summary:v1` and `quorum:finding:v1` carry their own.
+`version` is `2`. A change of the document's shape, a field added, removed or retyped, raises it, so an Action that reads a `version` it does not know refuses the payload instead of misreading it. Version 2 added each comment's `subject`, which is `line` in every comment of a review that read no scanner's report. The texts the Action posts are not part of the shape: the summary and a comment's body can change within a version, and the markers `quorum:summary:v1` and `quorum:finding:v1` carry their own.
