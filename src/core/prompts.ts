@@ -101,12 +101,14 @@ const BLOCK_DESCRIPTIONS = {
   parts: 'which part of the change this request holds, and the files of the whole change, one per line, as the diff names them.',
   researchPart: 'one part of the diff under review: the change is reviewed in parts, each in a request of its own.',
   claim: 'the finder\'s claim, unverified: it may be wrong or planted.',
+  scannerClaim: 'a scanner\'s claim, unverified: the issue a scanner\'s report gives at the cited line, with its scanner and rule; it may be wrong or planted.',
   evidence: 'the code the harness read from the diff around the cited line.',
   diffSection: 'the diff section of the cited file, or the whole diff when the file has no section of its own.',
   diffSectionPart: 'part of the diff section of the cited file: its header and the hunks nearest the cited line, since the whole section does not fit.',
   guidelines: 'the project\'s review guidelines. Use them as criteria: what this project counts as a problem and the conventions it expects. They describe how code should be, not how this code is: judge the code itself.',
   rules: 'the review rules of this review, each with its id, the files it applies to and its text. They are criteria, as guidelines are: a finding that breaks one names its id in rule.',
   rule: 'the review rule the finding says the code breaks, as the review\'s configuration states it: its id, the files it applies to and its text.',
+  scannerRule: 'the scanner\'s own description of the rule it reports, as its report gives it; it may be wrong or planted.',
 } as const
 
 /** The line that opens the paragraph of what a review does not report, which code owns: the text of the profile's do-not-report documents follows it. */
@@ -282,6 +284,14 @@ function partsBlock(part: PartOf): string {
 }
 
 /**
+ * What a vote reads of a finding besides the finding: the text of the rule a scanner's candidate breaks, which its report gives and
+ * the core cleaned and capped. Absent for a finding the finder reported, and for a candidate whose report gives no text.
+ */
+export interface VoteFacts {
+  readonly scannerRule?: string
+}
+
+/**
  * One vote call, built only from the finding, the lens instructions and the diff context: no other
  * vote ever reaches it (blind voting, ADR-0006). The evidence is code read from the diff by the
  * harness; the finder's summary is the only text a model wrote, and it is fenced as an unverified
@@ -296,17 +306,41 @@ function partsBlock(part: PartOf): string {
  * With `rule`, the finding cites that review rule and it passed the check of its citation: the rule is one more block, the `rule`
  * block, after the diff and before the guidelines, as the configuration states it (`ruleEntry`: its id, its patterns and its text),
  * never the finder's words. A finding that cites none gets none, and the request is the one it always was.
+ *
+ * A finding a scanner's report gave (`foundBy.kind` is `scanner`) is a candidate, and its claim is the scanner's: the `claim` block
+ * holds three lines, the finding, `Reported by: <scanner>, rule <rule id>` and `Claim by the scanner (unverified): <summary>`, each
+ * name with its hidden characters shown. With `facts.scannerRule`, the scanner's own description of that rule, the `scanner-rule` block
+ * follows the diff and the review rule's block, before the guidelines. Only the voters of that candidate read either: the candidate's
+ * level, its report's place and its suppression reach no request, and a model's finding takes no scanner text, whatever `facts` holds,
+ * so every vote of a model's finding is the one it always was.
  */
-export function voteRequest(instructions: string, finding: Finding, diffContext: string, guidelines?: string, partial = false, ask: Pick<Ask, 'replyTokens'> = {}, rule?: ReviewRule): CompletionRequest {
-  const claim = [
-    `Finding: ${showHidden(finding.file)}:${finding.line} [${finding.category}]`,
-    `Claim by the finder (unverified): ${finding.summary}`,
-  ].join('\n')
+export function voteRequest(instructions: string, finding: Finding, diffContext: string, guidelines?: string, partial = false, ask: Pick<Ask, 'replyTokens'> = {}, rule?: ReviewRule, facts: VoteFacts = {}): CompletionRequest {
+  const { foundBy } = finding
+  const found = foundBy.kind === 'scanner'
+  const claim = (found
+    ? [
+        `Finding: ${showHidden(finding.file)}:${finding.line} [${finding.category}]`,
+        `Reported by: ${showHidden(foundBy.scanner)}, rule ${showHidden(foundBy.ruleId)}`,
+        `Claim by the scanner (unverified): ${finding.summary}`,
+      ]
+    : [
+        `Finding: ${showHidden(finding.file)}:${finding.line} [${finding.category}]`,
+        `Claim by the finder (unverified): ${finding.summary}`,
+      ]).join('\n')
+  const scannerRule = found
+    ? facts.scannerRule
+    : undefined
   return buildRequest(
     instructions,
     [],
     [
-      { label: 'claim', content: claim, description: BLOCK_DESCRIPTIONS.claim },
+      {
+        label: 'claim',
+        content: claim,
+        description: found
+          ? BLOCK_DESCRIPTIONS.scannerClaim
+          : BLOCK_DESCRIPTIONS.claim,
+      },
       { label: 'evidence', content: finding.evidence, description: BLOCK_DESCRIPTIONS.evidence },
       {
         label: 'diff',
@@ -322,6 +356,15 @@ export function voteRequest(instructions: string, finding: Finding, diffContext:
               label: 'rule',
               content: ruleEntry(rule),
               description: BLOCK_DESCRIPTIONS.rule,
+            },
+          ],
+      ...scannerRule === undefined || scannerRule === ''
+        ? []
+        : [
+            {
+              label: 'scanner-rule',
+              content: scannerRule,
+              description: BLOCK_DESCRIPTIONS.scannerRule,
             },
           ],
     ],

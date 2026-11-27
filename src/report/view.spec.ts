@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { inertJson } from '../core/sanitize.ts'
 import type { FoundBy, LensVote, PublicView, QuorumResult, Verdict } from '../core/types.ts'
-import { blankResult, RANGE, reportMeta, reportResult, SETTINGS, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
+import { blankResult, contextReport, RANGE, reportMeta, reportResult, SETTINGS, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
 import { discardedOf, isPublicView, publicView, voteFailed } from './view.ts'
 
 const CANARIES = [
@@ -130,7 +130,7 @@ describe('publicView', () => {
         ],
         leftOut: reportMeta().leftOut,
         flags: reportMeta().flags,
-        context: { documents: [] },
+        context: { documents: [], reports: [] },
         adaptations: [],
       },
     }
@@ -555,11 +555,12 @@ describe('publicView', () => {
             ...document,
             removed: { ...document.removed },
           })),
+          reports: [],
         },
       },
     })
     const view = publicView(result)
-    expect(view.meta.context).toEqual({ documents })
+    expect(view.meta.context).toEqual({ documents, reports: [] })
     expect(view.meta.context).not.toBe(result.meta.context)
     expect(view.meta.context.documents[1]).not.toBe(result.meta.context.documents[1])
     expect(view.meta.context.documents[1].removed).not.toBe(result.meta.context.documents[1].removed)
@@ -571,6 +572,7 @@ describe('publicView', () => {
           documents: [
             { ...documents[0], kind: 'rules' } as never,
           ],
+          reports: [],
         },
       },
     }))).toThrow('the public view is not one quorum writes, at meta.context.documents.0')
@@ -627,6 +629,15 @@ describe('publicView', () => {
       kept: [
         { ...SQL, foundBy: found },
       ],
+      meta: {
+        ...reportMeta(),
+        context: {
+          documents: [],
+          reports: [
+            contextReport(),
+          ],
+        },
+      },
     })
     const view = publicView(result)
     expect(view.kept[0].foundBy).toEqual(found)
@@ -652,7 +663,126 @@ describe('publicView', () => {
           },
         },
       ],
+      meta: {
+        ...reportMeta(),
+        context: {
+          documents: [],
+          reports: [
+            contextReport(),
+          ],
+        },
+      },
     }))).toThrow('the public view is not one quorum writes, at kept.0.foundBy.scanner')
+    // A scanner's verdict names a record of its profile in meta.context.reports, and a view of a result that has none is no view.
+    expect(() => publicView(reportResult({
+      kept: [
+        { ...SQL, foundBy: found },
+      ],
+    }))).toThrow('the public view is not one quorum writes, at kept.0.foundBy.report')
+  })
+
+  it('keeps meta.context.reports in the public view as copies, with a scanner\'s cleaned name and the code words, and no path', () => {
+    const reports = [
+      contextReport({
+        commit: 'a'.repeat(7),
+      }),
+      contextReport({
+        format: 'sonarqube',
+        status: 'unreadable',
+        problems: ['missing'],
+        sha256: undefined,
+        issues: undefined,
+      }),
+    ]
+    const result = reportResult({
+      meta: {
+        ...reportMeta(),
+        context: { documents: [], reports },
+      },
+    })
+    const view = publicView(result)
+    expect(view.meta.context.reports).toEqual(reports)
+    expect(view.meta.context.reports[0]).not.toBe(reports[0])
+    expect(view.meta.context.reports[0].issues).not.toBe(reports[0].issues)
+    expect(view.meta.context.reports[0].problems).not.toBe(reports[0].problems)
+    // A record that is no record quorum writes is no view.
+    expect(() => publicView(reportResult({
+      meta: {
+        ...reportMeta(),
+        context: {
+          documents: [],
+          reports: [
+            { ...reports[0], status: 'broken' as never },
+          ],
+        },
+      },
+    }))).toThrow('the public view is not one quorum writes, at meta.context.reports.0.status')
+  })
+
+  it('lists the discarded verdicts a scanner found, and withholds the finder\'s', () => {
+    const found: FoundBy = {
+      kind: 'scanner',
+      report: 0,
+      scanner: 'Semgrep',
+      ruleId: 'js.sql-injection',
+      level: 'warning',
+    }
+    const candidate = (id: string, line: number): Verdict => ({
+      ...UPLOAD,
+      id,
+      fingerprint: `${id}2738:1`,
+      line,
+      foundBy: { ...found },
+      votes: [
+        cast(false),
+        failed,
+      ],
+    })
+    const [first, second] = [
+      candidate('d1e2f3a40516', 7),
+      candidate('e1f2a3b40516', 9),
+    ]
+    const result = reportResult({
+      discarded: [first, UPLOAD, second],
+      meta: {
+        ...reportMeta(),
+        context: {
+          documents: [],
+          reports: [
+            contextReport(),
+          ],
+        },
+      },
+    })
+    const view = publicView(result)
+    const publicVotes = [
+      { angle: 'a', keep: false, failure: null },
+      {
+        angle: 'b',
+        keep: null,
+        failure: { kind: 'network' },
+      },
+    ]
+    // The scanner's, in the result's order, with votes a view keeps: no reasoning, no error.
+    expect(view.discarded).toStrictEqual([
+      { ...first, votes: publicVotes },
+      { ...second, votes: publicVotes },
+    ])
+    expect(view.discarded[0]).not.toBe(first)
+    expect(view.discarded[0].foundBy).not.toBe(first.foundBy)
+    expect(first.votes).toHaveLength(2)
+    const written = inertJson(view)
+    for (const canary of CANARIES) expect(written).not.toContain(canary)
+    expect(written).not.toContain(UPLOAD.id)
+    // The count is of every discarded verdict, the finder's included, which no list shows.
+    expect(view.meta.profiles.security.discarded).toBe(3)
+    expect(discardedOf(view, 'security')).toBe(3)
+    expect(discardedOf(result, 'security')).toBe(3)
+    // A public view of a public view is that view, and the finder's alone leaves the list empty.
+    expect(publicView(view)).toBe(view)
+    expect(publicView(reportResult({
+      discarded: [UPLOAD],
+    })).discarded).toEqual([])
   })
 
   it('keeps a vote\'s lens, its keep, null when it failed, and its failure', () => {

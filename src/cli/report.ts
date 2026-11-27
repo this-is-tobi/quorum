@@ -25,7 +25,7 @@ export const REPORT_USAGE = [
   '  -f, --format <format>    Write the report on stdout in this format: text, json, brief, markdown, payload or sarif; text on a terminal, else json',
   '  -o, --output <output>    Also write a report to a file, written <format>=<path>; repeat it to write several',
   '      --color <when>       Color the text report: auto, on a terminal unless NO_COLOR is set; always; or never',
-  '      --view <view>        Show the full result, or the public view with public: no reasoning, discarded findings, models or usage',
+  '      --view <view>        Show the full result, or the public view with public: no reasoning, the finder\'s discarded findings, models or usage',
   '      --allow-incomplete   Conclude pass, as the review would with it, when every gap is a vote that failed in passing',
   '  -h, --help               Print this help and exit',
   '',

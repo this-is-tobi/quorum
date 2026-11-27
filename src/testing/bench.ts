@@ -433,7 +433,7 @@ export function resultWith(parts: {
       incomplete: [...incomplete],
       leftOut: [],
       flags: [],
-      context: { documents: [] },
+      context: { documents: [], reports: [] },
       adaptations: [],
     },
   }
@@ -582,6 +582,7 @@ export const RESULT: QuorumResult = (() => {
             removed: { characters: 0, comments: 2, entities: 3 },
           },
         ],
+        reports: [],
       },
     },
   }

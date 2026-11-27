@@ -23,8 +23,16 @@ import { dedupKey } from './dedup.ts'
 
 export { DEFAULT_MAX_FINDINGS }
 
+/**
+ * The fingerprints' ranks a profile's findings were named by: the distinct findings that share a fingerprint hash, by hash, each with
+ * the rank it was given, keyed by `dedupKey`. A scanner's candidates are named after the finder's findings from the same map.
+ */
+export type Ranks = Map<string, Map<string, number>>
+
 export interface ResearchOutcome {
   findings: Finding[]
+  /** The ranks `checkReplies` named `findings` by: the map the candidates of a scanner are named from after them. Empty where no reply was read. */
+  ranks: Ranks
   /**
    * One reason per finding, among the ones read, that the check against the diff dropped (it cites
    * code outside the diff, or names no file). An unreadable finding is reported in `incomplete` only.
@@ -115,12 +123,14 @@ export function findingFingerprint(profile: string, file: string, category: stri
  * The fingerprint of `finding`: its hash and its rank, from 1, among the distinct findings of the profile
  * that share the hash, in the order `ranks` has seen them. A repeat of a finding's file, line and category,
  * which `dedup` drops, takes that finding's rank, so the findings dedup keeps are ranked 1, 2, ....
+ * `row`, when given, is hashed in place of the cited row of the evidence: `''` names a scanner's file-level candidate, which
+ * stands on its file's first changed line for want of a line of its own, so a push that moves that line keeps its name.
  */
-function rankedFingerprint(ranks: Map<string, Map<string, number>>, profile: string, finding: VerifiedFinding): string {
-  const row = finding.evidenceRow === undefined
+export function rankFingerprint(ranks: Ranks, profile: string, finding: VerifiedFinding, row?: string): string {
+  const cited = row ?? (finding.evidenceRow === undefined
     ? ''
-    : finding.evidence.split('\n')[finding.evidenceRow]
-  const hash = findingFingerprint(profile, finding.file, finding.category, row)
+    : finding.evidence.split('\n')[finding.evidenceRow])
+  const hash = findingFingerprint(profile, finding.file, finding.category, cited)
   const known = ranks.get(hash) ?? new Map<string, number>()
   ranks.set(hash, known)
   const key = dedupKey(finding)
@@ -410,10 +420,10 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
   const cited = citation === undefined
     ? { findings: near.findings, invalid: [] }
     : checkCitations(near.findings, citation.rules, citation.requireRule)
-  const ranks = new Map<string, Map<string, number>>()
+  const ranks: Ranks = new Map()
   const findings = cited.findings.map((finding): Finding => ({
     id: findingId(profile, finding.file, finding.line, finding.category),
-    fingerprint: rankedFingerprint(ranks, profile, finding),
+    fingerprint: rankFingerprint(ranks, profile, finding),
     profile,
     ...finding,
     foundBy: { kind: 'model' },
@@ -436,6 +446,7 @@ export function checkReplies(replies: ReadonlyArray<Reply>, sections: ReadonlyMa
   }
   return {
     findings,
+    ranks,
     invalid: checked.invalid,
     away: near.invalid,
     invalidRules: cited.invalid,
@@ -521,6 +532,7 @@ const NOTHING_READ: ResearchOutcome['counts'] = Object.freeze({ listed: 0, cappe
 function nothingRead(parts: PartOutcome[]): ResearchOutcome {
   return {
     findings: [],
+    ranks: new Map(),
     invalid: [],
     away: [],
     invalidRules: [],
@@ -1134,6 +1146,7 @@ function gap(ctx: RunContext, entry: IncompleteEntry, outcome: PartOutcome): Res
   ctx.emit({ type: 'incomplete', entry })
   return {
     findings: [],
+    ranks: new Map(),
     invalid: [],
     away: [],
     invalidRules: [],

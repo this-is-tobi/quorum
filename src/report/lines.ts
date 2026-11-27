@@ -301,6 +301,9 @@ export const GAP_WORDS: Readonly<Record<IncompleteReason, string>> = {
   binary: 'the diff carries no content for a binary file',
   submodule: 'the diff carries only a submodule\'s commit',
   secret: 'a file held back as a secret was sent to no model',
+  'report-unreadable': 'a scanner or coverage report could not be read',
+  'report-partial': 'a scanner or coverage report was read in part',
+  'issues-capped': 'more scanner issues fell on the change than the panel reviews',
 }
 
 /**

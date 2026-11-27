@@ -22,7 +22,7 @@
  */
 
 import { z } from 'zod'
-import { LEVEL_ORDER } from './candidates.ts'
+import { LEVEL_ORDER, REPORT_PROBLEMS } from './candidates.ts'
 import { COMMIT_ID, MAX_DOCUMENT_PATH, SHA256 } from './documents.ts'
 import { NO_ANSWERS, PROVIDER_ERROR_KINDS } from './errors.ts'
 import { SKIP_RULES, sourceIssues } from './inputs.ts'
@@ -286,6 +286,9 @@ export const gapReason = z.enum([
   'binary',
   'submodule',
   'secret',
+  'report-unreadable',
+  'report-partial',
+  'issues-capped',
 ])
 const incompleteEntry = z.strictObject({
   profile: profileId,
@@ -386,9 +389,45 @@ const contextDocument = z.strictObject({
   && (document.status === 'read' || (document.bytes === 0 && document.sha256 === undefined && (document.rules ?? 0) === 0))
   && (document.kind === 'rules') === (document.rules !== undefined))
 
-/** What a review read as policy: every document it sent, in the order it sent them. */
+/** The commit a report states, as its record holds it: a lowercase hexadecimal prefix of 7 to 64 digits. */
+const REPORT_COMMIT = /^[0-9a-f]{7,64}$/
+
+/** Each outcome of a scanner report's issues, and the counts beside them, which a report's record holds: nine outcomes, `listed` and `fileLevel`, and `notRead` when above 0, in the order the core writes them. */
+const reportIssues = z.strictObject({
+  listed: count,
+  used: count,
+  fileLevel: count,
+  held: count,
+  unmapped: count,
+  notInChange: count,
+  leftOut: count,
+  unchanged: count,
+  capped: count,
+  skipped: count,
+  unreadable: count,
+  notRead: count.optional(),
+})
+
+/**
+ * What a review recorded of one scanner report (`ContextReport`): its format, the profile it is read for, a scanner's name within the
+ * cap the core keeps, the commit it states as a prefix of 7 to 64 lower-case digits, the hash of its bytes, its status and problems from
+ * the closed lists, and the counts of its issues' outcomes. It never holds a path, a file name or a text of the report.
+ */
+const contextReport = z.strictObject({
+  format: z.enum(['sarif', 'sonarqube']),
+  profile: profileId.optional(),
+  scanner: z.string().max(MAX_SCANNER).optional(),
+  commit: z.string().regex(REPORT_COMMIT).optional(),
+  sha256: z.string().regex(SHA256).optional(),
+  status: z.enum(['read', 'partial', 'unreadable']),
+  problems: z.array(z.enum(REPORT_PROBLEMS)),
+  issues: reportIssues.optional(),
+})
+
+/** What a review read as policy and as scanner reports: every document it sent, in the order it sent them, and every report it read, in the order it was given. */
 const contextRecord = z.strictObject({
   documents: z.array(contextDocument),
+  reports: z.array(contextReport),
 })
 
 /**
@@ -587,20 +626,29 @@ function profilesOf<Meta extends z.ZodType>(meta: Meta) {
   return z.record(profileId, meta).refine(profiles => Object.keys(profiles).length > 0)
 }
 
+/** A verdict, as the cross-checks read it. */
+interface CheckedVerdict {
+  readonly profile: string
+  readonly confidence?: unknown
+  readonly foundBy: { readonly kind: string, readonly report?: number }
+}
+
 /** What the cross-checks read of a result or of a public view. */
 interface Checked {
-  readonly kept: ReadonlyArray<{ readonly profile: string, readonly confidence?: unknown }>
-  readonly discarded: ReadonlyArray<{ readonly profile: string, readonly confidence?: unknown }>
-  readonly unreviewed: ReadonlyArray<{ readonly profile: string, readonly confidence?: unknown }>
+  readonly kept: readonly CheckedVerdict[]
+  readonly discarded: readonly CheckedVerdict[]
+  readonly unreviewed: readonly CheckedVerdict[]
   readonly meta: {
     readonly profiles: Readonly<Record<string, unknown>>
     readonly incomplete: ReadonlyArray<{ readonly profile: string }>
+    readonly context: { readonly reports: ReadonlyArray<{ readonly profile?: string }> }
   }
 }
 
 /**
  * What no single field says: every verdict and every gap names a profile of `meta.profiles`, a kept verdict has
- * a confidence, and a discarded or an unreviewed one has none. The messages are fixed words, never the input.
+ * a confidence, and a discarded or an unreviewed one has none, and a verdict a scanner found names, as its `foundBy.report`, a record of
+ * `meta.context.reports` that was read for the verdict's own profile. The messages are fixed words, never the input.
  */
 function checkResult(result: Checked, context: z.RefinementCtx): void {
   const lists = [
@@ -622,6 +670,15 @@ function checkResult(result: Checked, context: z.RefinementCtx): void {
           code: 'custom',
           path: [list, index, 'confidence'],
           message: 'is held by a kept finding alone',
+        })
+      }
+      const { report } = verdict.foundBy
+      // A place that is no count is refused by the field's own check, and not twice.
+      if (verdict.foundBy.kind === 'scanner' && typeof report === 'number' && Number.isInteger(report) && report >= 0 && result.meta.context.reports[report]?.profile !== verdict.profile) {
+        context.addIssue({
+          code: 'custom',
+          path: [list, index, 'foundBy', 'report'],
+          message: 'must name a report of the finding\'s profile in meta.context.reports',
         })
       }
     })
@@ -666,14 +723,30 @@ export const resultSchema = z.strictObject({
 }).superRefine(checkResult)
 
 /**
+ * What only the public view says: a discarded verdict it lists is one a scanner found, since the finder's are withheld and counted
+ * (`publicView`). The message is a fixed word, never the input.
+ */
+function checkDiscarded(view: { readonly discarded: ReadonlyArray<{ readonly foundBy: { readonly kind: string } }> }, context: z.RefinementCtx): void {
+  view.discarded.forEach((verdict, index) => {
+    if (verdict.foundBy.kind !== 'scanner') {
+      context.addIssue({
+        code: 'custom',
+        path: ['discarded', index, 'foundBy', 'kind'],
+        message: 'is a scanner\'s alone: the finder\'s discarded findings are withheld',
+      })
+    }
+  })
+}
+
+/**
  * The schema of the public view (`publicView`): the same parts, less what the view withholds. `meta.view` is
- * the literal `public`, `discarded` is an empty tuple, and a vote, a profile's meta and a gap hold no field
+ * the literal `public`, `discarded` lists the verdicts a scanner found and no other, and a vote, a profile's meta and a gap hold no field
  * the view drops, so a result forged to look like a view, with a vote's reasoning, a usage, the calls, the providers or a
- * gap's detail, is refused. `result-schema.spec.ts` holds its output type equal to `PublicView`.
+ * gap's detail, or the finder's discarded finding, is refused. `result-schema.spec.ts` holds its output type equal to `PublicView`.
  */
 export const publicViewSchema = z.strictObject({
   kept: z.array(verdictOf(publicVote)),
-  discarded: z.tuple([]),
+  discarded: z.array(verdictOf(publicVote)),
   unreviewed: z.array(verdictOf(publicVote)),
   meta: z.strictObject({
     version: z.string(),
@@ -690,4 +763,4 @@ export const publicViewSchema = z.strictObject({
     reused: reused.optional(),
     concurrency: concurrency.optional(),
   }),
-}).superRefine(checkResult)
+}).superRefine(checkResult).superRefine(checkDiscarded)

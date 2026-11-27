@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
+import { scanReports } from '../core/candidates.ts'
+import { splitDiff } from '../core/diff.ts'
 import { cutRead, MAX_RESULTS, READ_MESSAGE, READ_RULE_ID, READ_RULE_TEXT } from '../core/reports.ts'
 import { reportPathsOf } from './paths.ts'
 import { sonarqubeReport } from './sonarqube.ts'
@@ -605,6 +607,33 @@ describe('sonarqubeReport', () => {
     ])).toMatchObject({ notRead: 1, unreadable: 0 })
     expect(read(issues.slice(0, MAX_RESULTS))).not.toHaveProperty('notRead')
     expect(read([])).not.toHaveProperty('notRead')
+  })
+
+  it('hands the core what lets it say the limit as N of M: what the file held is what the report lists, and the gap carries the numbers', () => {
+    const sections = splitDiff([
+      'diff --git a/src/a.js b/src/a.js',
+      '--- a/src/a.js',
+      '+++ b/src/a.js',
+      '@@ -1,1 +1,2 @@',
+      ' one',
+      '+two',
+    ].join('\n'))
+    const page = read(Array.from({ length: MAX_RESULTS + 30 }, () => issue({ component: 'app:src/other.js' })), { total: MAX_RESULTS + 30 })
+    const scan = scanReports({
+      reports: [
+        { format: 'sonarqube', profile: 'security', ...page },
+      ],
+      sections,
+      leftOut: [],
+      maxScannerIssues: 50,
+    })
+    const { listed, fileLevel: _, ...counts } = scan.records[0].issues!
+    expect(listed).toBe(MAX_RESULTS + 30)
+    expect(counts).toMatchObject({ notInChange: MAX_RESULTS, notRead: 30 })
+    expect(Object.values(counts).reduce((total, count) => total + count, 0)).toBe(listed)
+    expect(scan.profiles.get('security')?.gaps.map(gap => gap.detail)).toEqual([
+      'report 1 (sonarqube) was read in part: 30 of its 25030 issues were not read',
+    ])
   })
 
   it('says both when a response holds more issues than it reads and fewer than its search found', () => {

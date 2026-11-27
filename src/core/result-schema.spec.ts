@@ -2,10 +2,10 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 import type { z } from 'zod'
 import { publicView } from '../report/view.ts'
 import { corpusResult } from '../testing/github-corpus.ts'
-import { blankResult, cast, reportMeta, reportResult, SETTINGS, SQL, TOKEN } from '../testing/report.ts'
+import { blankResult, cast, contextReport, reportMeta, reportResult, SETTINGS, SQL, TOKEN, UPLOAD } from '../testing/report.ts'
 import { PROVIDER_ERROR_KINDS } from './errors.ts'
 import { publicViewSchema, resultSchema, settingsSchema } from './result-schema.ts'
-import type { PublicView, QuorumResult } from './types.ts'
+import type { ContextReport, PublicView, QuorumResult, Verdict } from './types.ts'
 
 /** `T` with no `readonly` at any depth, its optional fields still optional and its tuples tuples: the shape a JSON parse gives. */
 type Mutable<T> = T extends readonly unknown[]
@@ -83,7 +83,17 @@ describe('the schemas of a result', () => {
   })
 
   it('reads a scanner\'s foundBy within the caps the harness keeps, in the public view too, and refuses any other', () => {
-    const full = saved(reportResult())
+    // A foundBy names a record of `meta.context.reports`: 16 reports are the most a review reads, and the highest place is 15.
+    const reading = reportResult({
+      meta: {
+        ...reportMeta(),
+        context: {
+          documents: [],
+          reports: Array.from({ length: 16 }, () => contextReport()),
+        },
+      },
+    })
+    const full = saved(reading)
     const scanner = {
       kind: 'scanner',
       report: 0,
@@ -114,7 +124,7 @@ describe('the schemas of a result', () => {
     ]) {
       expect(resultSchema.parse(holding(found))).toEqual(holding(found))
     }
-    const view = saved(publicView(reportResult()))
+    const view = saved(publicView(reading))
     expect(publicViewSchema.safeParse({
       ...view,
       kept: [
@@ -148,6 +158,290 @@ describe('the schemas of a result', () => {
     const { report: _gone, ...unplaced } = scanner
     expect(pathsOf(holding(unplaced))).toEqual(['kept.0.foundBy.report'])
     expect(pathsOf(holding({ kind: 'model', scanner: 'Semgrep' }))).toEqual(['kept.0.foundBy'])
+  })
+
+  it('reads a scanner\'s foundBy and a report\'s record, and refuses a foundBy that names no record of its profile', () => {
+    const found = {
+      kind: 'scanner',
+      report: 0,
+      scanner: 'Semgrep',
+      ruleId: 'js.sql-injection',
+      level: 'warning',
+      fileLevel: true,
+    } as const
+    const resultWith = (reports: ContextReport[], foundBy: unknown = found): QuorumResult => reportResult({
+      kept: [
+        { ...SQL, foundBy } as Verdict,
+      ],
+      meta: {
+        ...reportMeta(),
+        incomplete: [
+          { profile: 'security', reason: 'report-unreadable', detail: 'report 2 (sonarqube) could not be read: the file does not exist' },
+          { profile: 'security', reason: 'report-partial', detail: 'report 1 (sarif) was read in part: 2 issue(s) name a path quorum could not place in the repository' },
+          { profile: 'security', reason: 'issues-capped', detail: '3 of 53 scanner issues on the change were not reviewed (the cap is 50)' },
+        ],
+        context: { documents: [], reports },
+      },
+    })
+    const unreadable: ContextReport = {
+      format: 'sonarqube',
+      status: 'unreadable',
+      problems: ['missing'],
+    }
+    const result = resultWith([
+      contextReport(),
+      unreadable,
+    ])
+    const full = saved(result)
+    expect(resultSchema.parse(full)).toEqual(full)
+    expect(JSON.stringify(resultSchema.parse(full))).toBe(JSON.stringify(full))
+    const view = saved(publicView(result))
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    expect(view.meta.context.reports).toEqual(full.meta.context.reports)
+    expect(view.meta.incomplete.map(gap => gap.reason)).toEqual(['report-unreadable', 'report-partial', 'issues-capped'])
+    // The edges of each field are read: a commit of 7 to 64 digits, a scanner of 64 characters, and every count of the issues.
+    for (const edge of [
+      contextReport({
+        commit: 'a'.repeat(7),
+      }),
+      contextReport({
+        commit: '0123456789abcdef'.repeat(4),
+      }),
+      contextReport({
+        scanner: 'x'.repeat(64),
+      }),
+      contextReport({
+        status: 'partial',
+        problems: ['too-many'],
+        issues: {
+          ...contextReport().issues!,
+          listed: 11,
+          notRead: 7,
+        },
+      }),
+      contextReport({
+        status: 'partial',
+        problems: [
+          'truncated',
+          'too-many',
+          'scanner-failed',
+          'unreadable-entries',
+          'unmapped-paths',
+          'held-text',
+        ],
+      }),
+      contextReport({
+        status: 'unreadable',
+        problems: [
+          'missing',
+          'cannot-read',
+          'not-a-file',
+          'too-large',
+          'not-the-format',
+          'no-results',
+          'another-commit',
+        ],
+      }),
+    ]) {
+      expect(resultSchema.safeParse(saved(resultWith([edge]))).success, JSON.stringify(edge)).toBe(true)
+    }
+    // A record is strict: a key, a word or a number outside what the core writes is refused, in the full result and the view.
+    const record = saved(contextReport()) as Forged
+    const issues = record.issues as Forged
+    const { used: _used, ...lacking } = issues
+    for (const forged of [
+      { ...record, extra: 1 },
+      { ...record, path: 'reports/semgrep.sarif' },
+      { ...record, format: 'lcov' },
+      { ...record, status: 'broken' },
+      {
+        ...record,
+        problems: ['unknown'],
+      },
+      { ...record, problems: 'missing' },
+      {
+        ...record,
+        sha256: 'E'.repeat(64),
+      },
+      {
+        ...record,
+        sha256: 'e'.repeat(63),
+      },
+      {
+        ...record,
+        commit: 'a'.repeat(6),
+      },
+      {
+        ...record,
+        commit: 'a'.repeat(65),
+      },
+      {
+        ...record,
+        commit: 'A'.repeat(7),
+      },
+      {
+        ...record,
+        commit: 'g'.repeat(7),
+      },
+      {
+        ...record,
+        scanner: 'x'.repeat(65),
+      },
+      { ...record, profile: 'Bad Id' },
+      {
+        ...record,
+        issues: { ...issues, extra: 1 },
+      },
+      { ...record, issues: lacking },
+      {
+        ...record,
+        issues: { ...issues, used: -1 },
+      },
+      {
+        ...record,
+        issues: { ...issues, used: 1.5 },
+      },
+      {
+        ...record,
+        issues: { ...issues, listed: '4' },
+      },
+      {
+        ...record,
+        issues: { ...issues, notRead: -1 },
+      },
+      {
+        ...record,
+        issues: { ...issues, notRead: 0.5 },
+      },
+      {
+        ...record,
+        issues: { ...issues, notRead: '7' },
+      },
+    ] as Forged[]) {
+      const forgedFull = {
+        ...full,
+        meta: {
+          ...full.meta,
+          context: {
+            documents: [],
+            reports: [forged],
+          },
+        },
+      }
+      const forgedView = {
+        ...view,
+        meta: {
+          ...view.meta,
+          context: {
+            documents: [],
+            reports: [forged],
+          },
+        },
+      }
+      expect(resultSchema.safeParse(forgedFull).success, JSON.stringify(forged)).toBe(false)
+      expect(publicViewSchema.safeParse(forgedView).success, JSON.stringify(forged)).toBe(false)
+    }
+    // A foundBy names a record of `meta.context.reports`, and one of its own profile.
+    const pathsOf = (input: Forged): string[] => resultSchema.safeParse(input).error?.issues.map(issue => issue.path.join('.')) ?? []
+    const viewPaths = (input: Forged): string[] => publicViewSchema.safeParse(input).error?.issues.map(issue => issue.path.join('.')) ?? []
+    expect(pathsOf(saved(resultWith([
+      contextReport(),
+    ], { ...found, report: 1 })))).toEqual(['kept.0.foundBy.report'])
+    expect(pathsOf(saved(resultWith([], found)))).toEqual(['kept.0.foundBy.report'])
+    expect(pathsOf(saved(resultWith([
+      contextReport({ profile: 'style' }),
+    ])))).toEqual(['kept.0.foundBy.report'])
+    expect(pathsOf(saved(resultWith([unreadable])))).toEqual(['kept.0.foundBy.report'])
+    const forgedView = saved(publicView(resultWith([
+      contextReport(),
+    ])))
+    expect(viewPaths({
+      ...forgedView,
+      kept: [
+        {
+          ...forgedView.kept[0],
+          foundBy: { ...found, report: 1 },
+        },
+      ],
+    })).toEqual(['kept.0.foundBy.report'])
+    // A verdict the finder found needs no record, and a result that reads no report holds none.
+    expect(resultSchema.safeParse(saved(resultWith([], { kind: 'model' }))).success).toBe(true)
+    // Every list of verdicts is read so, the discarded and the unreviewed too.
+    const elsewhere = {
+      ...saved(SQL),
+      foundBy: { ...found, report: 3 },
+    } as Forged
+    for (const list of ['discarded', 'unreviewed']) {
+      expect(pathsOf({
+        ...full,
+        [list]: [elsewhere],
+      })).toContain(`${list}.0.foundBy.report`)
+    }
+  })
+
+  it('refuses a public view whose discarded holds a verdict the finder found', () => {
+    const found = {
+      kind: 'scanner',
+      report: 0,
+      scanner: 'Semgrep',
+      ruleId: 'js.sql-injection',
+      level: 'error',
+    } as const
+    const result = reportResult({
+      discarded: [
+        UPLOAD,
+        { ...UPLOAD, id: 'd1e2f3a40516', foundBy: found },
+      ],
+      meta: {
+        ...reportMeta(),
+        context: {
+          documents: [],
+          reports: [
+            contextReport(),
+          ],
+        },
+      },
+    })
+    const view = saved(publicView(result))
+    expect(view.discarded.map(verdict => verdict.foundBy.kind)).toEqual(['scanner'])
+    expect(publicViewSchema.parse(view)).toEqual(view)
+    // The full result keeps both, and a view with the finder's discarded finding in it is refused, whatever else it holds.
+    expect(resultSchema.parse(saved(result)).discarded).toHaveLength(2)
+    const pathsOf = (input: Forged): string[] => publicViewSchema.safeParse(input).error?.issues.map(issue => issue.path.join('.')) ?? []
+    expect(pathsOf({
+      ...view,
+      discarded: [
+        {
+          ...view.discarded[0],
+          foundBy: { kind: 'model' },
+        },
+      ],
+    })).toEqual(['discarded.0.foundBy.kind'])
+    expect(pathsOf({
+      ...view,
+      discarded: [
+        ...view.discarded,
+        {
+          ...view.discarded[0],
+          id: 'e1f2a3b40516',
+          foundBy: { kind: 'model' },
+        },
+      ],
+    })).toEqual(['discarded.1.foundBy.kind'])
+    // Its votes are a view's: a vote with its reasoning is refused.
+    expect(pathsOf({
+      ...view,
+      discarded: [
+        {
+          ...view.discarded[0],
+          votes: [
+            cast(false),
+          ],
+        },
+      ],
+    }).length).toBeGreaterThan(0)
+    // A view lists nothing the finder found, and an empty list is still one.
+    expect(publicViewSchema.safeParse({ ...view, discarded: [] }).success).toBe(true)
   })
 
   it('reads a file skipped with the rule test in meta.leftOut, in the public view too', () => {
@@ -1162,6 +1456,7 @@ describe('the schemas of a result', () => {
             ...document,
             removed: { ...document.removed },
           })),
+          reports: [],
         },
       },
     })
@@ -1176,7 +1471,7 @@ describe('the schemas of a result', () => {
     expect(resultSchema.safeParse({ ...full, meta: without }).success).toBe(false)
     const { context: _noView, ...withoutView } = view.meta
     expect(publicViewSchema.safeParse({ ...view, meta: withoutView }).success).toBe(false)
-    expect(resultSchema.parse(saved(blankResult())).meta.context).toEqual({ documents: [] })
+    expect(resultSchema.parse(saved(blankResult())).meta.context).toEqual({ documents: [], reports: [] })
     // Each record is strict, and a kind, an origin, a status or a hash outside the closed lists is refused.
     const [own, file, repository, missing] = documents.map(document => ({ ...document })) as Forged[]
     for (const forged of [
@@ -1236,6 +1531,7 @@ describe('the schemas of a result', () => {
           ...full.meta,
           context: {
             documents: [forged],
+            reports: [],
           },
         },
       }).success, JSON.stringify(forged)).toBe(false)
@@ -1245,6 +1541,7 @@ describe('the schemas of a result', () => {
           ...view.meta,
           context: {
             documents: [forged],
+            reports: [],
           },
         },
       }).success, JSON.stringify(forged)).toBe(false)
@@ -1253,11 +1550,12 @@ describe('the schemas of a result', () => {
       ...full,
       meta: {
         ...full.meta,
-        context: { documents: [] },
+        context: { documents: [], reports: [] },
       },
     }).success).toBe(true)
     for (const forged of [
-      { documents: [], extra: 1 },
+      { documents: [], reports: [], extra: 1 },
+      { documents: [] },
       { documents: 'REVIEW.md' },
       {},
       [],
@@ -1320,6 +1618,7 @@ describe('the schemas of a result', () => {
             ...document,
             removed: { ...document.removed },
           })),
+          reports: [],
         },
       },
     })
@@ -1347,6 +1646,7 @@ describe('the schemas of a result', () => {
           ...full.meta,
           context: {
             documents: [forged],
+            reports: [],
           },
         },
       }).success, JSON.stringify(forged)).toBe(false)
@@ -1356,6 +1656,7 @@ describe('the schemas of a result', () => {
           ...view.meta,
           context: {
             documents: [forged],
+            reports: [],
           },
         },
       }).success, JSON.stringify(forged)).toBe(false)

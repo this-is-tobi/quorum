@@ -161,6 +161,25 @@ describe('agentResult', () => {
     expect(agentResultSchema.parse(JSON.parse(JSON.stringify(result)))).toEqual(result)
   })
 
+  it.each([
+    'report-unreadable',
+    'report-partial',
+    'issues-capped',
+  ] as const)('takes %s as a gap reason, without its detail', (reason) => {
+    const result = received(reportResult({
+      meta: {
+        incomplete: [
+          { profile: 'security', reason, detail: 'report 1 (sarif) could not be read: DETAIL-CANARY' },
+        ],
+      },
+    }), INCOMPLETE)
+    expect(result.gaps).toEqual([
+      { profile: 'security', reason },
+    ])
+    expect(JSON.stringify(result)).not.toContain('DETAIL-CANARY')
+    expect(agentResultSchema.parse(JSON.parse(JSON.stringify(result)))).toEqual(result)
+  })
+
   it('gives each profile its level, its counts and its coverage counted by status', () => {
     const { profiles } = received(reportResult())
     expect(profiles).toEqual([

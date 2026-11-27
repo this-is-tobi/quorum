@@ -365,6 +365,7 @@ describe('plainWriter', () => {
             bytes: 0,
           }),
         ],
+        reports: [],
       },
     })
     sink({

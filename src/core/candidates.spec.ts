@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fakeCredential } from '../testing/credentials.ts'
-import { DEFAULT_MAX_SCANNER_ISSUES, LEVEL_ORDER, MAX_RULE_ID, MAX_SCANNER, MAX_SCANNER_RULE, reportGaps, reviewedCommit, scannerReportIssues, scanReports } from './candidates.ts'
-import type { ScanInput } from './candidates.ts'
+import { candidateFindings, DEFAULT_MAX_SCANNER_ISSUES, LEVEL_ORDER, MAX_RULE_ID, MAX_SCANNER, MAX_SCANNER_RULE, reportGaps, reviewedCommit, scannerReportIssues, scanReports } from './candidates.ts'
+import type { Candidate, ScanInput } from './candidates.ts'
 import { splitDiff } from './diff.ts'
 import { credentialIn } from './secrets.ts'
+import { findingFingerprint, findingId, rankFingerprint } from './stages/research.ts'
+import type { Ranks } from './stages/research.ts'
 import type { ContextReport, IssueOutcome, LeftOutFile, ReportProblem, ReviewSource, ScannerIssue, ScannerReport } from './types.ts'
 
 // The real detector, counted, so a test can say how many times a text was read.
@@ -124,8 +126,8 @@ const OUTCOMES: readonly IssueOutcome[] = [
   'unreadable',
 ]
 
-/** What the outcomes of a record add up to, which a report's `listed` equals. */
-const summed = (issues: NonNullable<ContextReport['issues']>): number => OUTCOMES.reduce((sum, outcome) => sum + issues[outcome], 0)
+/** What the outcomes of a record and the entries its reader did not read add up to, which a report's `listed` equals. */
+const summed = (issues: NonNullable<ContextReport['issues']>): number => OUTCOMES.reduce((sum, outcome) => sum + issues[outcome], 0) + (issues.notRead ?? 0)
 
 /** A text that is a credential, from pieces, and the same one split by an HTML comment that the cleaner removes. */
 const KEY = fakeCredential('github-token')
@@ -515,6 +517,59 @@ describe('placing an issue', () => {
       unreadable: 1,
     })
     expect(summed(issues)).toBe(issues.listed)
+    expect(Object.hasOwn(issues, 'notRead')).toBe(false)
+  })
+
+  it('counts the entries a reader did not read in what the report lists, as notRead, and in no outcome', () => {
+    const result = scan([
+      report([
+        issue({ line: 12 }),
+        issue({ line: 3 }),
+      ], { skipped: 1, unreadable: 1, notRead: 7 }),
+    ])
+    const issues = counted(result)
+    expect(issues).toEqual({
+      listed: 11,
+      used: 1,
+      fileLevel: 0,
+      held: 0,
+      unmapped: 0,
+      notInChange: 0,
+      leftOut: 0,
+      unchanged: 1,
+      capped: 0,
+      skipped: 1,
+      unreadable: 1,
+      notRead: 7,
+    })
+    expect(summed(issues)).toBe(issues.listed)
+    // The record writes it after the outcomes, only when there is one: no count of 0 and no field for a report read whole.
+    expect(Object.keys(issues).at(-1)).toBe('notRead')
+    expect(Object.hasOwn(counted(scan([
+      report([
+        issue(),
+      ], { notRead: 0 }),
+    ])), 'notRead')).toBe(false)
+  })
+
+  it('counts the entries a reader did not read of a report it refuses, as it counts what the reader skipped', () => {
+    const issues = counted(scan([
+      report([
+        issue(),
+      ], {
+        problems: ['too-many'],
+        commits: ['3333333'],
+        skipped: 2,
+        notRead: 5,
+      }),
+    ], { commit: HEAD }))
+    expect(issues).toMatchObject({
+      listed: 7,
+      used: 0,
+      skipped: 2,
+      notRead: 5,
+    })
+    expect(summed(issues)).toBe(issues.listed)
   })
 
   it('reads each distinct text once, so a rule\'s text shared by many issues is cleaned and checked once', () => {
@@ -526,6 +581,175 @@ describe('placing an issue', () => {
     const reads = vi.mocked(credentialIn).mock.calls.filter(([text]) => text === shared)
     expect(reads).toHaveLength(1)
     expect(vi.mocked(credentialIn).mock.calls.filter(([text]) => text === 'Semgrep')).toHaveLength(1)
+  })
+})
+
+describe('the text work of a scan', () => {
+  it('reads each text once for the same reports array, however many scans a review makes of it, as an estimate and a review do', () => {
+    const reports = [
+      report([
+        issue({ message: 'user input reaches a query', ruleText: 'a rule with a long text of its own' }),
+        issue({ line: 13, message: 'another message' }),
+      ]),
+    ]
+    vi.mocked(credentialIn).mockClear()
+    const first = scan(reports)
+    const reads = vi.mocked(credentialIn).mock.calls.length
+    expect(reads).toBeGreaterThan(0)
+    // The same array again, under another cap: no text is read once more, and the outcomes are the new cap's.
+    const second = scan(reports, { maxScannerIssues: 1 })
+    expect(vi.mocked(credentialIn).mock.calls.length).toBe(reads)
+    expect(counted(first)).toMatchObject({ used: 2, capped: 0 })
+    expect(counted(second)).toMatchObject({ used: 1, capped: 1 })
+    // The reads are the array's, not the texts': a copy of the array is another review's, which reads them again.
+    scan([...reports])
+    expect(vi.mocked(credentialIn).mock.calls.length).toBe(2 * reads)
+  })
+
+  it('answers a held text the same on every scan of the array', () => {
+    const reports = [
+      report([
+        issue({ message: `token ${KEY}` }),
+        issue({ line: 13 }),
+      ]),
+    ]
+    const first = scan(reports)
+    const second = scan(reports, { leftOut: [] })
+    expect(counted(first)).toMatchObject({ held: 1, used: 1 })
+    expect(counted(second)).toMatchObject({ held: 1, used: 1 })
+    expect(second.profiles.get('security')?.candidates).toHaveLength(1)
+  })
+})
+
+describe('candidateFindings', () => {
+  const candidatesOf = (reports: ScannerReport[]): readonly Candidate[] => scan(reports).profiles.get('security')?.candidates ?? []
+  const rowOf = (found: { readonly evidence: string, readonly evidenceRow?: number }): string => found.evidence.split('\n')[found.evidenceRow ?? -1] ?? ''
+
+  it('names each candidate as the finder\'s findings are, by its id and a fingerprint of its profile, file, rule and row', () => {
+    const candidates = candidatesOf([
+      report([
+        issue({ ruleText: 'a rule\'s text' }),
+        issue({ line: 13, ruleId: 'js.other' }),
+      ]),
+    ])
+    const { findings, ruleTexts } = candidateFindings('security', candidates, new Map())
+    expect(findings).toHaveLength(2)
+    const [first, second] = findings
+    expect(first.id).toBe(findingId('security', 'src/db.js', 12, 'js.sql-injection'))
+    expect(first.fingerprint).toBe(`${findingFingerprint('security', 'src/db.js', 'js.sql-injection', rowOf(first))}:1`)
+    expect(rowOf(first)).toBe('+const twelve = 12')
+    expect(second.id).toBe(findingId('security', 'src/db.js', 13, 'js.other'))
+    expect(second.fingerprint).toBe(`${findingFingerprint('security', 'src/db.js', 'js.other', ' const thirteen = 13')}:1`)
+    // It is the candidate's finding, with an id and a fingerprint in front, in the order a finding's keys are written.
+    expect(first).toMatchObject({
+      profile: 'security',
+      file: 'src/db.js',
+      line: 12,
+      foundBy: candidates[0].finding.foundBy,
+    })
+    expect(Object.keys(first).slice(0, 3)).toEqual(['id', 'fingerprint', 'profile'])
+    expect(Object.keys(first).indexOf('foundBy')).toBe(Object.keys(first).indexOf('quoteMatched') + 1)
+    expect(ruleTexts).toEqual(new Map([
+      [first.id, 'a rule\'s text'],
+    ]))
+  })
+
+  it('ranks a candidate after the finder\'s findings of its hash, in the map the finder ranked them in', () => {
+    const [candidate] = candidatesOf([
+      report(),
+    ])
+    const ranks: Ranks = new Map()
+    // A finder's finding on another line of the same code, in the same category, holds the hash's first rank.
+    const finder = { ...candidate.finding, line: 99 }
+    const hash = findingFingerprint('security', 'src/db.js', 'js.sql-injection', rowOf(candidate.finding))
+    expect(rankFingerprint(ranks, 'security', finder)).toBe(`${hash}:1`)
+    const [named] = candidateFindings('security', [candidate], ranks).findings
+    expect(named.fingerprint).toBe(`${hash}:2`)
+    // A map with no finding in it gives the candidate the first rank, and the map keeps the rank it took.
+    const alone: Ranks = new Map()
+    expect(candidateFindings('security', [candidate], alone).findings[0].fingerprint).toBe(`${hash}:1`)
+    expect([
+      ...alone.get(hash)!.values(),
+    ]).toEqual([1])
+  })
+
+  it('hashes no row for a file-level candidate, so a push that moves its file\'s first changed line keeps its name', () => {
+    const [candidate] = candidatesOf([
+      report([
+        issue({
+          path: 'package-lock.json',
+          line: 1,
+          scanner: 'Trivy',
+          ruleId: 'CVE-0000-0001',
+        }),
+      ]),
+    ])
+    expect(candidate.finding.foundBy).toMatchObject({ fileLevel: true })
+    const [named] = candidateFindings('security', [candidate], new Map()).findings
+    expect(named.line).toBe(300)
+    expect(rowOf(named)).not.toBe('')
+    expect(named.fingerprint).toBe(`${findingFingerprint('security', 'package-lock.json', 'CVE-0000-0001', '')}:1`)
+    // The same issue where the first changed line is another one: another id, the same fingerprint.
+    const moved = candidateFindings('security', [
+      {
+        finding: {
+          ...candidate.finding,
+          line: 310,
+          evidence: '+  "z": 9,',
+          evidenceRow: 0,
+        },
+      },
+    ], new Map()).findings[0]
+    expect(moved.id).not.toBe(named.id)
+    expect(moved.fingerprint).toBe(named.fingerprint)
+  })
+
+  it('keeps the first rule text for an id two candidates share, and holds none for a candidate whose report gives none', () => {
+    const candidates = candidatesOf([
+      report([
+        issue({ ruleText: 'the first text' }),
+        issue({ line: 13, ruleId: 'js.other' }),
+      ]),
+      report([
+        issue({ ruleText: 'the second text' }),
+      ]),
+    ])
+    expect(candidates).toHaveLength(3)
+    const { findings, ruleTexts } = candidateFindings('security', candidates, new Map())
+    expect(findings[0].id).toBe(findings[2].id)
+    expect(ruleTexts).toEqual(new Map([
+      [findings[0].id, 'the first text'],
+    ]))
+    expect(ruleTexts.has(findings[1].id)).toBe(false)
+    // Two candidates of one id are one finding's rank: the repeat takes the first's.
+    expect(findings[2].fingerprint).toBe(findings[0].fingerprint)
+  })
+
+  it('credits a rule text to the first candidate of its id alone: when that one has none, a later candidate\'s text is no one\'s', () => {
+    const candidates = candidatesOf([
+      report([
+        issue({ message: 'the first scanner\'s claim' }),
+        issue({ line: 13, ruleId: 'js.other', ruleText: 'another rule\'s text' }),
+      ]),
+      report([
+        issue({ message: 'the second scanner\'s claim', ruleText: 'the second text' }),
+      ]),
+    ])
+    const { findings, ruleTexts } = candidateFindings('security', candidates, new Map())
+    expect(findings).toHaveLength(3)
+    // The first and the third are one id: the first has no text, so the vote of the first's claim shows no rule block.
+    expect(findings[0].id).toBe(findings[2].id)
+    expect(ruleTexts.has(findings[0].id)).toBe(false)
+    expect(ruleTexts).toEqual(new Map([
+      [findings[1].id, 'another rule\'s text'],
+    ]))
+  })
+
+  it('names none for no candidate', () => {
+    expect(candidateFindings('security', [], new Map())).toEqual({
+      findings: [],
+      ruleTexts: new Map(),
+    })
   })
 })
 
@@ -1177,7 +1401,7 @@ describe('what a report is', () => {
       'report 1 (sonarqube) was read in part: it holds 2 of the 9000 issues its search found',
     ],
     [
-      'partial for a log with too many runs or results',
+      'partial for a log whose reader gave no count of what it did not read',
       [
         issue(),
       ],
@@ -1187,6 +1411,75 @@ describe('what a report is', () => {
       'partial',
       ['too-many'],
       'report 1 (sarif) was read in part: it holds more than 20 runs, or more than 25000 results in a run, and the rest was not read',
+    ],
+    [
+      'partial for a run with results past its limit, said as N of M results',
+      [
+        issue(),
+      ],
+      {
+        problems: ['too-many'],
+        notRead: 4,
+      },
+      'partial',
+      ['too-many'],
+      'report 1 (sarif) was read in part: 4 of its 5 results were not read',
+    ],
+    [
+      'partial for a log with runs past its limit that hold no result, said as N of M runs',
+      [
+        issue(),
+      ],
+      {
+        problems: ['too-many'],
+        runs: 25,
+      },
+      'partial',
+      ['too-many'],
+      'report 1 (sarif) was read in part: 5 of its 25 runs were not read',
+    ],
+    [
+      'partial for a log with runs past its limit that hold results, said as results and runs',
+      [
+        issue(),
+      ],
+      {
+        problems: ['too-many'],
+        notRead: 3000,
+        runs: 21,
+      },
+      'partial',
+      ['too-many'],
+      'report 1 (sarif) was read in part: 3000 of its 3001 results and 1 of its 21 runs were not read',
+    ],
+    [
+      'partial for a response with issues past its limit, said as N of M issues',
+      [
+        issue(),
+      ],
+      {
+        format: 'sonarqube',
+        problems: ['too-many'],
+        notRead: 5000,
+      },
+      'partial',
+      ['too-many'],
+      'report 1 (sonarqube) was read in part: 5000 of its 5001 issues were not read',
+    ],
+    [
+      'partial for a response that is truncated and has issues past its limit, each said with its numbers',
+      [
+        issue(),
+      ],
+      {
+        format: 'sonarqube',
+        problems: ['truncated', 'too-many'],
+        total: 30_000,
+        notRead: 5,
+      },
+      'partial',
+      ['truncated', 'too-many'],
+      'report 1 (sonarqube) was read in part: it holds 6 of the 30000 issues its search found, past the 10000 a SonarQube search returns at most: narrow the query; 5 of its 6 issues were not read',
     ],
     [
       'partial for a scanner that failed',
@@ -1475,10 +1768,29 @@ describe('reportGaps', () => {
     }), 1, 'security')[0].detail).toBe('report 1 (sarif) was read in part: it holds fewer issues than its search found')
     expect(reportGaps(record({
       problems: ['truncated'],
-    }), 1, 'security', 10_001)[0].detail).toBe('report 1 (sarif) was read in part: it holds 4 of the 10001 issues its search found, past the 10000 a SonarQube search returns at most: narrow the query')
+    }), 1, 'security', { total: 10_001 })[0].detail).toBe('report 1 (sarif) was read in part: it holds 4 of the 10001 issues its search found, past the 10000 a SonarQube search returns at most: narrow the query')
     expect(reportGaps(record({
       problems: ['truncated'],
-    }), 1, 'security', 10_000)[0].detail).toBe('report 1 (sarif) was read in part: it holds 4 of the 10000 issues its search found')
+    }), 1, 'security', { total: 10_000 })[0].detail).toBe('report 1 (sarif) was read in part: it holds 4 of the 10000 issues its search found')
+  })
+
+  it('says what a report\'s reader did not read as N of M, from the record\'s counts and the runs the reader names, and each of them alone', () => {
+    const issues = {
+      ...record({}).issues as NonNullable<ContextReport['issues']>,
+      listed: 30,
+      notRead: 12,
+    }
+    const tooMany = (changes: Partial<ContextReport>, read: Parameters<typeof reportGaps>[3]): string => reportGaps(record({
+      problems: ['too-many'],
+      ...changes,
+    }), 1, 'security', read)[0].detail
+    expect(tooMany({ issues }, {})).toBe('report 1 (sarif) was read in part: 12 of its 30 results were not read')
+    expect(tooMany({ issues }, { runs: 22 })).toBe('report 1 (sarif) was read in part: 12 of its 30 results and 2 of its 22 runs were not read')
+    expect(tooMany({}, { runs: 22 })).toBe('report 1 (sarif) was read in part: 2 of its 22 runs were not read')
+    expect(tooMany({ format: 'sonarqube', issues }, {})).toBe('report 1 (sonarqube) was read in part: 12 of its 30 issues were not read')
+    // Neither count: the words of a reader that gave none, the limits.
+    expect(tooMany({}, {})).toBe('report 1 (sarif) was read in part: it holds more than 20 runs, or more than 25000 results in a run, and the rest was not read')
+    expect(tooMany({ issues: undefined }, {})).toBe('report 1 (sarif) was read in part: it holds more than 20 runs, or more than 25000 results in a run, and the rest was not read')
   })
 
   it('writes each gap as one line of words and numbers quorum wrote, none of the report\'s own text', () => {
@@ -1515,6 +1827,8 @@ describe('scannerReportIssues', () => {
         total: 12_000,
         skipped: 1,
         unreadable: 2,
+        notRead: 3,
+        runs: 21,
       }),
     ])).toEqual([])
   })
@@ -1756,6 +2070,24 @@ describe('scannerReportIssues', () => {
         issue({ suppressed: false as true }),
       ]),
       'issues.0.suppressed',
+    ],
+    [
+      'a count of entries not read below 0',
+      report([], { notRead: -1 }),
+      'notRead',
+    ],
+    [
+      'a count of entries not read that is no whole number',
+      report([], { notRead: 1.5 }),
+      'notRead',
+    ],
+    [
+      'a count of runs that is no number',
+      {
+        ...report(),
+        runs: '21',
+      },
+      'runs',
     ],
   ])('refuses %s', (_name, value, where) => {
     const [first, ...rest] = check([value])

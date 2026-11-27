@@ -707,6 +707,20 @@ describe('renderEvent', () => {
     })).toBe('incomplete: finding-unreadable (findings[0]: x<U+000A>::error::y)')
   })
 
+  it.each([
+    ['report-unreadable', 'report 1 (sarif) could not be read: the file does not exist'],
+    ['report-partial', 'report 2 (sonarqube) was read in part: 1 issue(s) name a path quorum could not place in the repository'],
+    ['issues-capped', '3 of 53 scanner issues on the change were not reviewed (the cap is 50)'],
+  ] as const)('writes a %s gap as a gap, with its detail and without it in the public view', (reason, detail) => {
+    const event: QuorumEvent = {
+      type: 'incomplete',
+      entry: { profile: 'security', reason, detail },
+    }
+    expect(renderEvent(event)).toBe(`incomplete: ${reason} (${detail})`)
+    expect(renderEvent(event, true)).toBe(`[security] incomplete: ${reason} (${detail})`)
+    expect(renderEvent(event, true, 'public')).toBe(`[security] incomplete: ${reason}`)
+  })
+
   it('writes a gap with no detail and a dropped finding with no reason in the public view, and every other line as the full view does', () => {
     const detail = 'DETAIL-CANARY'
     expect(renderEvent({
@@ -1455,6 +1469,7 @@ describe('logLines', () => {
             bytes: 0,
           }),
         ],
+        reports: [],
       },
     }
     const lines = [
@@ -1484,6 +1499,7 @@ describe('logLines', () => {
             commit,
           }),
         ],
+        reports: [],
       },
     }
     expect(textsOf(hostile)).toEqual(['context: security guidelines "a<U+202E>b.md" at 1f3a9c2, 1830 bytes'])
@@ -1494,7 +1510,7 @@ describe('logLines', () => {
 
   const rulesEvent = (rules: ContextRules, documents: ContextDocument[] = []): QuorumEvent => ({
     type: 'context',
-    context: { documents },
+    context: { documents, reports: [] },
     ...rules === undefined
       ? {}
       : { rules },

@@ -19,7 +19,7 @@ import { rulesBlock } from './rules.ts'
 import { resultSchema } from './result-schema.ts'
 import { findingId, FINGERPRINT_PATTERN } from './stages/research.ts'
 import { requestTokens, tokenBound } from './tokens.ts'
-import type { Finding, IncompleteEntry, LeftOutFile, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, ReviewDocument, ReviewSettings, ReviewSource, RoleCalls, Usage, VoteFailure } from './types.ts'
+import type { Finding, IncompleteEntry, LeftOutFile, Profile, Quorum, QuorumEvent, QuorumOptions, QuorumResult, ReviewDocument, ReviewInput, ReviewSettings, ReviewSource, RoleCalls, ScannerIssue, ScannerReport, Usage, VoteFailure } from './types.ts'
 
 /** `readEntries` and `parseResearchReply`, the two ways to check an entry as a finding, as spies that call through, so a test can count the entries a review checks. */
 vi.mock('./output.ts', async (importOriginal) => {
@@ -1474,7 +1474,7 @@ describe('meta and events', () => {
       incomplete: [],
       leftOut: [],
       flags: [],
-      context: { documents: [] },
+      context: { documents: [], reports: [] },
       adaptations: [],
       concurrency: {
         finder: {
@@ -9173,7 +9173,7 @@ describe('documents', () => {
     for (const profile of [securityProfile, naming]) {
       const { quorum, events } = build(profile)
       const result = await quorum.review({ diff })
-      expect(result.meta.context).toEqual({ documents: [] })
+      expect(result.meta.context).toEqual({ documents: [], reports: [] })
       expect(events.map(event => event.type)).not.toContain('context')
     }
   })
@@ -10836,5 +10836,859 @@ describe('a profile that reviews changed lines only', () => {
     expect(invalidOf(events).map(event => event.type === 'finding:invalid' && event.cause)).toEqual(['away', 'away', 'away', 'away'])
     expect(result.kept).toEqual([])
     expect(result.meta.incomplete).toEqual([])
+  })
+})
+
+describe('scanner reports', () => {
+  const PINNED = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -0,0 +1 @@\n+exec(cmd)\n'
+  const RULE_TEXT = 'Running a command built from input lets the input choose the command.'
+  const MESSAGE = 'a command is built from input'
+  const RULE = 'js.exec-of-input'
+
+  const issue = (changes: Partial<ScannerIssue> = {}): ScannerIssue => ({
+    path: 'a.js',
+    line: 1,
+    scanner: 'Semgrep',
+    ruleId: RULE,
+    ruleText: RULE_TEXT,
+    message: MESSAGE,
+    level: 'warning',
+    ...changes,
+  })
+  const report = (issues: readonly ScannerIssue[] = [
+    issue(),
+  ], changes: Partial<ScannerReport> = {}): ScannerReport => ({
+    format: 'sarif',
+    profile: 'security',
+    scanner: 'Semgrep',
+    problems: [],
+    skipped: 0,
+    unreadable: 0,
+    issues,
+    ...changes,
+  })
+  /** The key a call is kept under: the SHA-256 of its role, its request's digest and what it was sent with (`storeKey`). */
+  const keyOf = (role: 'research' | 'vote', digest: string, sent: CompletionRequest): string => createHash('sha256').update(JSON.stringify([
+    role,
+    digest,
+    sent.replyTokens ?? null,
+    sent.thinking ?? null,
+    sent.structuredOutput ?? null,
+  ])).digest('hex')
+  const claimOf = (request: CompletionRequest): string => request.messages[0].content
+  /** The votes a request list holds on the finding `category` names: the claim line `Finding: <file>:<line> [<category>]` is theirs. */
+  const votesOn = (requests: readonly CompletionRequest[], category: string): CompletionRequest[] => requests.filter(request => isVote(request) && claimOf(request).includes(`[${category}]`))
+  const RANGE = (head: string): ReviewSource => ({
+    kind: 'range',
+    base: 'c'.repeat(40),
+    mergeBase: 'c'.repeat(40),
+    head,
+    objectFormat: 'sha1',
+  })
+
+  /** A review of `changed` by `profiles`, one provider playing the finder (it reports `found`) and every voter (it keeps what it is asked). */
+  async function reviewed(profiles: Profile[], input: Omit<ReviewInput, 'diff'> & { readonly diff?: string }, found: readonly unknown[] = [reported], options: Omit<QuorumOptions, 'profiles'> = {}, voter?: Provider): Promise<{ readonly result: QuorumResult, readonly events: QuorumEvent[], readonly both: Fake }> {
+    const both = fake('both', request => isVote(request)
+      ? vote(true)
+      : findings(...found))
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({ ...options, profiles }, {
+      profiles: Object.assign({}, ...profiles.map(profile => portsFor(profile, both, voter ?? both).profiles)),
+      events: event => events.push(event),
+    }).review({ diff: PINNED, ...input })
+    return { result, events, both }
+  }
+
+  it('judges a scanner\'s candidate on its profile\'s panel beside the finder\'s, and records the report', async () => {
+    const both = fake('both', request => isVote(request)
+      ? vote(true)
+      : findings(reported))
+    const kept = memory()
+    const looked: string[] = []
+    const store: ReplyStore = {
+      get: async (entry) => {
+        looked.push(entry.key)
+        return kept.get(entry)
+      },
+      put: kept.put,
+    }
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, {
+      ...portsFor(securityProfile, both),
+      events: event => events.push(event),
+    }).review({
+      diff: PINNED,
+      context: {
+        reports: [
+          report([
+            issue(),
+            issue({ line: 40, ruleId: 'js.elsewhere' }),
+          ]),
+        ],
+      },
+    }, { store })
+
+    expect(result.kept.map(verdict => [verdict.foundBy.kind, verdict.category, verdict.confidence])).toEqual([
+      ['model', 'CWE-78', 'high'],
+      ['scanner', RULE, 'high'],
+    ])
+    const [, candidate] = result.kept
+    expect(candidate).toMatchObject({
+      profile: 'security',
+      file: 'a.js',
+      line: 1,
+      summary: MESSAGE,
+      evidence: '+exec(cmd)',
+      foundBy: {
+        kind: 'scanner',
+        report: 0,
+        scanner: 'Semgrep',
+        ruleId: RULE,
+        level: 'warning',
+      },
+    })
+    expect(candidate.fingerprint).toMatch(FINGERPRINT_PATTERN)
+    expect(candidate.votes.map(lensVote => lensVote.vote?.keep)).toEqual([true, true, true])
+    const record = {
+      format: 'sarif',
+      profile: 'security',
+      scanner: 'Semgrep',
+      status: 'read',
+      problems: [],
+      issues: {
+        listed: 2,
+        used: 1,
+        fileLevel: 0,
+        held: 0,
+        unmapped: 0,
+        notInChange: 0,
+        leftOut: 0,
+        unchanged: 1,
+        capped: 0,
+        skipped: 0,
+        unreadable: 0,
+      },
+    }
+    expect(result.meta.context.reports).toEqual([record])
+    // The research counts stay the finder's: the candidate is counted in its report's issues.
+    expect(result.meta.profiles.security.research).toMatchObject({ listed: 1, panel: 1 })
+    // The context event holds the report's record, sent after `run:start` and before any gap and any stage.
+    const types = events.map(event => event.type)
+    expect(events.filter(event => event.type === 'context')).toEqual([
+      {
+        type: 'context',
+        context: {
+          documents: [],
+          reports: [record],
+        },
+      },
+    ])
+    expect(types.indexOf('context')).toBeGreaterThan(types.indexOf('run:start'))
+    expect(types.indexOf('context')).toBeLessThan(types.indexOf('stage:start'))
+    // The panel judged two findings by three lenses, and `stage:start` and the dedup line count both.
+    expect(events.filter(event => event.type === 'stage:start' && event.stage === 'panel')).toEqual([
+      {
+        type: 'stage:start',
+        profile: 'security',
+        stage: 'panel',
+        votes: 6,
+      },
+    ])
+    expect(events.filter(event => event.type === 'stage:end' && event.stage === 'dedup').map(event => event.type === 'stage:end' && event.count)).toEqual([2])
+    expect(new Set(events.flatMap(event => event.type === 'verdict'
+      ? [event.findingId]
+      : []))).toEqual(new Set([result.kept[0].id, candidate.id]))
+    expect(both.requests.filter(isVote)).toHaveLength(6)
+    // The finder's finding is voted on as it always was, request for request: its pinned digests are among the keys looked up.
+    const research = both.requests.find(request => !isVote(request))
+    const reachability = votesOn(both.requests, 'CWE-78').find(request => request.system.includes('Refutation angle: reachability.'))
+    expect(looked).toContain(keyOf('research', '9332a0a8136fce260d587532024e35f86770b01eca89c4fbf8f5467d327ea63f', research!))
+    expect(looked).toContain(keyOf('vote', 'fe469cddd24059068c2f23e261a56dce57d0d262ba03bb18040463909015542d', reachability!))
+    // The candidate's vote is one more call of its own, saved under its own key.
+    expect(kept.entries.size).toBe(1 + 6)
+    expect(result.meta.calls.both.vote?.calls).toBe(6)
+  })
+
+  it('refuses a report that states another commit as unreadable, and judges none of its issues', async () => {
+    const { result, events, both } = await reviewed([securityProfile], {
+      source: RANGE('4'.repeat(40)),
+      context: {
+        reports: [
+          report([
+            issue(),
+          ], {
+            commits: ['3333333'],
+          }),
+        ],
+      },
+    }, [])
+    const gap = {
+      profile: 'security',
+      reason: 'report-unreadable',
+      detail: 'report 1 (sarif) could not be read: it states the commit 3333333, and the review is of 4444444',
+    }
+    expect(result.meta.incomplete.filter(entry => entry.reason === 'report-unreadable')).toEqual([gap])
+    expect(result.meta.context.reports).toEqual([
+      {
+        format: 'sarif',
+        profile: 'security',
+        scanner: 'Semgrep',
+        commit: '3333333',
+        status: 'unreadable',
+        problems: ['another-commit'],
+        issues: {
+          listed: 0,
+          used: 0,
+          fileLevel: 0,
+          held: 0,
+          unmapped: 0,
+          notInChange: 0,
+          leftOut: 0,
+          unchanged: 0,
+          capped: 0,
+          skipped: 0,
+          unreadable: 0,
+        },
+      },
+    ])
+    expect(result.kept).toEqual([])
+    expect(both.requests.filter(isVote)).toEqual([])
+    expect(events.filter(event => event.type === 'incomplete' && event.entry.reason === 'report-unreadable')).toEqual([
+      { type: 'incomplete', entry: gap },
+    ])
+    expect(outcome(result).exitCode).toBe(4)
+  })
+
+  it('judges the candidates of a profile whose research asks nothing', async () => {
+    const asking: Profile = { ...naming, requireRule: true }
+    const { result, both } = await reviewed([asking], {
+      context: {
+        reports: [
+          report([
+            issue(),
+          ], { profile: 'naming' }),
+        ],
+      },
+    })
+    expect(both.requests.filter(request => !isVote(request))).toEqual([])
+    expect(result.kept.map(verdict => [verdict.profile, verdict.foundBy.kind, verdict.category])).toEqual([
+      ['naming', 'scanner', RULE],
+    ])
+    expect(result.meta.profiles.naming).toMatchObject({
+      asksNothing: true,
+      research: { parts: 0, listed: 0, panel: 0 },
+    })
+    expect(result.meta.context.reports[0].issues).toMatchObject({ used: 1, listed: 1 })
+  })
+
+  it('keeps the candidates the voters judged when the research provider was found down', async () => {
+    const research = fake('research', () => {
+      throw new ProviderError({
+        providerId: 'research',
+        kind: 'http',
+        status: 401,
+        message: 'HTTP 401',
+      })
+    })
+    const voter = fake('voter', () => vote(true))
+    const input = {
+      diff: PINNED,
+      context: {
+        reports: [
+          report(),
+        ],
+      },
+    }
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, research, voter))
+    const result = await quorum.review(input)
+    expect(result.kept.map(verdict => [verdict.foundBy.kind, verdict.category])).toEqual([
+      ['scanner', RULE],
+    ])
+    expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['research-failed'])
+    // No report, no vote cast: the review still rejects, as it did, since it read nothing.
+    await expect(quorum.review({ diff: PINNED })).rejects.toBeInstanceOf(ProviderDownError)
+  })
+
+  it('still rejects with ProviderDownError when the research provider was found down and every vote of the candidates failed', async () => {
+    const research = fake('research', () => {
+      throw new ProviderError({
+        providerId: 'research',
+        kind: 'http',
+        status: 401,
+        message: 'HTTP 401',
+      })
+    })
+    const voter = fake('voter', () => {
+      throw new ProviderError({ providerId: 'voter', kind: 'network', message: 'fetch failed' })
+    })
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, research, voter))
+    const error = await quorum.review({
+      diff: PINNED,
+      context: {
+        reports: [
+          report(),
+        ],
+      },
+    }).catch((thrown: unknown) => thrown)
+    // The candidate was judged: its votes were asked, and each failed, so nothing was read and the review rejects as it did.
+    expect(voter.requests.length).toBeGreaterThan(0)
+    expect(error).toBeInstanceOf(ProviderDownError)
+    expect(error).toMatchObject({ message: 'research: its one call failed (http 401): check apiKey' })
+  })
+
+  it('keeps the candidates the voters judged when three research parts in a row failed and the provider was found down', async () => {
+    const wide = (file: string): string => `diff --git a/${file} b/${file}\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,2 @@\n+exec(cmd)\n+${'y'.repeat(3000)}\n`
+    const events: QuorumEvent[] = []
+    const research: Fake = {
+      ...fake('research', () => {
+        throw new ProviderError({ providerId: 'research', kind: 'network', message: 'fetch failed' })
+      }),
+      room: () => 100_000,
+    }
+    const voter = fake('voter', () => vote(true))
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+      partTokens: 1024,
+      concurrency: 1,
+    }, {
+      ...portsFor(securityProfile, research, voter),
+      events: event => events.push(event),
+    })
+    const diff3 = ['a.js', 'b.js', 'c.js'].map(wide).join('')
+    const result = await quorum.review({
+      diff: diff3,
+      context: {
+        reports: [
+          report(),
+        ],
+      },
+    })
+    expect(research.requests).toHaveLength(3)
+    expect(events.filter(event => event.type === 'provider-down')).toHaveLength(1)
+    expect(result.kept.map(verdict => [verdict.foundBy.kind, verdict.file, verdict.category])).toEqual([
+      ['scanner', 'a.js', RULE],
+    ])
+    expect(result.meta.incomplete.map(entry => entry.reason)).toEqual(['research-failed'])
+    // With no report, nothing was read and the review still rejects.
+    await expect(quorum.review({ diff: diff3 })).rejects.toBeInstanceOf(ProviderDownError)
+  })
+
+  it('routes each report to its own profile: its candidates go to that profile\'s voters alone, with its own report\'s texts alone', async () => {
+    const asking: Profile = { ...naming, requireRule: true }
+    const alpha = {
+      ruleId: 'sec.alpha',
+      level: 'error',
+      message: 'alpha message: input reaches a shell',
+      ruleText: 'alpha rule: a command built from input runs what the input says',
+    } as const
+    const beta = {
+      ruleId: 'sec.beta',
+      level: 'warning',
+      message: 'beta message: input reaches a query',
+      ruleText: 'beta rule: a query built from input reads what the input asks for',
+    } as const
+    const gamma = {
+      ruleId: 'sec.gamma',
+      level: 'note',
+      message: 'gamma message: input reaches a path',
+      ruleText: 'gamma rule: a path built from input opens what the input names',
+    } as const
+    const delta = {
+      ruleId: 'nam.delta',
+      level: 'warning',
+      message: 'delta message: a name misleads its reader',
+      ruleText: 'delta rule: a name that says more than its value holds misleads',
+    } as const
+    const texts = [alpha, beta, gamma, delta].flatMap(({ message, ruleText }) => [message, ruleText])
+    const finderSecurity = fake('security-finder', () => findings())
+    const finderNaming = fake('naming-finder', () => findings(reported))
+    const votersSecurity = fake('security-voters', () => vote(true))
+    const votersNaming = fake('naming-voters', () => vote(true))
+    const events: QuorumEvent[] = []
+    const result = await createQuorum({
+      profiles: [securityProfile, asking],
+      maxScannerIssues: 2,
+    }, {
+      profiles: {
+        ...portsFor(securityProfile, finderSecurity, votersSecurity).profiles,
+        ...portsFor(asking, finderNaming, votersNaming).profiles,
+      },
+      events: event => events.push(event),
+    }).review({
+      diff: PINNED,
+      context: {
+        reports: [
+          report([alpha, beta, gamma].map(found => issue(found))),
+          report([
+            issue({ ...delta, scanner: 'Namelint' }),
+            {
+              scanner: 'Namelint',
+              ruleId: 'nam.moved',
+              message: 'moved message: a path no one could place',
+              level: 'warning',
+              unmapped: true,
+            },
+          ], { profile: 'naming', scanner: 'Namelint' }),
+        ],
+      },
+    })
+
+    // The profile that requires a rule and was sent none asks its research nothing, and still judges its report's candidate.
+    expect(finderNaming.requests).toEqual([])
+    expect(result.meta.profiles.naming).toMatchObject({
+      asksNothing: true,
+      research: { parts: 0, panel: 0 },
+    })
+    expect(result.kept.map(verdict => [verdict.profile, verdict.category, verdict.foundBy.kind === 'scanner' && verdict.foundBy.report])).toEqual([
+      ['security', alpha.ruleId, 0],
+      ['security', beta.ruleId, 0],
+      ['naming', delta.ruleId, 1],
+    ])
+    // Each profile's voters are asked its own candidates' votes, one per lens, and no other's.
+    expect(votersSecurity.requests).toHaveLength(2 * 3)
+    expect(votersNaming.requests).toHaveLength(1)
+    const wholeOf = (request: CompletionRequest): string => `${request.system}\n${claimOf(request)}`
+    // The security profile's own research request holds no text of any report.
+    for (const request of finderSecurity.requests) {
+      for (const planted of texts) expect(wholeOf(request)).not.toContain(planted)
+    }
+    // Two candidates of one profile: each one's three votes hold its own message and rule text, and not the other's, nor the capped one's, nor another profile's.
+    for (const [own, others] of [
+      [
+        alpha,
+        [beta, gamma, delta],
+      ],
+      [
+        beta,
+        [alpha, gamma, delta],
+      ],
+    ] as const) {
+      const votes = votesOn(votersSecurity.requests, own.ruleId)
+      expect(votes).toHaveLength(3)
+      for (const request of votes) {
+        expect(claimOf(request)).toContain(`Reported by: Semgrep, rule ${own.ruleId}`)
+        expect(claimOf(request)).toContain(`Claim by the scanner (unverified): ${own.message}`)
+        expect(claimOf(request)).toContain(`\n${own.ruleText}\n`)
+        for (const other of others) {
+          expect(wholeOf(request)).not.toContain(other.message)
+          expect(wholeOf(request)).not.toContain(other.ruleText)
+          expect(wholeOf(request)).not.toContain(other.ruleId)
+        }
+        expect(wholeOf(request)).not.toContain('Namelint')
+        expect(request.system).not.toContain(own.message)
+        expect(request.system).not.toContain(own.ruleText)
+      }
+    }
+    // The naming profile's one voter reads its own report's texts and none of the security profile's.
+    const [named] = votersNaming.requests
+    expect(claimOf(named)).toContain(`Reported by: Namelint, rule ${delta.ruleId}`)
+    expect(claimOf(named)).toContain(`Claim by the scanner (unverified): ${delta.message}`)
+    expect(claimOf(named)).toContain(`\n${delta.ruleText}\n`)
+    for (const other of [alpha, beta, gamma]) {
+      expect(wholeOf(named)).not.toContain(other.message)
+      expect(wholeOf(named)).not.toContain(other.ruleText)
+      expect(wholeOf(named)).not.toContain(other.ruleId)
+    }
+    expect(wholeOf(named)).not.toContain('Semgrep')
+    expect(wholeOf(named)).not.toContain('moved message')
+    // The capped candidate reaches no voter of any profile, and the unplaced issue none.
+    for (const request of [
+      ...votersSecurity.requests,
+      ...votersNaming.requests,
+    ]) {
+      expect(wholeOf(request)).not.toContain(gamma.message)
+      expect(wholeOf(request)).not.toContain('moved message')
+    }
+    // The panels cast their own votes: 6 for the security profile's two candidates, 1 for the naming profile's (the profiles run at once, so no order).
+    expect(events.flatMap(event => event.type === 'stage:start' && event.stage === 'panel'
+      ? [
+          [event.profile, event.votes],
+        ]
+      : []).toSorted()).toEqual([
+      ['naming', 1],
+      ['security', 6],
+    ])
+    // Each report's gaps are its own profile's: the cap is the security profile's, the unplaced path the naming profile's.
+    expect(result.meta.incomplete).toEqual([
+      { profile: 'security', reason: 'issues-capped', detail: '1 of 3 scanner issues on the change were not reviewed (the cap is 2)' },
+      {
+        profile: 'naming',
+        reason: 'report-partial',
+        detail: 'report 2 (sarif) was read in part: 1 issue(s) name a path quorum could not place in the repository',
+      },
+    ])
+    expect(result.meta.context.reports.map(record => [
+      record.profile,
+      record.scanner,
+      record.status,
+      record.issues?.used,
+      record.issues?.capped,
+      record.issues?.unmapped,
+    ])).toEqual([
+      ['security', 'Semgrep', 'read', 2, 1, 0],
+      [
+        'naming',
+        'Namelint',
+        'partial',
+        1,
+        0,
+        1,
+      ],
+    ])
+  })
+
+  it('sends no scanner text to research or to another finding\'s vote', async () => {
+    const { both } = await reviewed([securityProfile], {
+      context: {
+        reports: [
+          report(),
+        ],
+      },
+    })
+    const research = both.requests.filter(request => !isVote(request))
+    expect(research).toHaveLength(1)
+    const own = votesOn(both.requests, RULE)
+    const finders = votesOn(both.requests, 'CWE-78')
+    expect(own).toHaveLength(3)
+    expect(finders).toHaveLength(3)
+    for (const request of [
+      ...research,
+      ...finders,
+    ]) {
+      const text = `${request.system}\n${claimOf(request)}`
+      for (const planted of [
+        MESSAGE,
+        RULE_TEXT,
+        'Semgrep',
+        RULE,
+        'scanner-rule',
+      ]) expect(text).not.toContain(planted)
+    }
+    // Its own voters, every lens alike, read the claim and the rule's text as fenced data, and the system message none of it.
+    for (const request of own) {
+      expect(claimOf(request)).toContain(`Reported by: Semgrep, rule ${RULE}`)
+      expect(claimOf(request)).toContain(`Claim by the scanner (unverified): ${MESSAGE}`)
+      expect(claimOf(request)).toMatch(new RegExp(`<untrusted-scanner-rule-[0-9a-f]{8}>\\n${RULE_TEXT}\\n</untrusted-scanner-rule-`))
+      expect(request.system).not.toContain(MESSAGE)
+      expect(request.system).not.toContain(RULE_TEXT)
+      expect(request.system).toContain('a scanner\'s claim, unverified')
+    }
+    expect(new Set(own.map(request => request.system.match(/Refutation angle: (\w+)\./)?.[1]))).toEqual(new Set(['reachability', 'impact', 'defenses']))
+  })
+
+  it('records the gaps of a capped and a partial report once per profile, before any stage', async () => {
+    const { result, events } = await reviewed([securityProfile], {
+      diff: 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -0,0 +1,2 @@\n+exec(cmd)\n+exec(other)\n',
+      context: {
+        reports: [
+          report([
+            issue({ level: 'note', ruleId: 'js.second' }),
+            issue({ level: 'error', line: 2 }),
+            {
+              scanner: 'Semgrep',
+              ruleId: 'js.moved',
+              message: MESSAGE,
+              level: 'warning',
+              unmapped: true,
+            },
+          ]),
+        ],
+      },
+    }, [], { maxScannerIssues: 1 })
+    const gaps = [
+      {
+        profile: 'security',
+        reason: 'report-partial',
+        detail: 'report 1 (sarif) was read in part: 1 issue(s) name a path quorum could not place in the repository',
+      },
+      {
+        profile: 'security',
+        reason: 'issues-capped',
+        detail: '1 of 2 scanner issues on the change were not reviewed (the cap is 1)',
+      },
+    ]
+    expect(result.meta.incomplete).toEqual(gaps)
+    const sent = events.flatMap((event, index) => event.type === 'incomplete'
+      ? [
+          [index, event.entry] as const,
+        ]
+      : [])
+    expect(sent.map(([, entry]) => entry)).toEqual(gaps)
+    const firstStage = events.findIndex(event => event.type === 'stage:start')
+    expect(Math.max(...sent.map(([index]) => index))).toBeLessThan(firstStage)
+    expect(result.meta.context.reports[0]).toMatchObject({
+      status: 'partial',
+      problems: ['unmapped-paths'],
+      issues: {
+        listed: 3,
+        used: 1,
+        capped: 1,
+        unmapped: 1,
+      },
+    })
+    // The cap keeps the most severe: the error on line 2, and not the note.
+    expect(result.kept.map(verdict => [verdict.line, verdict.foundBy.kind === 'scanner' && verdict.foundBy.level])).toEqual([
+      [2, 'error'],
+    ])
+  })
+
+  it('names a scanner\'s candidate and the finder\'s finding apart when they share a fingerprint hash', async () => {
+    const twice = 'diff --git a/a.js b/a.js\n--- /dev/null\n+++ b/a.js\n@@ -0,0 +1,2 @@\n+exec(cmd)\n+exec(cmd)\n'
+    const { result } = await reviewed([securityProfile], {
+      diff: twice,
+      context: {
+        reports: [
+          report([
+            issue({ line: 2, ruleId: 'CWE-78' }),
+          ]),
+        ],
+      },
+    })
+    const [finder, candidate] = result.kept
+    expect([
+      finder.foundBy.kind,
+      finder.line,
+      candidate.foundBy.kind,
+      candidate.line,
+    ]).toEqual(['model', 1, 'scanner', 2])
+    const [hash, rank] = finder.fingerprint.split(':')
+    expect(rank).toBe('1')
+    expect(candidate.fingerprint).toBe(`${hash}:2`)
+  })
+
+  it('keeps a file-level candidate\'s fingerprint when a push moves its file\'s first changed line', async () => {
+    const lock = (first: number, added: string): string => [
+      'diff --git a/lock.json b/lock.json',
+      '--- a/lock.json',
+      '+++ b/lock.json',
+      `@@ -${first - 2},3 +${first - 2},4 @@`,
+      '   "a": 1,',
+      '   "b": 2,',
+      `+  ${added}`,
+      '   "d": 4,',
+    ].join('\n')
+    const trivy = report([
+      issue({
+        path: 'lock.json',
+        line: 1,
+        scanner: 'Trivy',
+        ruleId: 'CVE-0000-0001',
+        message: 'a dependency holds a known flaw',
+        ruleText: undefined,
+      }),
+    ], { scanner: 'Trivy' })
+    const verdicts = []
+    for (const [first, added] of [
+      [300, '"c": 3,'],
+      [310, '"z": 9,'],
+    ] as const) {
+      const { result } = await reviewed([securityProfile], {
+        diff: lock(first, added),
+        context: {
+          reports: [trivy],
+        },
+      }, [])
+      verdicts.push(...result.kept)
+    }
+    expect(verdicts.map(verdict => [verdict.line, verdict.foundBy.kind === 'scanner' && verdict.foundBy.fileLevel])).toEqual([
+      [300, true],
+      [310, true],
+    ])
+    expect(verdicts[0].fingerprint).toBe(verdicts[1].fingerprint)
+    expect(verdicts[0].id).not.toBe(verdicts[1].id)
+  })
+
+  const MOVED = [
+    'diff --git a/a.js b/a.js',
+    '--- /dev/null',
+    '+++ b/a.js',
+    '@@ -0,0 +1,7 @@',
+    '+exec(command)',
+    ...Array.from({ length: 6 }, (_, at) => `+filler${at}()`),
+  ].join('\n')
+
+  it.each([
+    [
+      'a finding the finder\'s anchor moved to its quote',
+      MOVED,
+      { ...reported, line: 7, quote: 'exec(command)' },
+      1,
+      7,
+    ],
+    [
+      'a finding the finder cited where it stands',
+      PINNED,
+      reported,
+      1,
+      undefined,
+    ],
+  ] as const)('never lets a candidate displace the finder\'s finding, %s', async (_, changed, found, at, cited) => {
+    const { result, events, both } = await reviewed([securityProfile], {
+      diff: changed,
+      context: {
+        reports: [
+          report([
+            issue({ line: at, ruleId: 'CWE-78', message: 'the scanner says another thing' }),
+          ]),
+        ],
+      },
+    }, [found])
+    expect(result.kept.map(verdict => [verdict.foundBy.kind, verdict.line, verdict.summary])).toEqual([
+      ['model', at, 'command injection'],
+    ])
+    // The finder's finding is voted on as it is with no report at all: the same three requests, word for word, and no word of the scanner's in them.
+    const alone = await reviewed([securityProfile], { diff: changed }, [found])
+    const wording = (requests: readonly CompletionRequest[]): string[] => requests.filter(isVote).map(request => JSON.stringify(plain(request))).toSorted()
+    expect(wording(both.requests)).toHaveLength(3)
+    expect(wording(both.requests)).toEqual(wording(alone.both.requests))
+    expect(both.requests.filter(isVote).map(request => claimOf(request)).join('')).not.toContain('scanner')
+    expect(result.kept[0].citedLine).toBe(cited)
+    // The candidate is counted used in its report, and the research counts stay the finder's.
+    expect(result.meta.context.reports[0].issues).toMatchObject({ used: 1, capped: 0 })
+    expect(result.meta.profiles.security.research.panel).toBe(1)
+    expect(events.filter(event => event.type === 'stage:start' && event.stage === 'panel')).toEqual([
+      {
+        type: 'stage:start',
+        profile: 'security',
+        stage: 'panel',
+        votes: 3,
+      },
+    ])
+  })
+
+  it.each([
+    [80, 'fits the voter\'s room for neither', true],
+    [40, 'fits the room of the finder\'s vote and not of the candidate\'s', false],
+  ] as const)('asks a voter that states its room for the hunks that fit beside the candidate\'s claim and rule text, with a section of %i hunks that %s', async (count, _, partialToo) => {
+    const hunks = Array.from({ length: count }, (_, at) => [`@@ -${10 * at + 1} +${10 * at + 1} @@`, `-old${at}()`, `+new${at}()`])
+    const wide = [
+      'diff --git a/a.js b/a.js',
+      '--- a/a.js',
+      '+++ b/a.js',
+      ...hunks.flat(),
+    ].join('\n')
+    const LIMIT = 4000
+    const voter: Fake = {
+      ...fake('voter', () => vote(true)),
+      room: request => LIMIT - requestTokens(request),
+    }
+    const finder = fake('finder', () => findings({ ...reported, line: 41, quote: 'new4()' }))
+    const result = await createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, finder, voter)).review({
+      diff: wide,
+      context: {
+        reports: [
+          report([
+            issue({ line: 41, ruleText: `${RULE_TEXT} ${'It is long. '.repeat(90)}` }),
+          ]),
+        ],
+      },
+    })
+    expect(result.kept.map(verdict => verdict.foundBy.kind)).toEqual(['model', 'scanner'])
+    const own = votesOn(voter.requests, RULE)
+    const finders = votesOn(voter.requests, 'CWE-78')
+    expect(own).toHaveLength(3)
+    expect(finders).toHaveLength(3)
+    const hunksIn = (request: CompletionRequest): number => claimOf(request).split('\n@@ ').length - 1
+    // A candidate's vote is built to the voter's room with its claim and its rule's text counted: the hunks nearest the cited line that fit what is left of the window.
+    for (const request of own) {
+      expect(requestTokens(request)).toBeLessThanOrEqual(LIMIT)
+      expect(requestTokens(request)).toBeGreaterThan(LIMIT - 40)
+      expect(request.system).toContain('part of the diff section of the cited file')
+      expect(hunksIn(request)).toBeGreaterThan(0)
+      expect(hunksIn(request)).toBeLessThan(count)
+    }
+    // The finder's finding's votes are asked as before: whole when the section fits, else the hunks that fit.
+    for (const request of finders) {
+      expect(requestTokens(request)).toBeLessThanOrEqual(LIMIT)
+      if (partialToo) {
+        expect(requestTokens(request)).toBeGreaterThan(LIMIT - 40)
+        expect(request.system).toContain('part of the diff section of the cited file')
+        expect(hunksIn(request)).toBeGreaterThan(hunksIn(own[0]))
+      } else {
+        expect(hunksIn(request)).toBe(count)
+        expect(request.system).not.toContain('part of the diff section of the cited file')
+      }
+    }
+  })
+
+  it('counts an issue on a file the review left out as left out, whatever left it out', async () => {
+    const both = 'diff --git a/a.js b/a.js\n--- /dev/null\n+++ b/a.js\n@@ -0,0 +1 @@\n+exec(cmd)\ndiff --git a/b.js b/b.js\n--- /dev/null\n+++ b/b.js\n@@ -0,0 +1 @@\n+exec(other)\n'
+    const { result, both: finder } = await reviewed([securityProfile], {
+      diff: both,
+      leftOut: [
+        { file: 'vendor/c.js', reason: 'skipped', rule: 'vendored' },
+      ],
+      context: {
+        reports: [
+          report([
+            issue({ path: 'b.js' }),
+            issue({ path: 'vendor/c.js' }),
+            issue({ path: 'd.js' }),
+            issue(),
+          ]),
+        ],
+      },
+    }, [], {
+      exclude: ['b.js'],
+    })
+    expect(result.meta.context.reports[0].issues).toMatchObject({
+      listed: 4,
+      used: 1,
+      leftOut: 2,
+      notInChange: 1,
+    })
+    expect(result.kept.map(verdict => verdict.file)).toEqual(['a.js'])
+    expect(votesOn(finder.requests, RULE)).toHaveLength(3)
+  })
+
+  it('refuses a report for a profile the quorum does not run', async () => {
+    const quorum = createQuorum({
+      profiles: [securityProfile],
+    }, portsFor(securityProfile, fake('both', () => findings())))
+    const error = await quorum.review({
+      diff: PINNED,
+      context: {
+        reports: [
+          report([
+            issue(),
+          ], { profile: 'naming' }),
+        ],
+      },
+    }).catch((thrown: unknown) => thrown)
+    expect(error).toBeInstanceOf(ConfigError)
+    expect((error as ConfigError).issues).toEqual([
+      { path: 'context.reports.0.profile', message: 'names no profile of the quorum' },
+    ])
+  })
+
+  it('refuses a maxScannerIssues that is no positive integer, as it refuses a findingsCap', () => {
+    for (const value of [0, -1, 1.5, '5']) {
+      expect(issuesOf(() => run(securityProfile, { maxScannerIssues: value as number }))).toEqual([
+        typeof value === 'number'
+          ? `maxScannerIssues: must be a positive integer, got ${value}`
+          : 'maxScannerIssues: must be a positive integer',
+      ])
+    }
+    expect(() => run(securityProfile, { maxScannerIssues: 1 })).not.toThrow()
+  })
+
+  it('records no report, sends no event and no gap, for a review that names none', async () => {
+    const { result, events } = await reviewed([securityProfile], {})
+    expect(result.meta.context).toEqual({ documents: [], reports: [] })
+    expect(events.filter(event => event.type === 'context')).toEqual([])
+    expect(result.meta.incomplete).toEqual([])
+    const explicit = await reviewed([securityProfile], {
+      context: { reports: [] },
+    })
+    expect(explicit.result.meta.context).toEqual({ documents: [], reports: [] })
+    expect(explicit.events.filter(event => event.type === 'context')).toEqual([])
   })
 })
