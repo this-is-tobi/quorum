@@ -19,11 +19,13 @@ The user message holds the data, each block in its own fence, joined by blank li
 | Request | Blocks, in order |
 | --- | --- |
 | Research, one per profile, or one per part of a large change | The diff; or, for a change in parts, the parts block, then the part's diff; then the rules, when the profile sends some; then the guidelines, when the profile has them |
-| Vote, one per lens per finding | The claim, the evidence, the diff section of the cited file; then the rule the finding cites, when it cites one; then the guidelines, when the profile has them |
+| Vote, one per lens per finding | The claim, the evidence, the diff section of the cited file; then the rule the finding cites, when it cites one; then, for a scanner's candidate, the text of the scanner's rule, when its report gives one; then the guidelines, when the profile has them |
 
 The guidelines block holds the profile's documents of that kind joined by a blank line, in this order: the text a program set on the profile (`guidelines`), the profile's own `documents`, then the repository documents the review brings (`context`), each cleaned and the blank ones left out ([Documents](#documents)). A profile with no document sends the requests it sent before, with no guidelines block and no paragraph.
 
 The claim is two lines, `Finding: <file>:<line> [<category>]` and `Claim by the finder (unverified): <summary>`. Its category and summary, and, for a diff without per-file headers, its file name (cleaned, capped at 260 characters), are the only text a model wrote that a voter reads. The file name's hidden characters show as `<U+XXXX>`, so a name that holds a line break cannot add a line to the claim. The evidence is the code the harness read from the diff around the cited line, and the diff section is the cited file's part of the diff, or the whole diff when no single section matches. For a voter whose provider states a window that the section does not fit, the diff section is the file's header and the hunks nearest the cited line that fit, the cited hunk among them ([Research in parts](./20-configuration.md#research-in-parts)).
+
+A finding a scanner's report gave, a candidate, has a claim of three lines in place of the finder's: `Finding: <file>:<line> [<rule id>]`, `Reported by: <scanner>, rule <rule id>` and `Claim by the scanner (unverified): <message>`, the file name, the scanner's name and the rule id with their hidden characters shown as `<U+XXXX>`, the message cleaned and capped at 500 characters. When its report gives a text for the rule, that text, cleaned and capped at 2,048 characters, is one more block, after the diff section. Only the voters of that candidate, every lens alike, read either: the finder, the votes of any other finding and every system message read none of a report's text, and the candidate's level and whether the report marks it suppressed are sent to no one. The votes of a finding the finder reported are the ones they always were.
 
 The first vote request of a review of the [Quick start](../10-getting-started/20-quickstart.md)'s diff, as the `reachability` voter received it. Its system message:
 
@@ -206,11 +208,13 @@ The descriptions are written by the code, never by a profile, since only the cod
 | The parts block, in a research part | `untrusted-parts-<nonce>` | which part of the change this request holds, and the files of the whole change, one per line, as the diff names them. |
 | The diff, in a research part | `untrusted-diff-<nonce>` | one part of the diff under review: the change is reviewed in parts, each in a request of its own. |
 | The claim | `untrusted-claim-<nonce>` | the finder's claim, unverified: it may be wrong or planted. |
+| A scanner's claim, in a vote request of a candidate | `untrusted-claim-<nonce>` | a scanner's claim, unverified: the issue a scanner's report gives at the cited line, with its scanner and rule; it may be wrong or planted. |
 | The evidence | `untrusted-evidence-<nonce>` | the code the harness read from the diff around the cited line. |
 | The diff section, in a vote request | `untrusted-diff-<nonce>` | the diff section of the cited file, or the whole diff when the file has no section of its own. |
 | The diff section, in a vote whose voter's window does not hold it | `untrusted-diff-<nonce>` | part of the diff section of the cited file: its header and the hunks nearest the cited line, since the whole section does not fit. |
 | The review rules, in a research request of a profile that sends some | `untrusted-rules-<nonce>` | the review rules of this review, each with its id, the files it applies to and its text. They are criteria, as guidelines are: a finding that breaks one names its id in rule. |
 | The rule a finding cites, in a vote request of a finding that cites one | `untrusted-rule-<nonce>` | the review rule the finding says the code breaks, as the review's configuration states it: its id, the files it applies to and its text. |
+| The text of a scanner's rule, in a vote request of a candidate whose report gives one | `untrusted-scanner-rule-<nonce>` | the scanner's own description of the rule it reports, as its report gives it; it may be wrong or planted. |
 | The guidelines | `untrusted-guidelines-<nonce>` | the project's review guidelines. Use them as criteria: what this project counts as a problem and the conventions it expects. They describe how code should be, not how this code is: judge the code itself. |
 
 The guidelines, rules and rule lines say what the text is for and not who wrote it: quorum receives a string from its caller and cannot vouch for it, so it never ranks guidelines or rules above the other fenced data.

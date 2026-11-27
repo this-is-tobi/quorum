@@ -1,5 +1,6 @@
 import { presentOf, researchProbe, voteProbe } from './budgets.ts'
 import type { ProfileBudgets } from './budgets.ts'
+import { MAX_SCANNER_RULE, scanReports } from './candidates.ts'
 import { reviewScope } from './coverage.ts'
 import { diffSections, splitDiff } from './diff.ts'
 import type { DiffSection } from './diff.ts'
@@ -17,8 +18,8 @@ import type { LensRun, ProfileRun, Target } from './stages/context.ts'
 import { dispatchOrder, planResearch } from './stages/research.ts'
 import type { ResearchPlan } from './stages/research.ts'
 import { DEFAULT_REPLY_TOKENS, expectedOf, tokenBound } from './tokens.ts'
-import type { DocumentKind, Estimate, ProfileEstimate } from './types.ts'
-import { longestFinding } from './verify.ts'
+import type { DocumentKind, Estimate, ProfileEstimate, ScannerReport } from './types.ts'
+import { longestCandidate, longestFinding } from './verify.ts'
 
 /** What the estimate reads of a quorum's settings. */
 export interface EstimateSettings {
@@ -30,6 +31,8 @@ export interface EstimateSettings {
   readonly maxFindings: number
   /** How many findings of the research each profile sends to its panel: the votes are counted at it, and no request is sized by it. */
   readonly findingsCap: number
+  /** The most scanner issues each profile's panel judges as candidates, which the reports of the estimate are capped at. */
+  readonly maxScannerIssues: number
   /** The reply budgets of each profile, by profile id: what its requests carry and ask for, as the review sends them. */
   readonly budgets: Readonly<Record<string, ProfileBudgets>>
   /** How many provider calls run at once in one review, shared by every provider; unset, each provider has a lane of its own under the review's ceiling. */
@@ -83,29 +86,49 @@ interface Section {
  * counted while their expected spends and `inFlight` stay within `maxReviewTokens`. The cap and the deadline are `settings`', so a caller may make one
  * estimate under its quorum's and another under limits of its own: `worst`, `expected` and `inFlight` do not depend
  * on them. It is an estimate: the ledger still holds the cap at run time, whatever it says.
+ *
+ * `reports` are the review's scanner reports, whose issues are placed against the filtered diff as the review places them
+ * (`scanReports`, with no reviewed commit, so no report is refused for another one), and each profile's `candidates` are those that fall
+ * on the change, at most `maxScannerIssues`. A candidate is voted by every lens like a finding, so the votes count `findingsCap +
+ * candidates` findings, and `worst` and `inFlight` count each candidate's votes at a candidate's bound: the longest scanner name, rule
+ * id, rule text and summary, citing the largest section (`longestCandidate`). A profile whose research makes no call still judges its
+ * candidates, so it reserves for them.
  */
-export function estimateReview(given: readonly ProfileRun[], settings: EstimateSettings, diff: string, sent: (path: string) => boolean = () => false): Estimate {
+export function estimateReview(given: readonly ProfileRun[], settings: EstimateSettings, diff: string, sent: (path: string) => boolean = () => false, reports: readonly ScannerReport[] = []): Estimate {
   const scope = reviewScope(diff, settings.excluded, sent)
   const filtered = diffSections(scope.diff)
   // Each run sends the rules whose paths match a file of the filtered diff, as the review does.
   const runs = given.map(run => withSent(run, filtered))
-  const largest = scope.diff.trim() === ''
+  const sections = scope.diff.trim() === ''
     ? undefined
-    : largestSection(splitDiff(scope.diff), scope.diff)
-  const planned = runs.map(run => ({
-    id: run.id,
-    run,
-    ...largest === undefined || asksNothing(run)
-      ? noCall(settings.budgets[run.id])
-      : profileEstimate(run, planResearch(run, scope.diff, filtered, { partTokens: settings.partTokens, maxFindings: run.maxFindings, replyTokens: settings.budgets[run.id].research.replyTokens }), scope.diff, largest, settings),
-  }))
+    : splitDiff(scope.diff)
+  const largest = sections === undefined
+    ? undefined
+    : largestSection(sections, scope.diff)
+  const { profiles: scanned } = scanReports({
+    reports,
+    sections: sections ?? new Map(),
+    leftOut: scope.leftOut,
+    maxScannerIssues: settings.maxScannerIssues,
+  })
+  const planned = runs.map((run) => {
+    const budgets = settings.budgets[run.id]
+    const judging = judgingOf(run, largest, budgets, scanned.get(run.id)?.candidates.length ?? 0)
+    return {
+      id: run.id,
+      run,
+      ...largest === undefined || asksNothing(run)
+        ? noCall(budgets, run, judging)
+        : profileEstimate(run, planResearch(run, scope.diff, filtered, { partTokens: settings.partTokens, maxFindings: run.maxFindings, replyTokens: budgets.research.replyTokens }), scope.diff, largest, settings, judging),
+    }
+  })
   const profiles = planned.map(({ estimate }) => estimate)
   const expected = sum(profiles.map(profile => profile.expected))
-  const inFlight = reservedAtOnce(planned, settings.findingsCap, settings.concurrency)
+  const inFlight = reservedAtOnce(planned, settings.concurrency)
   return {
     profiles: Object.fromEntries(planned.map(({ id, estimate }) => [id, estimate])),
     expected,
-    worst: sum(profiles.map(profile => profile.worst)) + adaptationBound(planned, settings) + onceMoreBound(planned, settings),
+    worst: sum(profiles.map(profile => profile.worst)) + adaptationBound(planned, settings) + onceMoreBound(planned),
     inFlight,
     maxFindings: settings.maxFindings,
     findingsCap: settings.findingsCap,
@@ -136,9 +159,23 @@ function sum(numbers: readonly number[]): number {
   return numbers.reduce((total, number) => total + number, 0)
 }
 
+/** One lens's votes of a kind, as the review's limit sees them: the lens, what one reserves at most, and how many of them a review may cast. */
+interface VoteCall {
+  readonly lens: LensRun
+  readonly call: Call
+}
+
+/** What a profile's scanner candidates add to its panel: how many it judges, and what one vote of each lens reserves at a candidate's bound, in the lenses' order (empty when it judges none). */
+interface Judging {
+  readonly candidates: number
+  readonly bounds: readonly number[]
+}
+
 /** What one profile's estimate comes with: the tokens a piece's request holds beyond each research part's (`extras`, parallel to `parts`). */
 interface Planned {
   readonly estimate: ProfileEstimate
+  /** The votes the panel may cast, each lens's votes of the finder's findings and of the candidates, as calls: what `inFlight` and the bounds of an adaptation and a retry are read from. */
+  readonly voteCalls: readonly VoteCall[]
   readonly extras: readonly number[]
   /** What each research part is expected to spend (`expectedOf`), in the order the parts are sent, largest first (`dispatchOrder`). */
   readonly partsExpected: readonly number[]
@@ -146,20 +183,79 @@ interface Planned {
   readonly researchWorst: number
 }
 
-/** The estimate of a profile whose research makes no call: nothing is reserved, and no vote is cast. */
-function noCall(budgets: ProfileBudgets): Planned {
+/** The votes of a profile's panel: how many, what one vote of each lens reserves at most, what they reserve in all, and the calls they are. */
+interface PanelVotes {
+  readonly votes: number
+  readonly vote: Record<string, number>
+  readonly worst: number
+  readonly calls: readonly VoteCall[]
+}
+
+/**
+ * The votes of `run`'s panel: each lens casts `finder.count` votes at its bound among `finder.bounds`, one per lens and none when research
+ * makes no call (`finder.bounds` empty), then one vote for each candidate of `judging` at its own bound. A lens's `vote` is the larger of its
+ * two bounds.
+ */
+function panelVotes(run: ProfileRun, finder: { readonly count: number, readonly bounds: readonly number[] }, judging: Judging): PanelVotes {
+  const lensCalls = (bounds: readonly number[], count: number): VoteCall[] => bounds.map((bound, index) => ({
+    lens: run.lenses[index],
+    call: { bound, count },
+  }))
+  const lenses = run.lenses.length
+  return {
+    votes: (finder.bounds.length === 0
+      ? 0
+      : finder.count * lenses) + (judging.bounds.length === 0
+      ? 0
+      : judging.candidates * lenses),
+    vote: Object.fromEntries(run.lenses.flatMap((lens, index) => {
+      const bounds = [finder.bounds, judging.bounds].flatMap(list => index < list.length
+        ? [list[index]]
+        : [])
+      return bounds.length === 0
+        ? []
+        : [
+            [
+              lens.id,
+              Math.max(...bounds),
+            ],
+          ]
+    })),
+    worst: finder.count * sum(finder.bounds) + judging.candidates * sum(judging.bounds),
+    calls: [
+      ...lensCalls(finder.bounds, finder.count),
+      ...lensCalls(judging.bounds, judging.candidates),
+    ],
+  }
+}
+
+/** The candidates `run`'s panel judges, `candidates` of them, with the bound of a vote of each lens for one: none for a blank diff, which has no section to cite. */
+function judgingOf(run: ProfileRun, largest: Section | undefined, budgets: ProfileBudgets, candidates: number): Judging {
+  return largest === undefined || candidates === 0
+    ? { candidates: 0, bounds: [] }
+    : {
+        candidates,
+        bounds: run.lenses.map(lens => voteBound(run, lens, largest, budgets.lenses[lens.id].replyTokens, true)),
+      }
+}
+
+/** The estimate of a profile whose research makes no call: nothing is reserved for research, and no finding is voted, but a candidate of a scanner's report is. */
+function noCall(budgets: ProfileBudgets, run: ProfileRun, judging: Judging): Planned {
+  const panel = panelVotes(run, { count: 0, bounds: [] }, judging)
   return {
     estimate: {
       parts: [],
-      votes: 0,
-      vote: {},
+      votes: panel.votes,
+      candidates: judging.candidates,
+      vote: panel.vote,
       expected: 0,
-      worst: 0,
+      worst: panel.worst,
       findings: budgets.research.findings,
       maxFindings: budgets.research.maxFindings,
       provider: budgets.research.provider,
       documents: { research: 0, vote: 0 },
     },
+    voteCalls: panel.calls,
     extras: [],
     partsExpected: [],
     researchWorst: 0,
@@ -244,28 +340,31 @@ function documentsAdd(run: ProfileRun, budgets: ProfileBudgets): ProfileEstimate
 }
 
 /** One profile's estimate, from the plan its research follows. */
-function profileEstimate(run: ProfileRun, plan: ResearchPlan, diff: string, largest: Section, settings: EstimateSettings): Planned {
+function profileEstimate(run: ProfileRun, plan: ResearchPlan, diff: string, largest: Section, settings: EstimateSettings, judging: Judging): Planned {
   const { findingsCap } = settings
   const budgets = settings.budgets[run.id]
   const reply = budgets.research.replyTokens ?? DEFAULT_REPLY_TOKENS
   const research = researchCalls(run, plan, diff, { findings: budgets.research.findings, replyTokens: budgets.research.replyTokens })
-  if (research.length === 0) return noCall(budgets)
+  if (research.length === 0) return noCall(budgets, run, judging)
   const bounds = run.lenses.map(lens => voteBound(run, lens, largest, budgets.lenses[lens.id].replyTokens))
+  const panel = panelVotes(run, { count: findingsCap, bounds }, judging)
   const parts = research.map(call => call.reservation)
   const partsExpected = inSendOrder(research, plan).map(call => expectedOf(call.reservation, reply))
   const researchWorst = sum(research.map(call => call.reservation + recoveryBound(call.reservation, call.diff, call.header, call.extra)))
   return {
     estimate: {
       parts,
-      votes: findingsCap * run.lenses.length,
-      vote: Object.fromEntries(run.lenses.map((lens, index) => [lens.id, bounds[index]])),
+      votes: panel.votes,
+      candidates: judging.candidates,
+      vote: panel.vote,
       expected: sum(partsExpected),
-      worst: researchWorst + findingsCap * sum(bounds),
+      worst: researchWorst + panel.worst,
       findings: budgets.research.findings,
       maxFindings: budgets.research.maxFindings,
       provider: budgets.research.provider,
       documents: documentsAdd(run, budgets),
     },
+    voteCalls: panel.calls,
     extras: research.map(call => call.extra),
     partsExpected,
     researchWorst,
@@ -344,12 +443,24 @@ function researchCalls(run: ProfileRun, plan: ResearchPlan, diff: string, ask: A
  * block takes the section's header and the hunks nearest the cited line that fit. Then the vote is the partial
  * request filled to that room, the most such a context holds. A room of the partial request that states
  * nothing, or less than 0, sends the whole section, which the provider refuses as too large.
+ *
+ * With `candidate`, the vote is a scanner's candidate's: the longest one (`longestCandidate`, its scanner's name and rule id at their caps)
+ * with the longest rule text a report gives (`MAX_SCANNER_RULE`) in its own block, and no review rule, which a candidate never cites.
  */
-function voteBound(run: ProfileRun, lens: LensRun, largest: Section, replyTokens: number | undefined): number {
-  const finding = longestFinding(largest.path)
+function voteBound(run: ProfileRun, lens: LensRun, largest: Section, replyTokens: number | undefined, candidate = false): number {
+  const finding = candidate
+    ? longestCandidate(largest.path)
+    : longestFinding(largest.path)
   // The finding does not exist yet: its vote holds, at most, the largest rule the review sends.
-  const rule = largestRule(run.sent ?? [])
-  const request = (context: string, partial = false): CompletionRequest => voteRequest(lens.instructions, finding, context, run.guidelines, partial, { replyTokens }, rule)
+  const rule = candidate
+    ? undefined
+    : largestRule(run.sent ?? [])
+  const facts = candidate
+    ? {
+        scannerRule: 'x'.repeat(MAX_SCANNER_RULE),
+      }
+    : {}
+  const request = (context: string, partial = false): CompletionRequest => voteRequest(lens.instructions, finding, context, run.guidelines, partial, { replyTokens }, rule, facts)
   const room = roomOf(lens, request(''))
   if (room !== undefined && largest.tokens > room) {
     const partialRoom = roomOf(lens, request('', true))
@@ -389,25 +500,18 @@ function largestAtOnce(calls: readonly Call[], slots: number): number {
 
 /**
  * What the calls that run at once reserve: with `concurrency` set, the sum of the `concurrency` largest bounds among every research
- * part and every vote of every profile, a lens's vote counted `findingsCap` times, once per finding it may judge, since the review's
- * limit is one for all its profiles. With it unset, each provider's own calls are taken up to where its lane starts, the largest
+ * part and every vote of every profile, a lens's vote counted once per finding or candidate it may judge, `findingsCap` times
+ * for the finder's findings, since the review's limit is one for all its profiles. With it unset, each provider's own calls are taken up to where its lane starts, the largest
  * bounds first, and the `REVIEW_CEILING` largest of those among every provider count: the lanes at their start, under the ceiling.
  * With fewer calls than slots, every call counts.
  */
-function reservedAtOnce(planned: ReadonlyArray<{ readonly run: ProfileRun, readonly estimate: ProfileEstimate }>, findingsCap: number, concurrency: number | undefined): number {
-  const calls = planned.flatMap(({ run, estimate }) => [
+function reservedAtOnce(planned: ReadonlyArray<{ readonly run: ProfileRun, readonly estimate: ProfileEstimate, readonly voteCalls: readonly VoteCall[] }>, concurrency: number | undefined): number {
+  const calls = planned.flatMap(({ run, estimate, voteCalls }) => [
     ...estimate.parts.map(bound => ({
       target: run.research,
       call: { bound, count: 1 },
     })),
-    ...run.lenses.flatMap(lens => Object.hasOwn(estimate.vote, lens.id)
-      ? [
-          {
-            target: lens,
-            call: { bound: estimate.vote[lens.id], count: findingsCap },
-          },
-        ]
-      : []),
+    ...voteCalls.map(({ lens, call }) => ({ target: lens, call })),
   ])
   if (concurrency !== undefined) return largestAtOnce(calls.map(({ call }) => call), concurrency)
   const lanes = new Map<Provider, { readonly start: number, readonly calls: Call[] }>()
@@ -440,7 +544,7 @@ function settingsOf({ adapts }: Target): number {
  * (an explicit setting, a structured output that is no `json`, a provider object) sends no probe and adds nothing. A
  * provider is counted once across the profiles and roles that share it, as the review's one limit shares its slots.
  */
-function adaptationBound(planned: ReadonlyArray<{ readonly run: ProfileRun, readonly estimate: ProfileEstimate, readonly extras: readonly number[] }>, settings: EstimateSettings): number {
+function adaptationBound(planned: ReadonlyArray<{ readonly run: ProfileRun, readonly estimate: ProfileEstimate, readonly extras: readonly number[], readonly voteCalls: readonly VoteCall[] }>, settings: EstimateSettings): number {
   const providers = new Map<Provider, { readonly settings: number, readonly calls: Call[] }>()
   const add = (target: Target, calls: readonly Call[]): void => {
     const moved = settingsOf(target)
@@ -449,15 +553,9 @@ function adaptationBound(planned: ReadonlyArray<{ readonly run: ProfileRun, read
     entry.calls.push(...calls)
     providers.set(target.provider, entry)
   }
-  for (const { run, estimate, extras } of planned) {
+  for (const { run, estimate, extras, voteCalls } of planned) {
     add(run.research, estimate.parts.map((part, index) => ({ bound: part + extras[index], count: 1 })))
-    for (const lens of run.lenses) {
-      add(lens, estimate.parts.length === 0
-        ? []
-        : [
-            { bound: estimate.vote[lens.id], count: settings.findingsCap },
-          ])
-    }
+    for (const { lens, call } of voteCalls) add(lens, [call])
   }
   return sum([
     ...providers.values(),
@@ -472,13 +570,13 @@ function sendsOnceMore(target: Target): boolean {
 /**
  * What the calls a bad reply sends once more may reserve at most: every call of a provider that states a retry
  * (`sendsOnceMore`) once more, whatever its thinking, since any of its calls may be the one. Per profile, its research
- * parts each with recovery's bound when its research provider does, and `findingsCap` votes of each lens whose provider
- * does, at their bound.
+ * parts each with recovery's bound when its research provider does, and the votes of each lens whose provider does, `findingsCap`
+ * of them for the finder's findings and one for each candidate, at their bounds.
  */
-function onceMoreBound(planned: ReadonlyArray<{ readonly run: ProfileRun, readonly estimate: ProfileEstimate, readonly researchWorst: number }>, settings: EstimateSettings): number {
-  return sum(planned.map(({ run, estimate, researchWorst }) => (sendsOnceMore(run.research)
+function onceMoreBound(planned: ReadonlyArray<{ readonly run: ProfileRun, readonly researchWorst: number, readonly voteCalls: readonly VoteCall[] }>): number {
+  return sum(planned.map(({ run, researchWorst, voteCalls }) => (sendsOnceMore(run.research)
     ? researchWorst
-    : 0) + sum(run.lenses.map(lens => sendsOnceMore(lens) && Object.hasOwn(estimate.vote, lens.id)
-    ? settings.findingsCap * estimate.vote[lens.id]
+    : 0) + sum(voteCalls.map(({ lens, call }) => sendsOnceMore(lens)
+    ? call.count * call.bound
     : 0))))
 }

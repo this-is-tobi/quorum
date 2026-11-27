@@ -8,8 +8,9 @@ import type { PartOf } from './prompts.ts'
 import { createQuorum } from './quorum.ts'
 import { rulesBlock } from './rules.ts'
 import { DEFAULT_REPLY_TOKENS, expectedOf, requestTokens, tokenBound } from './tokens.ts'
-import type { Estimate, Finding, Profile, Quorum, QuorumEvent, QuorumOptions, ReviewRule } from './types.ts'
-import { longestFinding } from './verify.ts'
+import type { Estimate, Finding, Profile, Quorum, QuorumEvent, QuorumOptions, ReviewRule, ScannerIssue, ScannerReport } from './types.ts'
+import { MAX_SCANNER_RULE } from './candidates.ts'
+import { longestCandidate, longestFinding } from './verify.ts'
 
 /** What a provider keeps over a request's own bound: 512 tokens for the chat template and 16000 for the reply, which the providers here state as an attempt's worst case. */
 const RESERVE = 512 + 16_000
@@ -649,6 +650,7 @@ describe('estimate', () => {
         security: {
           parts: [],
           votes: 0,
+          candidates: 0,
           vote: {},
           expected: 0,
           worst: 0,
@@ -1251,6 +1253,7 @@ describe('estimate', () => {
     expect(none.profiles.naming).toEqual({
       parts: [],
       votes: 0,
+      candidates: 0,
       vote: {},
       expected: 0,
       worst: 0,
@@ -1288,6 +1291,174 @@ describe('estimate', () => {
     }, docs)
     expect(lone.profiles.naming.vote).toEqual(estimateOf(naming, docs).profiles.naming.vote)
     expect(lone.profiles.naming.documents).toEqual({ research: 0, vote: 0 })
+  })
+
+  describe('a review that reads scanner reports', () => {
+    /** Three lenses, so a candidate's votes are three, each by a voter whose reservation is its request's tokens alone. */
+    const three: Profile = {
+      id: 'three',
+      prompts: { research: 'Find bugs.', vote: 'Judge as {{lens.id}}.' },
+      lenses: ['a', 'b', 'c'].map(id => ({ id, question: 'Is it real?' })),
+      policy: { high: 'unanimous', medium: 'off', low: 'off' },
+    }
+    const issue = (line: number, changes: Partial<ScannerIssue> = {}): ScannerIssue => ({
+      path: 'a.js',
+      line,
+      scanner: 'Semgrep',
+      ruleId: 'js.exec',
+      message: 'user input reaches a command',
+      level: 'warning',
+      ...changes,
+    })
+    const report = (profile: string, ...issues: ScannerIssue[]): ScannerReport => ({
+      format: 'sarif',
+      profile,
+      problems: [],
+      skipped: 0,
+      unreadable: 0,
+      issues,
+    })
+    const largest = splitDiff(DIFF).get('c.js') ?? ''
+    /** What a candidate's vote of `lens` reserves at its bound: the longest candidate, citing the largest section, with the longest rule text. */
+    const bound = (lens: string): number => requestTokens(voteRequest(`Judge as ${lens}.`, longestCandidate('c.js'), largest, undefined, false, {}, undefined, {
+      scannerRule: 'x'.repeat(MAX_SCANNER_RULE),
+    }))
+    const quorumOf = (profile: Profile, options: Omit<QuorumOptions, 'profiles'> = {}): Quorum => createQuorum({
+      profiles: [profile],
+      ...options,
+    }, {
+      profiles: {
+        [profile.id]: {
+          research: silent(() => 10),
+          voters: Object.fromEntries(profile.lenses.map(lens => [
+            lens.id,
+            silent(request => requestTokens(request)),
+          ])),
+        },
+      },
+    })
+
+    it('counts a profile\'s candidates in its votes and its worst case, at most maxScannerIssues', () => {
+      const quorum = quorumOf(three, { maxScannerIssues: 1, concurrency: 3 })
+      const context = {
+        reports: [
+          report('three', issue(1), issue(2, { level: 'note' })),
+        ],
+      }
+      const plain = quorum.estimate({ diff: DIFF })
+      const read = quorum.estimate({ diff: DIFF, context })
+      const bounds = sum(['a', 'b', 'c'].map(bound))
+
+      expect(plain.profiles.three.candidates).toBe(0)
+      expect(read.profiles.three.candidates).toBe(1)
+      expect(read.profiles.three.votes).toBe((50 + 1) * 3)
+      expect(plain.profiles.three.votes).toBe(50 * 3)
+      // Each lens's vote of the candidate, at the candidate's bound, is a call of the largest bounds in flight, and the finding cap does not take it.
+      expect(read.profiles.three.worst - plain.profiles.three.worst).toBe(bounds)
+      expect(read.profiles.three.worst - plain.profiles.three.worst).toBeGreaterThanOrEqual(3 * Math.max(...Object.values(plain.profiles.three.vote)))
+      expect(read.worst).toBeGreaterThanOrEqual(plain.worst + bounds)
+      expect(read.inFlight).toBe(bounds)
+      expect(read.inFlight).toBeGreaterThan(plain.inFlight)
+      // The requests are sized as they were: the parts, and the expected spend, which counts no vote.
+      expect(read.profiles.three.parts).toEqual(plain.profiles.three.parts)
+      expect(read.expected).toBe(plain.expected)
+    })
+
+    it('counts nothing for a report no issue of which falls on the change, and for one the review would not place', () => {
+      const quorum = quorumOf(three)
+      const elsewhere = report('three', issue(1, { path: 'other.js' }), issue(900, { path: 'b.js' }), issue(1, { unmapped: true }))
+      expect(quorum.estimate({
+        diff: DIFF,
+        context: {
+          reports: [elsewhere],
+        },
+      })).toEqual(quorum.estimate({ diff: DIFF }))
+      // A file the estimate leaves out (a held file, an excluded one) is no place for an issue.
+      const held = quorumOf(three, {
+        exclude: ['a.js'],
+      })
+      expect(held.estimate({
+        diff: DIFF,
+        context: {
+          reports: [
+            report('three', issue(1)),
+          ],
+        },
+      }).profiles.three.candidates).toBe(0)
+    })
+
+    it('counts the candidates of a profile whose research asks nothing, which makes no call and still judges them', () => {
+      const asking: Profile = { ...three, id: 'asking', requireRule: true }
+      const quorum = quorumOf(asking, { concurrency: 3 })
+      const plain = quorum.estimate({ diff: DIFF })
+      const read = quorum.estimate({
+        diff: DIFF,
+        context: {
+          reports: [
+            report('asking', issue(1), issue(2)),
+          ],
+        },
+      })
+      expect(plain.profiles.asking).toMatchObject({
+        parts: [],
+        votes: 0,
+        vote: {},
+        worst: 0,
+        candidates: 0,
+      })
+      expect(read.profiles.asking).toMatchObject({
+        parts: [],
+        expected: 0,
+        candidates: 2,
+        votes: 2 * 3,
+        worst: 2 * sum(['a', 'b', 'c'].map(bound)),
+      })
+      expect(Object.keys(read.profiles.asking.vote)).toEqual(['a', 'b', 'c'])
+      expect(read.expected).toBe(0)
+      expect(read.inFlight).toBe(sum(['a', 'b', 'c'].map(bound)))
+    })
+
+    it('counts a candidate for the profile its report names alone, and gives the same estimate for the same reports twice', () => {
+      const other: Profile = { ...three, id: 'other' }
+      const quorum = createQuorum({
+        profiles: [three, other],
+      }, {
+        profiles: Object.fromEntries([three, other].map(profile => [
+          profile.id,
+          {
+            research: silent(() => 10),
+            voters: Object.fromEntries(profile.lenses.map(lens => [
+              lens.id,
+              silent(request => requestTokens(request)),
+            ])),
+          },
+        ])),
+      })
+      const reports = [
+        report('other', issue(1)),
+      ]
+      const first = quorum.estimate({
+        diff: DIFF,
+        context: { reports },
+      })
+      expect(first.profiles.three.candidates).toBe(0)
+      expect(first.profiles.other.candidates).toBe(1)
+      expect(quorum.estimate({
+        diff: DIFF,
+        context: { reports },
+      })).toEqual(first)
+    })
+
+    it('refuses a report of a profile the quorum does not run, as a review does', () => {
+      expect(() => quorumOf(three).estimate({
+        diff: DIFF,
+        context: {
+          reports: [
+            report('nope', issue(1)),
+          ],
+        },
+      })).toThrow('context.reports.0.profile: names no profile of the quorum')
+    })
   })
 
   it('refuses an input a review would refuse, as a ConfigError', () => {

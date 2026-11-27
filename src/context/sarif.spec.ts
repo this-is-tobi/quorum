@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
+import { scanReports } from '../core/candidates.ts'
+import { splitDiff } from '../core/diff.ts'
 import { cutRead, MAX_RESULTS, MAX_RUNS, READ_COMMIT, READ_MESSAGE, READ_RULE_ID, READ_RULE_TEXT, READ_SCANNER, READ_SNIPPET } from '../core/reports.ts'
 import { reportPathsOf } from './paths.ts'
 import { sarifReport } from './sarif.ts'
@@ -1172,6 +1174,63 @@ describe('sarifReport', () => {
     expect(within).not.toHaveProperty('notRead')
     expect(within).not.toHaveProperty('runs')
     expect(read(run(results(MAX_RESULTS)))).not.toHaveProperty('notRead')
+  })
+
+  it('hands the core what lets it say every limit as N of M: what the file held is what the report lists, and the gap carries the numbers', () => {
+    const sections = splitDiff([
+      'diff --git a/src/a.js b/src/a.js',
+      '--- a/src/a.js',
+      '+++ b/src/a.js',
+      '@@ -1,1 +1,2 @@',
+      ' one',
+      '+two',
+    ].join('\n'))
+    const placed = (...runs: unknown[]): { listed: number, notRead?: number, sum: number, gap?: string } => {
+      const scan = scanReports({
+        reports: [
+          {
+            format: 'sarif',
+            profile: 'security',
+            ...read(...runs),
+          },
+        ],
+        sections,
+        leftOut: [],
+        maxScannerIssues: 50,
+      })
+      const { listed, fileLevel: _, ...counts } = scan.records[0].issues!
+      return {
+        listed,
+        notRead: counts.notRead,
+        sum: Object.values(counts).reduce((total, count) => total + count, 0),
+        gap: scan.profiles.get('security')?.gaps[0]?.detail,
+      }
+    }
+    // A log of 21 runs of 2 results: the 21st is not read, and its 2 results are counted.
+    expect(placed(...Array.from({ length: MAX_RUNS + 1 }, () => run([
+      result(),
+      result({ ruleId: 'R2' }),
+    ])))).toEqual({
+      listed: 42,
+      notRead: 2,
+      sum: 42,
+      gap: 'report 1 (sarif) was read in part: 2 of its 42 results and 1 of its 21 runs were not read',
+    })
+    // A run of 25001 results, which the file held.
+    expect(placed(run(Array.from({ length: MAX_RESULTS + 1 }, () => result())))).toEqual({
+      listed: MAX_RESULTS + 1,
+      notRead: 1,
+      sum: MAX_RESULTS + 1,
+      gap: 'report 1 (sarif) was read in part: 1 of its 25001 results were not read',
+    })
+    // Runs past the 20th that hold no result.
+    expect(placed(...Array.from({ length: MAX_RUNS }, () => run([
+      result(),
+    ])), run([]))).toEqual({
+      listed: MAX_RUNS,
+      sum: MAX_RUNS,
+      gap: 'report 1 (sarif) was read in part: 1 of its 21 runs were not read',
+    })
   })
 
   it('counts nothing past the 25000 results it reads as skipped or unreadable', () => {

@@ -1,7 +1,7 @@
 /** The results the reporters' specs render: a review of a range with one kept, one unreviewed and one discarded finding, and a blank one. */
 
 import type { Outcome } from '../core/outcome.ts'
-import type { ContextDocument, LensVote, QuorumMeta, QuorumResult, ReviewSettings, ReviewSource, Verdict } from '../core/types.ts'
+import type { ContextDocument, ContextReport, LensVote, QuorumMeta, QuorumResult, ReviewSettings, ReviewSource, Verdict } from '../core/types.ts'
 
 const id = (start: string, length = 40): string => start.padEnd(length, 'a')
 export function cast(keep: boolean): LensVote {
@@ -227,7 +227,7 @@ export function reportMeta(): QuorumMeta {
         detail: 'U+202E on 1 added line(s)',
       },
     ],
-    context: { documents: [] },
+    context: { documents: [], reports: [] },
     adaptations: [],
   }
 }
@@ -254,6 +254,32 @@ export function contextDocument(changes: Partial<ContextDocument> = {}): Context
     status: 'read',
     bytes: 1830,
     removed: { characters: 0, comments: 0, entities: 0 },
+    ...changes,
+  }
+}
+
+/** A scanner report the review read for `security`: a SARIF log of Semgrep's, read whole, whose four issues ended as two candidates (one file-level), one outside the change and one on an unchanged line; `changes` replaces its fields. */
+export function contextReport(changes: Partial<ContextReport> = {}): ContextReport {
+  return {
+    format: 'sarif',
+    profile: 'security',
+    scanner: 'Semgrep',
+    sha256: 'e'.repeat(64),
+    status: 'read',
+    problems: [],
+    issues: {
+      listed: 4,
+      used: 2,
+      fileLevel: 1,
+      held: 0,
+      unmapped: 0,
+      notInChange: 1,
+      leftOut: 0,
+      unchanged: 1,
+      capped: 0,
+      skipped: 0,
+      unreadable: 0,
+    },
     ...changes,
   }
 }

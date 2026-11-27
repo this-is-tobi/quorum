@@ -336,7 +336,7 @@ describe('markdown', () => {
     ]
     const lines = render(reportResult({
       meta: {
-        context: { documents },
+        context: { documents, reports: [] },
       },
     }))
     // The section follows the flags, and each record is an item in the words of its line, its path, commit and hash in spans.
@@ -369,6 +369,7 @@ describe('markdown', () => {
               commit,
             }),
           ],
+          reports: [],
         },
       },
     }))
@@ -383,7 +384,7 @@ describe('markdown', () => {
       commit: '1f3a9c2'.padEnd(40, 'a'),
     }))
     const result = blankResult({
-      context: { documents },
+      context: { documents, reports: [] },
       flags: [
         {
           code: 'hidden-characters',

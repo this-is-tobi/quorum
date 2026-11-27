@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { splitDiff } from '../diff.ts'
 import { OutputError } from '../errors.ts'
-import { capDepths, checkReplies, checkReply, DEFAULT_MAX_FINDINGS, findingFingerprint, findingId, FINGERPRINT_PATTERN } from './research.ts'
+import { capDepths, checkReplies, checkReply, DEFAULT_MAX_FINDINGS, findingFingerprint, findingId, FINGERPRINT_PATTERN, rankFingerprint } from './research.ts'
 
 const diff = [
   'diff --git a/a.js b/a.js',
@@ -126,6 +126,7 @@ describe('checkReply', () => {
   it('treats an explicit empty list as a complete result', () => {
     expect(checkReply(reply([]), sections, 'security')).toEqual({
       findings: [],
+      ranks: new Map(),
       invalid: [],
       away: [],
       invalidRules: [],
@@ -684,6 +685,7 @@ describe('checkReplies', () => {
   it('reads no reply as a complete result', () => {
     expect(checkReplies([], sections, 'security')).toEqual({
       findings: [],
+      ranks: new Map(),
       invalid: [],
       away: [],
       invalidRules: [],
@@ -857,6 +859,61 @@ describe('checkReplies', () => {
     ], twice, 'security')
     const hash = findingFingerprint('security', 'a.js', 'CWE-78', '+q(x)')
     expect(findings.map(found => found.fingerprint)).toEqual([`${hash}:1`, `${hash}:2`, `${hash}:1`])
+  })
+
+  it('hands on the ranks it named the findings by, so a scanner\'s candidate is ranked after them from the same map', () => {
+    const twice = splitDiff([
+      'diff --git a/a.js b/a.js',
+      '--- a/a.js',
+      '+++ b/a.js',
+      '@@ -0,0 +1,3 @@',
+      '+a()',
+      '+q(x)',
+      '+q(x)',
+    ].join('\n'))
+    const { findings, ranks } = checkReplies([
+      {
+        text: reply([
+          { ...reported, line: 2 },
+        ]),
+      },
+    ], twice, 'security')
+    const hash = findingFingerprint('security', 'a.js', 'CWE-78', '+q(x)')
+    expect(findings.map(found => found.fingerprint)).toEqual([`${hash}:1`])
+    expect([
+      ...ranks.keys(),
+    ]).toEqual([hash])
+    expect([
+      ...ranks.get(hash)!.values(),
+    ]).toEqual([1])
+    // A finding of another line, named from the same map, takes the next rank, as a second finding of the reply would.
+    const [second] = checkReply(reply([
+      { ...reported, line: 3 },
+    ]), twice, 'security').findings
+    expect(rankFingerprint(ranks, 'security', second)).toBe(`${hash}:2`)
+    expect(rankFingerprint(ranks, 'security', { ...second, line: 3 })).toBe(`${hash}:2`)
+    expect(rankFingerprint(ranks, 'security', { ...second, line: 2 })).toBe(`${hash}:1`)
+    // No reply read, no rank.
+    expect(checkReplies([], twice, 'security').ranks.size).toBe(0)
+  })
+
+  it('hashes the row it is given in place of the cited row, and the empty row for a file-level candidate', () => {
+    const [found] = checkReply(reply([reported]), sections, 'security').findings
+    const own = findingFingerprint('security', 'a.js', 'CWE-78', '+exec(cmd)')
+    const bare = findingFingerprint('security', 'a.js', 'CWE-78', '')
+    expect(own).not.toBe(bare)
+    expect(rankFingerprint(new Map(), 'security', found)).toBe(`${own}:1`)
+    expect(rankFingerprint(new Map(), 'security', found, '')).toBe(`${bare}:1`)
+    expect(rankFingerprint(new Map(), 'security', found, '+  exec(cmd)  ')).toBe(`${own}:1`)
+    // A finding that cites no row hashes the empty row, as a given empty row does.
+    expect(rankFingerprint(new Map(), 'security', { ...found, evidenceRow: undefined })).toBe(`${bare}:1`)
+    // The ranks count by hash and by file, line and category: the same finding twice keeps its rank, another line takes the next.
+    const ranks = new Map<string, Map<string, number>>()
+    expect([
+      rankFingerprint(ranks, 'security', found, ''),
+      rankFingerprint(ranks, 'security', found, ''),
+      rankFingerprint(ranks, 'security', { ...found, line: 9 }, ''),
+    ]).toEqual([`${bare}:1`, `${bare}:1`, `${bare}:2`])
   })
 
   it('ranks two findings at one line whose categories differ raw and fold alike, one and two', () => {

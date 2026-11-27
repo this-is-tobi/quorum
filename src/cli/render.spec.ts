@@ -17,6 +17,7 @@ describe('estimateLines', () => {
       security: {
         parts: [30_000, 20_000],
         votes: 150,
+        candidates: 0,
         vote: { reachability: 4000, impact: 4000, defenses: 4000 },
         expected: 16_667,
         worst: 1_850_000,
@@ -52,6 +53,7 @@ describe('estimateLines', () => {
     const team = {
       parts: [8000],
       votes: 100,
+      candidates: 0,
       vote: { naming: 3000, layout: 3000 },
       expected: 2667,
       worst: 608_000,
@@ -482,6 +484,7 @@ describe('findingsCapOf', () => {
   const profileOf = (parts: number): Estimate['profiles'][string] => ({
     parts: Array.from<number>({ length: parts }).fill(1000),
     votes: 0,
+    candidates: 0,
     vote: {},
     expected: 0,
     worst: 0,

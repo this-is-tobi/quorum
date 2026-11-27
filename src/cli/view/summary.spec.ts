@@ -410,7 +410,7 @@ describe('summaryLines', () => {
         meta: {
           durationMs: 2_285_000,
           usage: { inputTokens: 2_412_833, outputTokens: 312_094 },
-          context: { documents },
+          context: { documents, reports: [] },
         },
       }),
     })
@@ -531,7 +531,7 @@ describe('summaryLines', () => {
       result: reportResult({
         unreviewed: [],
         meta: {
-          context: { documents },
+          context: { documents, reports: [] },
           profiles: {
             naming: {
               ...security,
@@ -580,6 +580,7 @@ describe('summaryLines', () => {
                 rules: 5,
               }),
             ],
+            reports: [],
           },
           profiles: {
             security,

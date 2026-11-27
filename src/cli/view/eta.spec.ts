@@ -130,6 +130,7 @@ function estimateOf(parts: number[]): Estimate {
       security: {
         parts,
         votes: 0,
+        candidates: 0,
         vote: {},
         expected: 0,
         worst: 0,

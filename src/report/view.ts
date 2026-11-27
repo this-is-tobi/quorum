@@ -8,8 +8,13 @@
  *   error quotes a server; either shows which wording moved a voter, an oracle to tune the next push by. A vote
  *   keeps its lens, whether it kept the finding (`null` when it failed) and what it failed with, which are
  *   words and numbers quorum wrote;
- * - **the discarded findings:** a finding the panel rejected is a probe the author can read back, and the text
- *   of each is the finder's. The view lists none and counts them per profile, in `discarded`;
+ * - **the discarded findings the finder reported:** a finding the panel rejected is a probe the author can read back, and the text
+ *   of each is the finder's. The view lists none of them and counts them per profile, in `meta.profiles.<id>.discarded`. A
+ *   discarded finding a scanner's report gave is no such secret: the scan ran on the author's code and its report is the author's to
+ *   read, so its dismissal is one bit the author can derive already, and listing it keeps a dismissed real issue in front of the
+ *   reviewer. The view lists those (`discarded`, their votes reduced as every vote is, so the per-lens `keep` is all that shows
+ *   which angle a planted text swayed, as a kept finding's already does), and counts them, with the finder's, in the profile's
+ *   `discarded`;
  * - **the providers and models, and `meta.calls`:** which model reviewed names what to craft a prompt injection for, and a
  *   provider's id can name an internal host. The models the replies named are that name too, and a sharper one behind a
  *   gateway's alias, since it is the model that read the author's text. Each provider's calls by role (their count, failures,
@@ -28,7 +33,7 @@
  *
  * Everything else stays: the findings with their evidence and the id of the review rule each cites, the files left out, a held file's name, reason and
  * rule included, each profile's counts of its rules and of the citations refused, the flags with their details, which quorum's code writes, and the documents the review read as policy
- * (`meta.context`), each a hash, a path, a commit and counts and never a text. `meta.view` says it is the
+ * and the scanner reports it read (`meta.context`), each a hash, a path, a commit, a cleaned scanner name and counts and never a text or a report's file name. `meta.view` says it is the
  * public view, so no reader mistakes it for the full result.
  *
  * The functions are pure. A view is made of new arrays and objects, the parts kept whole copied with
@@ -82,6 +87,11 @@ function publicVerdict(verdict: Verdict): PublicVerdict {
   }
 }
 
+/** Whether a scanner's report gave the verdict's finding, read as own data: only such a discarded verdict is listed. */
+function isScannerFound(verdict: Verdict): boolean {
+  return ownData(ownData(verdict, 'foundBy'), 'kind') === 'scanner'
+}
+
 /** A gap as the view keeps it: the profile, the reason, and the file when there is one. */
 function publicGap(gap: PublicGap): PublicGap {
   return {
@@ -93,7 +103,7 @@ function publicGap(gap: PublicGap): PublicGap {
   }
 }
 
-/** How many discarded findings each profile has. */
+/** How many discarded findings each profile has, the scanner's included. */
 function discardedByProfile(discarded: readonly Verdict[]): Map<unknown, number> {
   const counts = new Map<unknown, number>()
   for (const verdict of discarded) counts.set(verdict.profile, (counts.get(verdict.profile) ?? 0) + 1)
@@ -164,7 +174,7 @@ function publicMeta(result: QuorumResult): PublicMeta {
 
 /**
  * The public view of a result, or of a public view, which is returned as it is: the result less each vote's
- * reasoning and error, the discarded findings (counted in `meta.profiles.<id>.discarded`), the providers, the
+ * reasoning and error, the discarded findings the finder reported (counted, with the scanner's, in `meta.profiles.<id>.discarded`), the providers, the
  * usage, the models the replies named (`meta.calls`), the settings the review ran under (`meta.settings`), each profile's research counts and each gap's detail. See the module's comment for why each goes. The result is never changed, and
  * the view shares no array or object with it.
  *
@@ -183,7 +193,7 @@ export function publicView(input: QuorumResult | PublicView): PublicView {
     ? input
     : {
         kept: input.kept.map(publicVerdict),
-        discarded: [],
+        discarded: input.discarded.filter(isScannerFound).map(publicVerdict),
         unreviewed: input.unreviewed.map(publicVerdict),
         meta: publicMeta(input),
       })

@@ -7,6 +7,7 @@ import { nearestHunks } from '../parts.ts'
 import { confidenceFor, undecidedLevel, verdictStatus } from '../policy.ts'
 import type { CompletionRequest } from '../ports.ts'
 import { voteRequest } from '../prompts.ts'
+import type { VoteFacts } from '../prompts.ts'
 import { tokenBound } from '../tokens.ts'
 import type { Confidence, Finding, IncompleteEntry, LensVote, ReviewRule, Verdict, VerdictStatus, Vote, VoteFailure } from '../types.ts'
 import { isTooLarge, lackOf, providerFailure, refusalMessage } from '../facts.ts'
@@ -30,10 +31,11 @@ interface Judged {
   gaps: IncompleteEntry[]
 }
 
-/** What the votes on one finding read of the diff: the text of the cited file's section, the whole diff when the file has none, and the sections that text is one of. */
+/** What the votes on one finding read of the diff: the text of the cited file's section, the whole diff when the file has none, and the sections that text is one of, and the facts its request holds besides the finding (a scanner candidate's rule text). */
 interface VoteContext {
   readonly text: string
   readonly sections: ReadonlyMap<string, string>
+  readonly facts: VoteFacts
 }
 
 /** One lens's vote, and, when its provider refused the request as too large, the refusal's message. */
@@ -68,11 +70,19 @@ interface Cast {
  * Once a finding's votes are in, its verdict emits a `verdict` event, then its gaps are reported by
  * `incomplete` events: one `request-too-large` gap when any vote request was refused, and a
  * `vote-failed` gap when a kept verdict's failed votes leave a higher level undecided (ADR-0012).
+ *
+ * A finding a scanner's report gave (`foundBy.kind` is `scanner`) is judged as any is, by every lens, its votes asked of the
+ * lens's own provider: the request holds the scanner's claim, and the text of the scanner's rule, which `ruleTexts` gives by the
+ * finding's id, in a block of its own (`voteRequest`). No other finding's vote holds either, and a model's finding's votes are
+ * the ones they always were.
  */
-export async function panel(ctx: RunContext, run: ProfileRun, findings: readonly Finding[], sections: ReadonlyMap<string, string>, diff: string): Promise<PanelOutcome> {
+export async function panel(ctx: RunContext, run: ProfileRun, findings: readonly Finding[], sections: ReadonlyMap<string, string>, diff: string, ruleTexts: ReadonlyMap<string, string> = new Map()): Promise<PanelOutcome> {
   const judged = await Promise.all(findings.map(finding => judge(ctx, run, finding, {
     text: diffSectionFor(sections, finding.file, diff),
     sections,
+    facts: {
+      scannerRule: ruleTexts.get(finding.id),
+    },
   })))
   const outcome: PanelOutcome = {
     kept: [],
@@ -225,10 +235,10 @@ function requestFor(ctx: RunContext, run: ProfileRun, finding: Finding, lens: Le
   const rule = citedRule(run, finding)
   const nearest = lens.room === undefined
     ? undefined
-    : nearestContext(run, finding, lens, context.sections, ask, rule)
+    : nearestContext(run, finding, lens, context, ask, rule)
   return nearest === undefined
-    ? voteRequest(lens.instructions, finding, context.text, run.guidelines, false, ask, rule)
-    : voteRequest(lens.instructions, finding, nearest, run.guidelines, true, ask, rule)
+    ? voteRequest(lens.instructions, finding, context.text, run.guidelines, false, ask, rule, context.facts)
+    : voteRequest(lens.instructions, finding, nearest, run.guidelines, true, ask, rule, context.facts)
 }
 
 /**
@@ -242,13 +252,13 @@ function citedRule(run: ProfileRun, finding: Finding): ReviewRule | undefined {
     : run.sent?.find(rule => rule.id === finding.rule)
 }
 
-/** The partial context of a voter that states a room, or undefined when the whole section fits, or nothing of it does. The rooms are asked of the requests that carry the rule the finding cites. */
-function nearestContext(run: ProfileRun, finding: Finding, lens: LensRun, sections: ReadonlyMap<string, string>, ask: { readonly replyTokens?: number }, rule: ReviewRule | undefined): string | undefined {
+/** The partial context of a voter that states a room, or undefined when the whole section fits, or nothing of it does. The rooms are asked of the requests that carry the rule the finding cites, and the scanner's claim and rule text of a candidate. */
+function nearestContext(run: ProfileRun, finding: Finding, lens: LensRun, { sections, facts }: VoteContext, ask: { readonly replyTokens?: number }, rule: ReviewRule | undefined): string | undefined {
   const section = sectionFor(sections, finding.file)
   if (section === undefined) return undefined
-  const room = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines, false, ask, rule))
+  const room = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines, false, ask, rule, facts))
   if (room === undefined || tokenBound(section.text) <= room) return undefined
-  const partialRoom = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines, true, ask, rule))
+  const partialRoom = roomOf(lens, voteRequest(lens.instructions, finding, '', run.guidelines, true, ask, rule, facts))
   return partialRoom === undefined
     ? undefined
     : nearestHunks(section.text, hunksOf(sections, section.path, section.text), finding.line, partialRoom)

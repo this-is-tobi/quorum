@@ -86,8 +86,8 @@ export interface Finding {
   quoteMatched: boolean
   /**
    * What proposed the finding, set by code and never by a model: `{ kind: 'model' }` for a finding the model's finder reported
-   * (set where research reads its replies, and no request reads it, so it moves no digest and no store key), `{ kind: 'scanner', ... }`
-   * for a candidate a scanner's report gave.
+   * (set where research reads its replies; no request reads a model finding's `foundBy`, so it moves no digest and no store key),
+   * `{ kind: 'scanner', ... }` for a candidate a scanner's report gave, whose voters read its scanner, its rule and its claim.
    */
   foundBy: FoundBy
 }
@@ -264,6 +264,11 @@ export interface ReviewDocument {
 export interface ReviewContext {
   /** Documents of origin `repository` only, at most 256, each naming the commit the review's source reads documents from. */
   readonly documents?: readonly ReviewDocument[]
+  /**
+   * The scanner reports of the review, as `readContext` reads them (`ScannerReport`), at most 16, each naming the profile it is read
+   * for. The core places each issue against the change and judges the ones on it, as candidates, with the profile's own panel.
+   */
+  readonly reports?: readonly ScannerReport[]
 }
 
 /**
@@ -290,9 +295,14 @@ export interface ContextDocument {
   removed: Removed
 }
 
-/** What `meta.context` and the `context` event hold: one record per document the review sends, each profile's guidelines, then its do-not-report text, then its rules, each in the order they are joined. */
+/**
+ * What `meta.context` and the `context` event hold: one record per document the review sends, each profile's guidelines, then its
+ * do-not-report text, then its rules, each in the order they are joined, and one record per report the review reads, in the order of
+ * `ReviewContext.reports` (`[]` when it reads none).
+ */
 export interface ContextRecord {
   documents: ContextDocument[]
+  reports: ContextReport[]
 }
 
 /** How severe a scanner's report calls an issue. `unknown` is a level the report does not state or quorum does not know, which is never read as ignorable. */
@@ -395,8 +405,11 @@ export interface ContextReport {
   sha256?: string
   status: 'read' | 'partial' | 'unreadable'
   problems: ReportProblem[]
-  /** A scanner report's counts: `listed` is the sum of the nine outcomes, `fileLevel` a part of `used`. */
-  issues?: Record<IssueOutcome | 'listed' | 'fileLevel', number>
+  /**
+   * A scanner report's counts: `listed`, what the file held, is the sum of the nine outcomes and `notRead`, `fileLevel` a part of
+   * `used`, and `notRead`, the entries the reader did not read (`ScannerReport.notRead`), is there only when it is above 0.
+   */
+  issues?: Record<IssueOutcome | 'listed' | 'fileLevel', number> & { notRead?: number }
 }
 
 /** A confidence level a kept finding reaches; 'low' only when the policy enables it. */
@@ -453,10 +466,15 @@ export type VerdictStatus = 'kept' | 'discarded' | 'unreviewed'
  * `reply-cut-off`: a research reply was cut off at its limit even for the hunks it held after recovery split
  * its part as far as it goes (three splits deep, or one hunk), so those hunks went unreviewed; one entry per
  * profile counts them, `meta.profiles.<id>.coverage` lists their ranges, and no flag lifts it.
+ * `report-unreadable`: a scanner report no issue of which was used, since its file could not be read, is no report of its format,
+ * holds no result list or states another commit than the reviewed one; `report-partial`: a report was read in part (a truncated
+ * search, a run that failed, entries that could not be read, paths that could not be placed, issues held as credentials); one entry
+ * per report and profile it feeds. `issues-capped`: more scanner issues fell on the change than the profile's panel reviews
+ * (`maxScannerIssues`), one entry per profile; none of these three is lifted by a flag.
  * For a large change researched in parts, `research-failed`, `provider-down` and `request-too-large` count the
  * parts that failed, were not sent or were refused, and each of the other reasons its parts' share.
  */
-export type IncompleteReason = 'research-unusable' | 'research-failed' | 'provider-down' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'too-large' | 'token-cap' | 'review-deadline' | 'interrupted' | 'reply-cut-off' | 'binary' | 'submodule' | 'secret'
+export type IncompleteReason = 'research-unusable' | 'research-failed' | 'provider-down' | 'findings-capped' | 'finding-unreadable' | 'vote-failed' | 'request-too-large' | 'too-large' | 'token-cap' | 'review-deadline' | 'interrupted' | 'reply-cut-off' | 'binary' | 'submodule' | 'secret' | 'report-unreadable' | 'report-partial' | 'issues-capped'
 
 /**
  * Work the run could not review: a research reply with findings but none usable, a research part that
@@ -607,7 +625,7 @@ export interface ResearchRecord {
   parts: number
   /** The findings the research replies that were read listed, the unreadable ones and those the cap left unread included: the sum of the `part` events' `listed`. */
   listed: number
-  /** The findings the panel was asked about: the dedup stage's output, the findings research read and checked less the repeats dedup dropped. */
+  /** The findings the panel was asked about that the finder reported: the dedup stage's output whose `foundBy` is the model's, the findings research read and checked less the repeats dedup dropped. A scanner's candidates are counted in their reports' `issues`, so a review with and without a report compare their research. */
   panel: number
   /** The findings the replies listed that the cap left unread: `listed` less the entries the cap read, 0 when nothing was capped. */
   capped: number
@@ -879,9 +897,9 @@ export interface PublicVote {
 /** A verdict of the public view: the verdict with its votes reduced to `PublicVote`s. */
 export type PublicVerdict = Omit<Verdict, 'votes'> & { votes: PublicVote[] }
 
-/** What the public view records about a profile: no providers, no research counts, which measure how near research came to the finding cap, and the count of its discarded findings, which the view does not list. Its stage times are kept, as the review's `durationMs` is. */
+/** What the public view records about a profile: no providers, no research counts, which measure how near research came to the finding cap, and the count of its discarded findings, of which the view lists only those a scanner found. Its stage times are kept, as the review's `durationMs` is. */
 export interface PublicProfileMeta extends Omit<ProfileMeta, 'providers' | 'research'> {
-  /** How many findings of the profile the panel discarded. */
+  /** How many findings of the profile the panel discarded, the ones a scanner found, which the view lists, included. */
   discarded: number
 }
 
@@ -898,8 +916,12 @@ export interface PublicMeta extends Omit<QuorumMeta, 'profiles' | 'usage' | 'cal
 /** A result less what helps an attacker, which every public sink renders: see `publicView`. */
 export interface PublicView {
   kept: PublicVerdict[]
-  /** Always empty: the discarded findings are counted in `meta.profiles.<id>.discarded`. */
-  discarded: []
+  /**
+   * The discarded verdicts a scanner found, with their votes reduced, in the result's order: a scanner's report is the author's own data,
+   * so the author reads back nothing a finder's wording could be tuned by. The discarded findings the finder reported are withheld and
+   * counted, with these, in `meta.profiles.<id>.discarded`.
+   */
+  discarded: PublicVerdict[]
   unreviewed: PublicVerdict[]
   meta: PublicMeta
 }
@@ -923,6 +945,12 @@ export interface QuorumOptions {
    * research request; a review's own `findingsCap` option takes its place for that review.
    */
   readonly findingsCap?: number
+  /**
+   * The most scanner issues each profile's panel judges in one review: a positive integer, `DEFAULT_MAX_SCANNER_ISSUES` (50) when unset.
+   * It is a cap of its own beside `findingsCap`, so a flood of issues never pushes a finder's finding out, nor the reverse, and the issues
+   * past it, the least severe, are one `issues-capped` gap of the profile.
+   */
+  readonly maxScannerIssues?: number
   /** Path patterns of the files left out of every request; none when unset. */
   readonly exclude?: readonly string[]
   /**
@@ -992,13 +1020,20 @@ export interface ReviewInput {
 export interface ProfileEstimate {
   /** What the ledger reserves for each research request of the profile, in order: one for a diff researched whole, else one per part that holds more than white space. Empty when research makes no call. */
   parts: number[]
-  /** The most votes the panel casts: `findingsCap` findings, each voted by every lens of the profile. 0 when research makes no call. */
+  /** The most votes the panel casts: `findingsCap` findings and `candidates`, each voted by every lens of the profile. 0 when research makes no call and no scanner issue falls on the change. A ceiling: `candidates` is one, as below. */
   votes: number
-  /** What the ledger reserves at most for one vote of each lens, keyed by lens id. Empty when research makes no call. */
+  /**
+   * The scanner issues the profile's panel would judge, as candidates: those of the review's reports that fall on the change, at most
+   * `maxScannerIssues`. 0 when the estimate names no report. A profile whose research makes no call still judges them. An upper bound,
+   * never an exact count: it holds a candidate the review drops for a finder's finding on the same file, line and category, and one
+   * a report that states another commit would have lost, since an estimate names no source and checks no commit.
+   */
+  candidates: number
+  /** What the ledger reserves at most for one vote of each lens, keyed by lens id: for a finder's finding, or for a candidate when that is more. Empty when research makes no call and the profile judges no candidate. */
   vote: Record<string, number>
   /** The research parts alone, each counted at a third of its input, rounded up (code takes about that many tokens, not one per byte), and its reply at the lesser of its budget and 4096 tokens, its usual size. The votes are not in it, since how many findings research reports is not known before it runs. */
   expected: number
-  /** The most the profile may reserve in all: each research part in full and every piece recovery may make of it, and `findingsCap` votes of every lens at its bound. The calls an adaptation sends once more, and the calls a bad reply sends once more, are the provider's, and join `Estimate.worst` alone. */
+  /** The most the profile may reserve in all: each research part in full and every piece recovery may make of it, `findingsCap` votes of every lens at its bound, and a vote of every lens for each candidate at a candidate's bound (the longest scanner name, rule id, rule text and summary). The calls an adaptation sends once more, and the calls a bad reply sends once more, are the provider's, and join `Estimate.worst` alone. */
   worst: number
   /** The findings its research requests ask for at most, the most serious first: `maxFindings`, or fewer when the research provider's reply budget holds fewer. */
   findings: number
@@ -1074,7 +1109,9 @@ export interface Quorum {
    * `maxReviewTokens`. It is an estimate, not a promise: a review still reserves each call against the cap.
    * A file held back as a secret costs nothing, and one `input.send` names is counted, as `review` sends it.
    * `context` is the review's repository documents, counted as `review` sends them: a document that leaves a research provider
-   * less than 1024 tokens of diff is refused as `review` refuses it. An estimate names no source, so it checks no document's commit.
+   * less than 1024 tokens of diff is refused as `review` refuses it. An estimate names no source, so it checks no document's commit
+   * and no report's. The scanner reports of `context` are placed against the change as `review` places them, and the candidates a profile's
+   * panel would judge (`ProfileEstimate.candidates`, at most the quorum's `maxScannerIssues`) are counted in its `votes`, `worst` and `inFlight`.
    * `limits` are the cap and the deadline the estimate is made under, in place of the quorum's, as `review`'s
    * `maxReviewTokens` and `reviewTimeoutMs` are: `Estimate.maxReviewTokens`, `reviewTimeoutMs`, `fits` and `held` read them.
    * `findingsCap`, as `review` takes it, moves `Estimate.findingsCap`, each profile's `votes` and `worst`, and `inFlight`
@@ -1146,8 +1183,9 @@ export type QuorumEvent
     | { type: 'left-out', files: LeftOutFile[] }
     /**
      * The documents the review sends as policy, as `meta.context` holds them: sent once, right after `run:start` and `left-out`
-     * and before the gaps, when a profile has one, or lists or requires a review rule. Counts, hashes, paths, commits and code
-     * words only, never a text. `rules` is present when a profile lists a review rule or requires one (`Profile.requireRule`), and
+     * and before the gaps, when a profile has one, or lists or requires a review rule, or the review reads a scanner report (`context.reports`,
+     * each with the outcome of its issues, which the core works out before any stage). Counts, hashes, paths, commits, a cleaned scanner name and
+     * code words only, never a text, and never a report's file name. `rules` is present when a profile lists a review rule or requires one (`Profile.requireRule`), and
      * holds, for each profile that does, how many it lists and how many the review sends (`meta.profiles.<id>.rules`, `{ listed: 0,
      * sent: 0 }` for a profile that requires a rule and lists none), and `asksNothing: true` for a profile whose research asks nothing:
      * one that requires a rule and sends none, which the later `stage:start` says too, with `parts: 0`.

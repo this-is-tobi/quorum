@@ -909,7 +909,7 @@ describe('text', () => {
   it('keeps every line within 80 columns but for a path, a category or a row of code longer than that', () => {
     const documents = render(reportResult({
       meta: {
-        context: { documents: DOCUMENTS },
+        context: { documents: DOCUMENTS, reports: [] },
       },
     }))
     // A fixture the test can fail on: one document's line, written whole, passes 80 columns with its cleaner clause.
@@ -964,7 +964,7 @@ describe('text', () => {
     ]
     const result = reportResult({
       meta: {
-        context: { documents: DOCUMENTS },
+        context: { documents: DOCUMENTS, reports: [] },
       },
     })
     // The lines are the records' own, in order, after the last profile's coverage and before the files left out, a long one wrapped at spaces as a flag's detail is.
@@ -989,6 +989,7 @@ describe('text', () => {
               commit: '1f3a9c2'.padEnd(40, 'a'),
             }),
           ],
+          reports: [],
         },
       },
     })
@@ -1010,6 +1011,7 @@ describe('text', () => {
               removed: { characters: 3, comments: 1, entities: 0 },
             }),
           ],
+          reports: [],
         },
       },
     }))

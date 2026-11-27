@@ -255,6 +255,32 @@ describe('outcome', () => {
     ]), { allowIncomplete: true }).exitCode).toBe(0)
   })
 
+  it.each([
+    'report-unreadable',
+    'report-partial',
+    'issues-capped',
+  ])('lifts no %s gap with --allow-incomplete', (reason) => {
+    const gap = { profile: 'security', reason }
+    const network = { kind: 'network' }
+    for (const options of [
+      {},
+      { allowIncomplete: true },
+    ]) {
+      expect(outcome(withGaps(securityGates, [gap]), options).exitCode).toBe(4)
+      // Beside a vote-failed gap that a flag lifts, the scanner's gap still keeps the exit at 4.
+      expect(outcome(withGaps(securityGates, [voteFailedGap, gap], [
+        voted('security', 'medium', [network]),
+      ]), options).exitCode).toBe(4)
+    }
+    // An advisory profile's gap is no gate, whatever the flag.
+    expect(outcome(withGaps({ security: true, style: false }, [
+      { profile: 'style', reason },
+    ]), { allowIncomplete: true }).exitCode).toBe(0)
+    expect(outcome(withGaps({ style: false }, [
+      { profile: 'style', reason },
+    ])).exitCode).toBe(0)
+  })
+
   it('exits 4 for a token-cap gap of a gating profile, even with --allow-incomplete', () => {
     const gap = { profile: 'security', reason: 'token-cap' }
     for (const options of [

@@ -21,7 +21,9 @@ import { isRecord } from './output.ts'
 import { MAX_REPORT_BYTES, MAX_REPORTS, MAX_RESULTS, MAX_RUNS, READ_COMMIT, READ_MESSAGE, READ_RULE_ID, READ_RULE_TEXT, READ_SCANNER, READ_SNIPPET, SONARQUBE_SEARCH_CAP } from './reports.ts'
 import { cleanProse } from './sanitize.ts'
 import { credentialIn } from './secrets.ts'
-import type { ContextReport, Finding, IssueLevel, LeftOutFile, ReaderProblem, ReportProblem, ReviewSource, ScannerFound, ScannerIssue, ScannerReport } from './types.ts'
+import { findingId, rankFingerprint } from './stages/research.ts'
+import type { Ranks } from './stages/research.ts'
+import type { ContextReport, Finding, IncompleteEntry, IssueLevel, LeftOutFile, ReaderProblem, ReportProblem, ReviewSource, ScannerFound, ScannerIssue, ScannerReport } from './types.ts'
 import { MAX_RULE_ID, MAX_SCANNER, plainText, UNCATEGORIZED, verifyFindings } from './verify.ts'
 
 export { MAX_RULE_ID, MAX_SCANNER }
@@ -56,19 +58,6 @@ const SHORT_COMMIT = 7
 /** What each of an issue's outcomes counts, the keys of a report's `issues` record. */
 type Counts = NonNullable<ContextReport['issues']>
 
-/**
- * A gap's reason that a scan writes. These are `IncompleteReason`s of the review that sends candidates, which its gaps hold from there: a
- * scan's gap is already an `IncompleteEntry` in all but this type.
- */
-export type ScanReason = 'report-unreadable' | 'report-partial' | 'issues-capped'
-
-/** A gap of a scan, in an `IncompleteEntry`'s own shape: the profile it is for, its reason, and a detail written by code, never from a report's text. */
-export interface ScanGap {
-  readonly profile: string
-  readonly reason: ScanReason
-  readonly detail: string
-}
-
 /** A finding a scanner proposed, less its id and fingerprint, which the review names it by after the finder's findings, and the text of its rule, which only its own voters read. */
 export interface Candidate {
   readonly finding: Omit<Finding, 'id' | 'fingerprint'>
@@ -79,7 +68,7 @@ export interface Candidate {
 /** What a profile's reports gave: the candidates its panel judges, in the reports' order, and the gaps its reports leave. */
 export interface ProfileScan {
   readonly candidates: readonly Candidate[]
-  readonly gaps: readonly ScanGap[]
+  readonly gaps: readonly IncompleteEntry[]
 }
 
 /** What `scanReports` places the reports' issues against, and with. */
@@ -167,6 +156,31 @@ function firstChangedLine(sections: ReadonlyMap<string, string>, path: string): 
       : next)
   }
   return undefined
+}
+
+/** What a scan works out of a report's texts, each once for each distinct text. */
+interface Texts {
+  readonly held: (text: string) => boolean
+  readonly trivy: (scanner: string) => boolean
+}
+
+/**
+ * The reads of the texts of each reports array, which a scan is handed again by a review that estimates before it reviews, or estimates
+ * more than once: the cleaning and the credential checks over up to 16 reports of 16 MiB are done once for the array, not once for each scan.
+ * A text's answer depends on the text alone, so the answers are the same for any scan; they are held for as long as the array is.
+ */
+const TEXTS = new WeakMap<readonly ScannerReport[], Texts>()
+
+/** The reads of `reports`' texts, made on the first scan of the array and kept for every later one. */
+function textsOf(reports: readonly ScannerReport[]): Texts {
+  const known = TEXTS.get(reports)
+  if (known !== undefined) return known
+  const texts: Texts = {
+    held: once(isHeld),
+    trivy: once(isTrivy),
+  }
+  TEXTS.set(reports, texts)
+  return texts
 }
 
 /** What the issues of a scan are placed against, with what is worked out once for each text and each file. */
@@ -308,9 +322,11 @@ function readReport(report: ScannerReport, reviewed: string | undefined, at: Pla
   const refused = commit.refused || report.problems.some(problem => UNREADABLE_PROBLEMS.has(problem))
   const counts = emptyCounts()
   const used: Used[] = []
+  const notRead = report.notRead ?? 0
   counts.skipped = report.skipped
   counts.unreadable = report.unreadable
-  counts.listed = report.skipped + report.unreadable
+  counts.listed = report.skipped + report.unreadable + notRead
+  if (notRead > 0) counts.notRead = notRead
   if (!refused) {
     counts.listed += report.issues.length
     for (const issue of report.issues) {
@@ -445,8 +461,34 @@ function unreadableWords(record: ContextReport, problem: ReportProblem, reviewed
   return UNREADABLE_WORDS[problem]
 }
 
-/** The words of a problem that leaves a report read in part; `total` is the issues a truncated search found. */
-function partialWords(record: ContextReport, problem: ReportProblem, total: number | undefined): string | undefined {
+/** What a reader says of a report that the record does not hold: `total`, the issues a truncated search found, and `runs`, a log's runs when it holds more than are read. */
+type ReaderFacts = Pick<ScannerReport, 'total' | 'runs'>
+
+/**
+ * What `too-many` says, each count as `<r> of its <t>`: the results (`issues` for a SonarQube response) the reader did not read, from
+ * the record's counts, and the log's runs past `MAX_RUNS`, from `runs`, joined by ` and ` and ending `were not read` (`3000 of its
+ * 28000 results and 5 of its 25 runs were not read`). A reader that gave neither says the limits.
+ */
+function tooManyWords(record: ContextReport, runs: number | undefined): string {
+  const unit = record.format === 'sarif'
+    ? 'results'
+    : 'issues'
+  const counts = record.issues
+  const missing = [
+    ...counts !== undefined && (counts.notRead ?? 0) > 0
+      ? [`${counts.notRead} of its ${counts.listed} ${unit}`]
+      : [],
+    ...runs !== undefined && runs > MAX_RUNS
+      ? [`${runs - MAX_RUNS} of its ${runs} runs`]
+      : [],
+  ]
+  return missing.length === 0
+    ? `it holds more than ${MAX_RUNS} runs, or more than ${MAX_RESULTS} results in a run, and the rest was not read`
+    : `${missing.join(' and ')} were not read`
+}
+
+/** The words of a problem that leaves a report read in part. */
+function partialWords(record: ContextReport, problem: ReportProblem, { total, runs }: ReaderFacts): string | undefined {
   const counts = record.issues
   switch (problem) {
     case 'truncated':
@@ -455,7 +497,7 @@ function partialWords(record: ContextReport, problem: ReportProblem, total: numb
         ? `, past the ${SONARQUBE_SEARCH_CAP} a SonarQube search returns at most: narrow the query`
         : ''}`
     case 'too-many':
-      return `it holds more than ${MAX_RUNS} runs, or more than ${MAX_RESULTS} results in a run, and the rest was not read`
+      return tooManyWords(record, runs)
     case 'scanner-failed':
       return 'a run says its scanner failed, or holds no result list'
     case 'unreadable-entries':
@@ -479,10 +521,11 @@ function partialWords(record: ContextReport, problem: ReportProblem, total: numb
  * The gap a report leaves for the profile it feeds, at its place `place` from 1 among the review's reports, none when it was read:
  * `report-unreadable` for one nothing of which was used, with `report <n> (<format>) could not be read: <words>`, and
  * `report-partial` for one read in part, with `report <n> (<format>) was read in part: <words>`, the words of each of its problems
- * joined by `; `. `total` is what a truncated search found, `reviewed` the commit of the review, which a refusal for another commit
- * names. Every word is quorum's: no detail holds a report's file name or text.
+ * joined by `; `. `read` is what the report's reader says that its record does not (`total`, what a truncated search found, and
+ * `runs`), `reviewed` the commit of the review, which a refusal for another commit names. Every word is quorum's, and every number
+ * a count: no detail holds a report's file name or text.
  */
-export function reportGaps(record: ContextReport, place: number, profile: string, total?: number, reviewed?: string): ScanGap[] {
+export function reportGaps(record: ContextReport, place: number, profile: string, read: ReaderFacts = {}, reviewed?: string): IncompleteEntry[] {
   if (record.status === 'read') return []
   const head = `report ${place} (${record.format})`
   if (record.status === 'unreadable') {
@@ -491,7 +534,7 @@ export function reportGaps(record: ContextReport, place: number, profile: string
       { profile, reason: 'report-unreadable', detail: `${head} could not be read: ${words}` },
     ]
   }
-  const words = wordsOf(record.problems, problem => partialWords(record, problem, total))
+  const words = wordsOf(record.problems, problem => partialWords(record, problem, read))
   return [
     { profile, reason: 'report-partial', detail: `${head} was read in part: ${words}` },
   ]
@@ -533,7 +576,7 @@ function recordOf(reading: Reading, held: Placing['held']): ContextReport {
 }
 
 /** The gap a profile's cap leaves: how many of the candidates on the change were not reviewed. */
-function cappedGap(profile: string, capped: number, candidates: number, max: number): ScanGap {
+function cappedGap(profile: string, capped: number, candidates: number, max: number): IncompleteEntry {
   return { profile, reason: 'issues-capped', detail: `${capped} of ${candidates} scanner issues on the change were not reviewed (the cap is ${max})` }
 }
 
@@ -578,8 +621,7 @@ export function scanReports(input: ScanInput): ScanResult {
     left: new Set(leftOut.flatMap(({ file }) => file === ''
       ? []
       : [file])),
-    held: once(isHeld),
-    trivy: once(isTrivy),
+    ...textsOf(reports),
     firstChange: once((path) => {
       const first = firstChangedLine(sections, path)
       return first !== undefined && nearChange(sections, path, first)
@@ -604,18 +646,47 @@ export function scanReports(input: ScanInput): ScanResult {
   const profiles = new Map<string, ProfileScan>()
   for (const [profile, indexes] of places) {
     const { candidates, total } = capped.get(profile) as Capped
-    const gaps = indexes.flatMap(index => reportGaps(records[index], index + 1, profile, reports[index].total, commit))
+    const gaps = indexes.flatMap(index => reportGaps(records[index], index + 1, profile, reports[index], commit))
     if (candidates.length < total) gaps.push(cappedGap(profile, total - candidates.length, total, input.maxScannerIssues))
     profiles.set(profile, { candidates, gaps })
   }
   return { records, profiles }
 }
 
+/**
+ * What a profile's panel receives of its candidates: each named as the finder's findings are, with its `id` and its `fingerprint`,
+ * ranked in `ranks`, the map the finder's findings were ranked in, so a candidate and a finding that share a fingerprint's hash keep a
+ * rank each. A file-level candidate stands on its file's first changed line for want of a line of its own, so its fingerprint holds
+ * no row, and a push that moves that line keeps its name. `ruleTexts` holds each candidate's rule text, when its report gives one, by the
+ * candidate's id: the first candidate of an id that two share is the only one that counts, so a later candidate's text is never shown
+ * with the first one's claim, and an id whose first candidate has no text has none. Pure but for `ranks`, which it extends.
+ */
+export function candidateFindings(profile: string, candidates: readonly Candidate[], ranks: Ranks): { readonly findings: Finding[], readonly ruleTexts: Map<string, string> } {
+  const ruleTexts = new Map<string, string>()
+  const seen = new Set<string>()
+  const findings = candidates.map(({ finding, ruleText }): Finding => {
+    const id = findingId(profile, finding.file, finding.line, finding.category)
+    const fileLevel = finding.foundBy.kind === 'scanner' && finding.foundBy.fileLevel === true
+    if (!seen.has(id)) {
+      seen.add(id)
+      if (ruleText !== undefined) ruleTexts.set(id, ruleText)
+    }
+    return {
+      id,
+      fingerprint: rankFingerprint(ranks, profile, finding, fileLevel
+        ? ''
+        : undefined),
+      ...finding,
+    }
+  })
+  return { findings, ruleTexts }
+}
+
 /** The text a report is refused with when its shape is not the one the readers hand over. */
 const NOT_A_REPORT = 'must be a scanner report as readContext reads it'
 
 /** The problems the readers write, as a list zod reads. */
-const READER_PROBLEMS = [
+export const READER_PROBLEMS = [
   'missing',
   'cannot-read',
   'not-a-file',
@@ -626,6 +697,15 @@ const READER_PROBLEMS = [
   'too-many',
   'scanner-failed',
 ] as const satisfies readonly ReaderProblem[]
+
+/** Every problem a report's record can hold, as a list zod reads: the readers' and the four the core finds. */
+export const REPORT_PROBLEMS = [
+  ...READER_PROBLEMS,
+  'another-commit',
+  'unreadable-entries',
+  'unmapped-paths',
+  'held-text',
+] as const satisfies readonly ReportProblem[]
 
 const count = z.int().min(0)
 
@@ -654,6 +734,8 @@ const reportSchema = z.strictObject({
   total: count.optional(),
   skipped: count,
   unreadable: count,
+  notRead: count.optional(),
+  runs: count.optional(),
   issues: z.array(issueSchema).max(MAX_RUNS * MAX_RESULTS),
 })
 

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { gapReason } from '../core/result-schema.ts'
+import { inertLine } from '../core/sanitize.ts'
 import type { ContextDocument, LensVote, ProfileMeta, ProviderCalls, PublicMeta, QuorumMeta, RoleCalls, Verdict, VoteFailure } from '../core/types.ts'
 import { cast, contextDocument, reportMeta, reportResult, SQL } from '../testing/report.ts'
-import { contextSummary, documentLine, documentLineParts, durationText, modelLines, roleLine, roleTokens, ruleCountWords, ruleWords, tokenWords, voteFailureWords, votesWords } from './lines.ts'
+import { contextSummary, documentLine, documentLineParts, durationText, GAP_WORDS, modelLines, roleLine, roleTokens, ruleCountWords, ruleWords, tokenWords, voteFailureWords, votesWords } from './lines.ts'
 import { publicView } from './view.ts'
 
 /** A failed vote of the lens `angle`, which failed with `failure`. */
@@ -23,6 +25,19 @@ function verdictOf(keptVotes: number, votes: LensVote[]): Verdict {
     votes,
   }
 }
+
+describe('gAP_WORDS', () => {
+  it('says each reason of a scanner report\'s gap in quorum\'s own words', () => {
+    expect(GAP_WORDS['report-unreadable']).toBe('a scanner or coverage report could not be read')
+    expect(GAP_WORDS['report-partial']).toBe('a scanner or coverage report was read in part')
+    expect(GAP_WORDS['issues-capped']).toBe('more scanner issues fell on the change than the panel reviews')
+  })
+
+  it('has words for every reason a result can hold, each a line that is inert as it stands', () => {
+    expect(Object.keys(GAP_WORDS).toSorted()).toEqual([...gapReason.options].toSorted())
+    for (const words of Object.values(GAP_WORDS)) expect(inertLine(words)).toBe(words)
+  })
+})
 
 describe('voteFailureWords', () => {
   it.each<[VoteFailure | null, string]>([
@@ -936,6 +951,7 @@ describe('contextSummary', () => {
     })
     expect(contextSummary({
       documents: [security, naming, skipped],
+      reports: [],
     })).toEqual([
       'context: security: guidelines 1830 bytes',
       'context: naming: guidelines 4100 bytes, 1 optional document(s) missing, hidden text removed from 1',
@@ -968,6 +984,7 @@ describe('contextSummary', () => {
           sha256: undefined,
         }),
       ],
+      reports: [],
     })).toEqual(['context: security: guidelines 350 bytes, do-not-report text 100 bytes, 2 optional document(s) missing, hidden text removed from 2'])
     // A profile whose documents were all missing has its missing count alone, and the profiles come in the order their documents do.
     expect(contextSummary({
@@ -975,6 +992,7 @@ describe('contextSummary', () => {
         skipped,
         security,
       ],
+      reports: [],
     })).toEqual([
       'context: naming: 1 optional document(s) missing',
       'context: security: guidelines 1830 bytes',
@@ -984,8 +1002,9 @@ describe('contextSummary', () => {
       documents: [
         contextDocument({ bytes: 0 }),
       ],
+      reports: [],
     })).toEqual(['context: security: guidelines 0 bytes'])
-    expect(contextSummary({ documents: [] })).toEqual([])
+    expect(contextSummary({ documents: [], reports: [] })).toEqual([])
   })
 
   /** A rules document of `profile`: its entries as the rules block holds them. */
@@ -1008,6 +1027,7 @@ describe('contextSummary', () => {
         rulesDocument('naming'),
         rulesDocument('naming', { rules: 3 }),
       ],
+      reports: [],
     }, {
       naming: {
         rules: { listed: 5, sent: 3 },
@@ -1034,6 +1054,7 @@ describe('contextSummary', () => {
           removed: { characters: 1, comments: 0, entities: 0 },
         }),
       ],
+      reports: [],
     }, {
       naming: {
         rules: { listed: 2, sent: 2 },
@@ -1047,6 +1068,7 @@ describe('contextSummary', () => {
         contextDocument(),
         rulesDocument('security'),
       ],
+      reports: [],
     }, {
       naming: {
         rules: { listed: 2, sent: 0 },
@@ -1065,6 +1087,7 @@ describe('contextSummary', () => {
       documents: [
         rulesDocument('naming'),
       ],
+      reports: [],
     }, {
       naming: {
         rules: { listed: 5, sent: 3 },
@@ -1084,6 +1107,7 @@ describe('contextSummary', () => {
           bytes: 0,
         }),
       ],
+      reports: [],
     }, {
       naming: {
         rules: { listed: 5, sent: 3 },
@@ -1103,6 +1127,7 @@ describe('contextSummary', () => {
         naming,
         rulesDocument('naming'),
       ],
+      reports: [],
     }, {
       naming: asks(5),
     })).toEqual(['context: naming: guidelines 4100 bytes, rules 0 of 5 sent, so its research asks nothing'])
@@ -1121,17 +1146,19 @@ describe('contextSummary', () => {
           bytes: 0,
         }),
       ],
+      reports: [],
     }, {
       naming: asks(2),
     })).toEqual(['context: naming: rules 0 of 2 sent, so its research asks nothing, 1 optional document(s) missing, hidden text removed from 1'])
     // It requires a rule and lists none, with no document at all: a line of its own, after the lines of the profiles that have a document.
-    expect(contextSummary({ documents: [] }, {
+    expect(contextSummary({ documents: [], reports: [] }, {
       naming: asks(0),
     })).toEqual(['context: naming: rules 0 of 0 sent, so its research asks nothing'])
     expect(contextSummary({
       documents: [
         contextDocument(),
       ],
+      reports: [],
     }, {
       strict: asks(0),
       security: {
@@ -1144,16 +1171,17 @@ describe('contextSummary', () => {
       'context: naming: rules 0 of 0 sent, so its research asks nothing',
     ])
     // A profile that lists no rule and requires none, and one with no entry, has no line of its own, and a name the object inherits reads as none.
-    expect(contextSummary({ documents: [] }, {
+    expect(contextSummary({ documents: [], reports: [] }, {
       naming: {
         rules: { listed: 0, sent: 0 },
       },
     })).toEqual([])
-    expect(contextSummary({ documents: [] }, {})).toEqual([])
+    expect(contextSummary({ documents: [], reports: [] }, {})).toEqual([])
     expect(contextSummary({
       documents: [
         contextDocument({ profile: 'constructor' }),
       ],
+      reports: [],
     }, {})).toEqual(['context: constructor: guidelines 1830 bytes'])
   })
 
@@ -1163,6 +1191,7 @@ describe('contextSummary', () => {
     // The profile's counts say it lists none: a rules file that held none, beside text.
     expect(contextSummary({
       documents: [naming, empty],
+      reports: [],
     }, {
       naming: {
         rules: { listed: 0, sent: 0 },
@@ -1174,6 +1203,7 @@ describe('contextSummary', () => {
         naming,
         rulesDocument('naming'),
       ],
+      reports: [],
     })).toEqual(['context: naming: guidelines 4100 bytes'])
     // A profile whose only record is a rules file with no rule has nothing to summarize.
     expect(contextSummary({
@@ -1181,6 +1211,7 @@ describe('contextSummary', () => {
         empty,
         contextDocument(),
       ],
+      reports: [],
     }, {
       naming: {
         rules: { listed: 0, sent: 0 },
@@ -1192,6 +1223,7 @@ describe('contextSummary', () => {
         contextDocument({ profile: 'constructor' }),
         rulesDocument('constructor'),
       ],
+      reports: [],
     }, {})).toEqual(['context: constructor: guidelines 1830 bytes'])
   })
 })

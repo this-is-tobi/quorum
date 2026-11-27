@@ -9,6 +9,8 @@ import { leftOutGaps, reviewScope } from './coverage.ts'
 import type { ReviewScope } from './coverage.ts'
 import { diffSections, splitDiff } from './diff.ts'
 import { createHealth } from './down.ts'
+import { candidateFindings, DEFAULT_MAX_SCANNER_ISSUES, reviewedCommit, scannerReportIssues, scanReports } from './candidates.ts'
+import type { ProfileScan, ScanResult } from './candidates.ts'
 import { contextTotalIssues, documentCommit, documentIssues, joined, profileTexts, withRepository } from './documents.ts'
 import type { ProfileTexts } from './documents.ts'
 import { ConfigError, issuePath } from './errors.ts'
@@ -31,12 +33,12 @@ import { doNotReportInstructions, renderTemplate } from './prompts.ts'
 import { ownData } from './facts.ts'
 import { addUsage, asksNothing, elapsed, stage, targetOf, withSent } from './stages/context.ts'
 import type { ProfileRun, RunContext } from './stages/context.ts'
-import { dedup } from './stages/dedup.ts'
+import { dedup, dedupKey } from './stages/dedup.ts'
 import { panel } from './stages/panel.ts'
 import type { PanelOutcome } from './stages/panel.ts'
 import { planResearch, research } from './stages/research.ts'
-import type { ResearchPlan } from './stages/research.ts'
-import type { ContextRecord, CoverageEntry, Estimate, Profile, ProfileMeta, ProfileProviders, ProviderCalls, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ResearchRecord, ReviewContext, ReviewDocument, ReviewInput, ReviewSource, RoleCalls, Usage } from './types.ts'
+import type { ResearchOutcome, ResearchPlan } from './stages/research.ts'
+import type { ContextDocument, ContextRecord, CoverageEntry, Estimate, Profile, ProfileMeta, ProfileProviders, ProviderCalls, Quorum, QuorumEvent, QuorumMeta, QuorumOptions, QuorumResult, ResearchRecord, ReviewContext, ReviewDocument, ReviewInput, ReviewSource, RoleCalls, Usage } from './types.ts'
 
 const PROVIDER_SHAPE = 'must be a provider: an object with a string id, a string model and a complete function'
 
@@ -50,7 +52,12 @@ const NO_RESEARCH: ResearchRecord = Object.freeze({
 })
 
 /** The options that must be positive integers when they are set. */
-const LIMITS = ['concurrency', 'maxFindings', 'findingsCap'] as const
+const LIMITS = [
+  'concurrency',
+  'maxFindings',
+  'findingsCap',
+  'maxScannerIssues',
+] as const
 
 /** What createQuorum compiled: the frozen runs and settings every review of the quorum reads. */
 interface Compiled {
@@ -61,6 +68,8 @@ interface Compiled {
   readonly maxFindings: number
   /** The most findings of the research each profile sends to its panel in a review that gives no cap of its own: the quorum's `findingsCap`, else `maxFindings`. */
   readonly findingsCap: number
+  /** The most scanner issues each profile's panel judges in a review, as candidates: the quorum's `maxScannerIssues`, else `DEFAULT_MAX_SCANNER_ISSUES`. A cap of its own, beside `findingsCap`: neither takes room from the other. */
+  readonly maxScannerIssues: number
   /** The most tokens one review spends: each review gets a ledger of this cap. */
   readonly maxReviewTokens: number
   /** How long one review runs, in milliseconds: each review arms a deadline of this length on `clock`. */
@@ -186,7 +195,7 @@ function callsRecord(calls: ReadonlyMap<string, ProviderCalls>): QuorumMeta['cal
  *
  * Every problem is reported at once, in one ConfigError, never as a TypeError, so an untyped caller
  * gets the checks a config file gets: options and ports that are not objects, no profile, each
- * profile's own issues, a repeated profile id, a `concurrency`, `maxFindings` or `findingsCap` that is not a
+ * profile's own issues, a repeated profile id, a `concurrency`, `maxFindings`, `findingsCap` or `maxScannerIssues` that is not a
  * positive integer, a `maxReviewTokens` that is not a whole number of tokens from 1 to
  * 9007199254740991, a `reviewTimeoutMs` that is not a whole number of milliseconds from 1000 to
  * 86400000, a `partTokens` that is not a whole number of tokens from 1024 to 9007199254740991, an
@@ -200,7 +209,8 @@ function callsRecord(calls: ReadonlyMap<string, ProviderCalls>): QuorumMeta['cal
  * by a caller's id is read as an own property, since `constructor` is a valid id. `maxReviewTokens`,
  * the most tokens one review spends, input and output, is 2000000 when unset, `reviewTimeoutMs`,
  * how long one review runs, is 1800000 (30 minutes) when unset, and `partTokens`, the most tokens of
- * diff text one research part holds, is 32768 when unset: see `review`.
+ * diff text one research part holds, is 32768 when unset: see `review`. `maxScannerIssues`, the most scanner issues each profile's panel
+ * judges as candidates, is 50 when unset, a cap of its own beside `findingsCap`.
  *
  * Each profile is compiled into a frozen `ProfileRun`, its instructions rendered, its thresholds
  * resolved and its providers captured, and `exclude` is compiled into a matcher, so later changes to
@@ -247,6 +257,7 @@ export function createQuorumWith(options: QuorumOptions, ports: QuorumPorts, clo
     concurrency: options.concurrency,
     ...settings,
     findingsCap: options.findingsCap ?? settings.maxFindings,
+    maxScannerIssues: options.maxScannerIssues ?? DEFAULT_MAX_SCANNER_ISSUES,
     budgets,
     heldRules: new Map(runs.map(run => [run.id, ruleTextBytes(run.texts.rules) ?? 0])),
     reviewTimeoutMs: options.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
@@ -308,7 +319,7 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
     maxReviewTokens: limits.maxReviewTokens ?? compiled.maxReviewTokens,
     reviewTimeoutMs: limits.reviewTimeoutMs ?? compiled.reviewTimeoutMs,
     findingsCap: limits.findingsCap ?? compiled.findingsCap,
-  }, input.diff, path => sent.has(path))
+  }, input.diff, path => sent.has(path), input.context?.reports)
 }
 
 /**
@@ -334,8 +345,8 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * one `guideline-edited` flag for each profile and path, after the diff's flags, naming the profile and the
  * commit the review read the document from instead; a path review raises none.
  * Everything it knows before a call is sent in this order: `run:start`, then a `left-out` event naming those files when it leaves one
- * out, then a `context` event holding `meta.context` when a profile has a document, then the gaps' `incomplete` events (each profile's `binary`, `submodule` and `secret` gaps, then its
- * `too-large` gap), then the `flag` events of the advisory flags, the `secret-file` flags first and the
+ * out, then a `context` event holding `meta.context` when a profile has a document or the review reads a scanner report, then the gaps' `incomplete` events (each profile's `binary`, `submodule` and `secret` gaps, then its
+ * `too-large` gap, then its reports' `report-unreadable` and `report-partial` gaps and its `issues-capped` gap), then the `flag` events of the advisory flags, the `secret-file` flags first and the
  * `guideline-edited` flags last, kept in `meta.flags`, none of which changes a verdict, then the stages. Each event is handed to the sink
  * as a copy, so a sink that changes one changes nothing else. The review reports itself through
  * events, from `run:start` to `run:end`, and its result merges the profiles' verdicts and gaps in
@@ -456,6 +467,18 @@ function estimate(compiled: Compiled, input: EstimateInput, limits: EstimateLimi
  * research system message alone, right after the instructions. `meta.context` records each document, never its text, and one
  * `context` event says the same. A profile the context gives no document keeps the run it was compiled to.
  *
+ * `input.context.reports` are scanner reports, each read for one profile of the quorum (`ScannerReport`, as `readContext` hands them
+ * over), at most 16. Before any stage the core places each issue of each report against the filtered diff and counts it under one outcome
+ * (`scanReports`): the ones on a changed line, or near one, are candidates, at most `maxScannerIssues` for each profile, the most severe
+ * kept. A candidate joins its profile's findings after the finder's, before dedup, and is judged by the same lenses, each vote asked of the
+ * lens's own provider, with the scanner's claim and the text of its rule as fenced data that no one else reads: the finder and the votes
+ * on any other finding get none of a report's text. A scanner never decides a verdict, and a report only adds candidates: a candidate
+ * on the file, line and category of a finder's finding is left out for it. `requireRule` and `changedLinesOnly` bind the finder alone,
+ * so a profile whose research asks nothing still judges its candidates. `meta.context.reports` records each report (its outcomes, never
+ * its path or text), and a report that was not read, was read in part or whose issues were capped is a gap of the profile it feeds
+ * (`report-unreadable`, `report-partial`, `issues-capped`) that no flag lifts. `meta.profiles.<id>.research.panel` counts the finder's
+ * findings alone.
+ *
  * A profile may also list review rules (`Profile.rules`, its `documents` of kind `rules` and the repository's), and each
  * research request of such a profile carries the rules whose `paths` match a file of the review's filtered diff, the same block
  * in every part, after the diff and before the guidelines, and asks for a sixth field of each finding, `rule`. A rule without
@@ -552,7 +575,6 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
   const startedAt = new Date().toISOString()
   const started = performance.now()
   const { sink } = compiled
-  const { record } = reviewed
   const whole = input.diff.trim() === ''
     ? undefined
     : splitDiff(input.diff)
@@ -587,6 +609,15 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
     : diffSections(scope.diff)
   // Each profile that lists rules sends those whose paths match a file of the filtered diff, once for the whole review.
   const runs = reviewed.runs.map(run => withSent(run, filtered))
+  // Each report's issues are placed against the filtered diff once, before any stage: what the panels judge, and what each report records and leaves as gaps, is known before a call is sent.
+  const scanned = scanReports({
+    reports: input.context?.reports ?? [],
+    sections: sections ?? new Map(),
+    leftOut,
+    commit: reviewedCommit(source),
+    maxScannerIssues: compiled.maxScannerIssues,
+  })
+  const record: ContextRecord = { documents: reviewed.documents, reports: scanned.records }
   const plans = sections === undefined
     ? []
     : runs.map(run => planResearch(run, scope.diff, filtered, { partTokens: compiled.partTokens, maxFindings: run.maxFindings, replyTokens: compiled.budgets[run.id].research.replyTokens }))
@@ -599,6 +630,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
         ...tooLarge === undefined
           ? []
           : [tooLarge],
+        ...scanned.profiles.get(run.id)?.gaps ?? [],
       ],
     ] as const
   }))
@@ -680,7 +712,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
   })
   if (leftOut.length > 0) emit({ type: 'left-out', files: leftOut })
   const rules = ruleCounts(runs)
-  if (record.documents.length > 0 || rules !== undefined) {
+  if (record.documents.length > 0 || record.reports.length > 0 || rules !== undefined) {
     emit({
       type: 'context',
       context: record,
@@ -717,7 +749,7 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
   interrupt.stop.addEventListener('abort', onInterrupt, { once: true })
   // An interrupt that came before the stages ran stops nothing in flight, and is said all the same.
   if (interrupt.stop.aborted) onInterrupt()
-  const outcomes = await reviewAll(ctx, runs, plans, scope.diff, sections).catch((error: unknown) => {
+  const outcomes = await reviewAll(ctx, runs, plans, scope.diff, sections, scanned).catch((error: unknown) => {
     // A failure that is no gap (a sink's error, a bug) aborts the review here. The first reason stays the reason.
     const reason: unknown = signal.aborted ? signal.reason : error
     internal.abort(reason)
@@ -783,16 +815,26 @@ async function reviewUntil(compiled: Compiled, reviewed: Reviewed, input: Review
 
 /**
  * The error a review that read nothing rejects with, or `undefined` when it resolves: when no part of any
- * profile was `reviewed`, the `ProviderDownError` of the first research provider, in profile order, that was
+ * profile was `reviewed` and no voter cast a vote, the `ProviderDownError` of the first research provider, in profile order, that was
  * found down, else of the first whose every call failed for a reason of its own and that made fewer than
  * three (`health.spent`). A review that read nothing for any other reason, refusals or limits, or that ran no
- * research, resolves with its gaps.
+ * research, resolves with its gaps, and so does one whose research was found down but whose voters judged a scanner's candidates:
+ * a vote that was cast is something the review read.
  */
 function nothingAnswered(ctx: RunContext, runs: readonly ProfileRun[], outcomes: readonly ProfileOutcome[]): ProviderDownError | undefined {
-  if (outcomes.length === 0 || outcomes.some(outcome => outcome.parts.some(isReviewed))) return undefined
+  if (outcomes.length === 0 || outcomes.some(outcome => outcome.parts.some(isReviewed) || hasCastVote(outcome))) return undefined
   const { health } = ctx
   const down = runs.map(run => health.refused(run.research.provider)).find(error => error !== undefined)
   return down ?? runs.map(run => health.spent(run.research.provider, run.research.ref.id)).find(error => error !== undefined)
+}
+
+/** Whether any verdict of a profile holds a vote that was cast: a voter answered, whatever it said. */
+function hasCastVote({ kept, discarded, unreviewed }: ProfileOutcome): boolean {
+  return [
+    ...kept,
+    ...discarded,
+    ...unreviewed,
+  ].some(verdict => verdict.votes.some(lensVote => lensVote.vote !== null))
 }
 
 /** Whether a part was answered: it was `reviewed`, or one of the pieces recovery split it into was. */
@@ -818,23 +860,28 @@ interface ProfileOutcome extends PanelOutcome {
 }
 
 /** Run every profile through its stages at once on the diff's sections, each on its own plan; a blank diff, which has none, runs no stage. */
-async function reviewAll(ctx: RunContext, runs: readonly ProfileRun[], plans: readonly ResearchPlan[], diff: string, sections: ReadonlyMap<string, string> | undefined): Promise<ProfileOutcome[]> {
+async function reviewAll(ctx: RunContext, runs: readonly ProfileRun[], plans: readonly ResearchPlan[], diff: string, sections: ReadonlyMap<string, string> | undefined, scan: ScanResult): Promise<ProfileOutcome[]> {
   if (sections === undefined) return []
-  return Promise.all(runs.map((run, index) => reviewProfile(ctx, run, plans[index], diff, sections)))
+  return Promise.all(runs.map((run, index) => reviewProfile(ctx, run, plans[index], diff, sections, scan.profiles.get(run.id))))
 }
 
 /**
  * One profile's review: its panel's outcome, with the research gaps before the panel's own, and last the
  * gap of each limit that stopped its work, reported by an `incomplete` event once the panel's stage has ended.
  */
-async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, diff: string, sections: ReadonlyMap<string, string>): Promise<ProfileOutcome> {
+async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPlan, diff: string, sections: ReadonlyMap<string, string>, scan: ProfileScan | undefined): Promise<ProfileOutcome> {
   // A profile that asks its research nothing has no part to read: its research makes no call.
   const parts = asksNothing(run)
     ? 0
     : plan.packing?.parts.length ?? 1
   const researched = await stage(ctx, run.id, 'research', () => research(ctx, run, plan, diff, sections), outcome => outcome.findings.length, { parts })
-  const candidates = await stage(ctx, run.id, 'dedup', () => dedup(researched.findings), found => found.length)
-  const judged = await stage(ctx, run.id, 'panel', () => panel(ctx, run, candidates, sections, diff), outcome => outcome.kept.length + outcome.discarded.length + outcome.unreviewed.length, { votes: candidates.length * run.lenses.length })
+  // The finder's findings come first, then the scanner's candidates, which the same panel judges: whatever research read, the candidates stay.
+  const named = candidatesAfter(run.id, researched, scan)
+  const judging = await stage(ctx, run.id, 'dedup', () => dedup([
+    ...researched.findings,
+    ...named.findings,
+  ]), found => found.length)
+  const judged = await stage(ctx, run.id, 'panel', () => panel(ctx, run, judging, sections, diff, named.ruleTexts), outcome => outcome.kept.length + outcome.discarded.length + outcome.unreviewed.length, { votes: judging.length * run.lenses.length })
   const limits = limitGaps(run.id, researched.parts.map(limitOf), [
     ...judged.kept,
     ...judged.discarded,
@@ -853,7 +900,7 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPla
     research: {
       parts,
       listed: researched.counts.listed,
-      panel: candidates.length,
+      panel: judging.filter(finding => finding.foundBy.kind === 'model').length,
       capped: researched.counts.capped,
       saturated: researched.counts.saturated,
     },
@@ -864,6 +911,17 @@ async function reviewProfile(ctx: RunContext, run: ProfileRun, plan: ResearchPla
       ? {}
       : { recovery: researched.recovery },
   }
+}
+
+/**
+ * A profile's candidates named as findings, after the finder's: the candidates on a file, line and category a finder's finding holds are
+ * left out, so a candidate never displaces the finder's finding (dedup keeps the first finding anchored where it was cited, and would
+ * keep a candidate over one the finder's anchor moved) and the finder's findings are the ones the research counts. The report that held it
+ * counted such a candidate `used` all the same. Each is named from the ranks the finder's findings were ranked in.
+ */
+function candidatesAfter(profile: string, researched: Pick<ResearchOutcome, 'findings' | 'ranks'>, scan: ProfileScan | undefined): ReturnType<typeof candidateFindings> {
+  const held = new Set(researched.findings.map(finding => dedupKey(finding)))
+  return candidateFindings(profile, (scan?.candidates ?? []).filter(({ finding }) => !held.has(dedupKey(finding))), researched.ranks)
 }
 
 /**
@@ -919,7 +977,7 @@ function settingsIssues(settings: unknown): ConfigIssue[] {
   ]
 }
 
-/** The problems of a review's `context`: it is an object, and its documents are repository documents of the quorum's profiles, at the commit `rule` names. */
+/** The problems of a review's `context`: it is an object, its documents are repository documents of the quorum's profiles, at the commit `rule` names, and its reports are scanner reports as the readers hand them over, each for a profile of the quorum. */
 function contextIssues(context: unknown, profiles: ReadonlySet<string>, rule: { readonly commit?: string | null, readonly held?: ReadonlyMap<string, number> }): ConfigIssue[] {
   if (context === undefined) return []
   if (!isRecord(context)) {
@@ -927,9 +985,14 @@ function contextIssues(context: unknown, profiles: ReadonlySet<string>, rule: { 
       { path: 'context', message: 'must be an object holding documents' },
     ]
   }
-  return context.documents === undefined
-    ? []
-    : documentIssues(context.documents, 'context.documents', { origin: 'repository', profiles, ...rule })
+  return [
+    ...context.documents === undefined
+      ? []
+      : documentIssues(context.documents, 'context.documents', { origin: 'repository', profiles, ...rule }),
+    ...context.reports === undefined
+      ? []
+      : scannerReportIssues(context.reports, 'context.reports', profiles),
+  ]
 }
 
 /**
@@ -939,7 +1002,8 @@ function contextIssues(context: unknown, profiles: ReadonlySet<string>, rule: { 
  */
 interface Reviewed {
   readonly runs: readonly ProfileRun[]
-  readonly record: ContextRecord
+  /** The record of every document the runs send, in run order, as new objects: the review's `meta.context.documents`. */
+  readonly documents: ContextDocument[]
 }
 
 /**
@@ -950,7 +1014,7 @@ interface Reviewed {
  * text or rules over what they may hold in all (at the document that does) or gives a rule id the profile's rules already hold, and a
  * changed run whose research or votes leave their provider less than 1024 tokens of diff, as `createQuorum` refuses a profile for its own
  * documents: the research is counted with every rule the run lists, the repository's included, and not the rules a change sends. The
- * record is every run's, in run order, as new objects the review's result and event may hold.
+ * documents' records are every run's, in run order, as new objects the review's result and event may hold.
  */
 function reviewRuns(compiled: Compiled, context: ReviewContext | undefined): Reviewed {
   const given = new Map<string, Array<{ readonly index: number, readonly document: ReviewDocument }>>()
@@ -975,9 +1039,7 @@ function reviewRuns(compiled: Compiled, context: ReviewContext | undefined): Rev
   if (issues.length > 0) throw new ConfigError(issues)
   return {
     runs,
-    record: {
-      documents: runs.flatMap(run => run.texts.records.map(record => structuredClone(record))),
-    },
+    documents: runs.flatMap(run => run.texts.records.map(record => structuredClone(record))),
   }
 }
 
@@ -1163,10 +1225,10 @@ function profileListIssues(profiles: readonly unknown[]): { issues: ConfigIssue[
 }
 
 /**
- * `concurrency`, `maxFindings` and `findingsCap` are whole numbers from 1 to 9007199254740991 when set, `maxReviewTokens` a whole number of
+ * `concurrency`, `maxFindings`, `findingsCap` and `maxScannerIssues` are whole numbers from 1 to 9007199254740991 when set, `maxReviewTokens` a whole number of
  * tokens from 1 to 9007199254740991, `reviewTimeoutMs` a whole number of milliseconds from 1000 to
  * 86400000, and `partTokens` a whole number of tokens from 1024 to 9007199254740991. A number is
- * quoted in the first three; anything else is described by the rule alone.
+ * quoted in the first four; anything else is described by the rule alone.
  */
 function limitIssues(options: Record<string, unknown>): ConfigIssue[] {
   const issues: ConfigIssue[] = LIMITS.flatMap((path) => {
